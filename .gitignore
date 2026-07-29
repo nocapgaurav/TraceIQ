@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Per-repository knowledge graphs are generated artefacts, never committed.
+.traceiq/
+*.db
+*.db-journal
+*.db-wal
+
+.env
+.env.local
+.DS_Store

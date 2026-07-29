@@ -1,0 +1,25 @@
+{
+  "name": "@traceiq/framework",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@traceiq/ir": "workspace:*",
+    "@traceiq/resolver": "workspace:*",
+    "@traceiq/shared": "workspace:*",
+    "@traceiq/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@traceiq/project-host": "workspace:*",
+    "@traceiq/scanner": "workspace:*",
+    "@types/node": "^26.1.2"
+  }
+}

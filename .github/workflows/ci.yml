@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # tsc -b is both the build and the typecheck for package sources.
+      - run: pnpm build
+
+      # Test files live in their own project so build output stays clean; this is
+      # what typechecks them.
+      - run: pnpm typecheck:tests
+
+      - run: pnpm test

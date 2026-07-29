@@ -1,0 +1,8 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+# better-sqlite3 ships a native addon and needs its install script to fetch or
+# compile the binding. pnpm blocks build scripts by default; this is the explicit
+# approval for the one dependency that requires it.
+allowBuilds:
+  better-sqlite3: true

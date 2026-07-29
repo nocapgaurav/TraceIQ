@@ -1,0 +1,30 @@
+{
+  "name": "@traceiq/graph",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@traceiq/call-graph": "workspace:*",
+    "@traceiq/framework": "workspace:*",
+    "@traceiq/graph-api": "workspace:*",
+    "@traceiq/ir": "workspace:*",
+    "@traceiq/resolver": "workspace:*",
+    "@traceiq/shared": "workspace:*",
+    "@traceiq/types": "workspace:*",
+    "better-sqlite3": "^13.0.1"
+  },
+  "devDependencies": {
+    "@traceiq/project-host": "workspace:*",
+    "@traceiq/scanner": "workspace:*",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^26.1.2"
+  }
+}

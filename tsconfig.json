@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "files": [],
+  "references": [
+    { "path": "./packages/types" },
+    { "path": "./packages/shared" },
+    { "path": "./packages/scanner" },
+    { "path": "./packages/project-host" },
+    { "path": "./packages/ir" },
+    { "path": "./packages/resolver" },
+    { "path": "./packages/graph-api" },
+    { "path": "./packages/graph" },
+    { "path": "./packages/call-graph" },
+    { "path": "./packages/framework" },
+    { "path": "./packages/query" },
+    { "path": "./packages/explain" }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "traceiq",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Repository Intelligence Platform. Know Your Codebase.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck:tests": "tsc -b tsconfig.tests.json",
+    "clean": "tsc -b --clean",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}

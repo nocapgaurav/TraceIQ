@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+
+  // Typechecks every test file in the workspace.
+  //
+  // Test files are excluded from the package projects so build output stays free
+  // of them, which previously left them unchecked entirely — that is how an
+  // undeclared dependency on @traceiq/scanner survived in the IR package.
+  //
+  // This project owns the test files and nothing else. It references the package
+  // projects rather than including their sources, so a source file is compiled
+  // exactly once, by its own project, and is consumed here through the declaration
+  // output. Emit is off: the only product is the typecheck.
+  //
+  // Module resolution still starts from each test file's own directory, so pnpm's
+  // strict isolation continues to apply and an undeclared dependency still fails.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": [
+    "packages/*/src/**/*.test.ts",
+    "packages/*/src/**/*.test-helper.ts",
+    "vitest.config.ts"
+  ],
+  "references": [
+    { "path": "./packages/types" },
+    { "path": "./packages/shared" },
+    { "path": "./packages/scanner" },
+    { "path": "./packages/project-host" },
+    { "path": "./packages/ir" },
+    { "path": "./packages/resolver" },
+    { "path": "./packages/graph-api" },
+    { "path": "./packages/graph" },
+    { "path": "./packages/call-graph" },
+    { "path": "./packages/framework" },
+    { "path": "./packages/query" },
+    { "path": "./packages/explain" }
+  ]
+}
