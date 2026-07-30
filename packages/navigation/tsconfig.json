@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"]
+  },
+  "include": ["src"],
+  "exclude": ["**/*.test.ts", "**/*.test-helper.ts"],
+  "references": [
+    { "path": "../types" },
+    { "path": "../graph-api" },
+    { "path": "../query" },
+    { "path": "../explain" },
+    { "path": "../explorer" }
+  ]
+}

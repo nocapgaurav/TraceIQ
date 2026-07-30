@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"]
+  },
+  "include": ["src"],
+  "exclude": ["**/*.test.ts", "**/*.test-helper.ts"],
+  "references": [
+    { "path": "../../packages/types" },
+    { "path": "../../packages/query" },
+    { "path": "../../packages/explain" },
+    { "path": "../../packages/impact" },
+    { "path": "../../packages/health" },
+    { "path": "../../packages/explorer" },
+    { "path": "../../packages/navigation" },
+    { "path": "../../packages/pipeline" }
+  ]
+}

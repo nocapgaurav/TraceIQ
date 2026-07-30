@@ -23,6 +23,13 @@ export default defineConfig({
       '@traceiq/framework': packageSource('framework'),
       '@traceiq/query': packageSource('query'),
       '@traceiq/explain': packageSource('explain'),
+      '@traceiq/impact': packageSource('impact'),
+      '@traceiq/health': packageSource('health'),
+      '@traceiq/explorer': packageSource('explorer'),
+      '@traceiq/navigation': packageSource('navigation'),
+      '@traceiq/pipeline': packageSource('pipeline'),
+      '@traceiq/cli': fileURLToPath(new URL('./apps/cli/src/index.ts', import.meta.url)),
+      '@traceiq/api': fileURLToPath(new URL('./apps/api/src/index.ts', import.meta.url)),
     },
   },
   test: {

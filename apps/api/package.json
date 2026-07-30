@@ -1,0 +1,32 @@
+{
+  "name": "@traceiq/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@traceiq/explain": "workspace:*",
+    "@traceiq/explorer": "workspace:*",
+    "@traceiq/health": "workspace:*",
+    "@traceiq/impact": "workspace:*",
+    "@traceiq/navigation": "workspace:*",
+    "@traceiq/pipeline": "workspace:*",
+    "@traceiq/query": "workspace:*",
+    "@traceiq/types": "workspace:*",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^26.1.2"
+  },
+  "bin": {
+    "traceiq-api": "./bin/traceiq-api.js"
+  }
+}

@@ -13,6 +13,13 @@
     { "path": "./packages/call-graph" },
     { "path": "./packages/framework" },
     { "path": "./packages/query" },
-    { "path": "./packages/explain" }
+    { "path": "./packages/explain" },
+    { "path": "./packages/impact" },
+    { "path": "./packages/health" },
+    { "path": "./packages/explorer" },
+    { "path": "./packages/navigation" },
+    { "path": "./packages/pipeline" },
+    { "path": "./apps/cli" },
+    { "path": "./apps/api" }
   ]
 }

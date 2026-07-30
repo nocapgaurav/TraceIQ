@@ -3,6 +3,810 @@
 Milestones are referred to by name rather than number, since the engineering
 contract does not restate the roadmap.
 
+## TraceIQ REST API
+
+**Status:** complete. `pnpm build` clean, `pnpm typecheck:tests` clean, `pnpm test`
+1,566 passing across 53 files (70 in the API).
+
+### Completed Work
+
+New `apps/api` — the HTTP interface — with all seventeen endpoints plus a generated
+`GET /openapi.json`. Express 5, which the milestone approved; no other dependency was added, and the
+HTTP tests use Node's built-in `fetch` rather than an unapproved testing library.
+
+**The API contains zero repository intelligence.** Each endpoint validates its parameters, calls one
+capability and returns that capability's result unchanged.
+
+`ENDPOINTS` is the single source of truth for routing, validation and the OpenAPI document, so the
+document cannot drift from the server. Tests assert both directions: every documented path is routed,
+and no routed path is undocumented.
+
+### Self Review
+
+| Criterion | Finding |
+|---|---|
+| Architecture | Plain array of endpoints, `createApp(options)` takes its dependencies. No decorators, no DI framework, no ORM. |
+| Performance | Scan 1,385 ms; every warm read 0.7–23.7 ms. Graph opened once, cache shared across requests. |
+| Validation | Eleven codes over five statuses. A missing graph is 409, not 404. |
+| Error handling | One shape for everything, including a body Express itself rejected. |
+| Code reuse | Every payload is a capability result; the API adds only the envelope. |
+| Duplicate logic | None. The endpoint table drives routing, validation and documentation from one place. |
+| API consistency | `success`/`data`/`meta` everywhere; wildcards for every slash-bearing parameter; `null`-free errors. |
+| Documentation | README covers architecture, request lifecycle, endpoint reference, identifier encoding, examples, performance and limitations. |
+
+### Defects Found and Fixed During Review
+
+| Defect | Fix |
+|---|---|
+| **`GET /symbol/{id}` returned 404 for every valid identifier.** A declaration id contains `#`, which starts a URL fragment — the client strips everything after it, so the server received a truncated id. Found by calling the endpoint against TraceIQ, not by a test. | The endpoint was correct; the *documentation* was wrong — it told clients to send it unencoded. Fixed the OpenAPI parameter descriptions and examples to require `%23`. |
+| **A truncated identifier gave a puzzling 404.** `sym:x/y.ts` with no `#` names no declaration, yet was reported as "the graph holds nothing named that". | Added a validation step: a `sym:` identifier must carry a `#`. It now returns **400** with a hint naming `%23`, so the encoding trap is diagnosed rather than mistaken for a missing symbol. |
+| **A request identifier and a duration in `meta` would have made every body vary.** | Both moved to headers — `x-request-id`, `x-response-time` — leaving `meta` deterministic. Asserted: repeated requests return byte-identical bodies while their identifiers differ. |
+
+### Real Repository Validation — every endpoint over HTTP
+
+202 files, 2,594 declarations, 2,822 nodes, 11,185 edges, 2,906 call edges.
+
+| Endpoint | Cold | Warm | Payload |
+|---|---|---|---|
+| `POST /scan` | **1,385 ms** | — | 372 B |
+| `/ping` · `/version` · `/routes` | 1.3–2.2 ms | 0.7–1.7 ms | 107–163 B |
+| `/overview` | 2.0 ms | 1.9 ms | 5 KB |
+| `/packages` | 1.8 ms | 1.6 ms | 1.9 KB |
+| `/files/{path}` | 1.9 ms | 1.8 ms | 82 KB |
+| `/search?q=` | 2.0 ms | 1.7 ms | 15 KB |
+| `/packages/{name}` | 2.5 ms | 2.3 ms | 276 KB |
+| `/cycles` | 3.1 ms | 2.7 ms | 36 KB |
+| `/impact/{id}` | 3.3 ms | 4.1 ms | **871 KB** |
+| `/hotspots` | 4.0 ms | 3.7 ms | 398 KB |
+| `/symbol/{id}` | 6.1 ms | 2.9 ms | 84 KB |
+| `/health` | 9.2 ms | 7.9 ms | 517 KB |
+| `/architecture` | 24.8 ms | 9.6 ms | 363 KB |
+| `/dependencies/{id}` | 28.4 ms | 23.7 ms | 276 KB |
+
+Largest response **871 KB** (`/impact`). Memory **165 MB before a scan, 502 MB after, 570 MB** after
+every endpoint — the jump is the in-process scan retaining the compiler's program.
+
+### Files
+
+Created: `apps/api/src/` — `errors.ts`, `graph-holder.ts`, `respond.ts`, `endpoints.ts`, `app.ts`,
+`openapi.ts`, `server.ts`, `index.ts`, `api.test.ts`, `http.test.ts`; `apps/api/bin/traceiq-api.js`;
+`apps/api/package.json`, `tsconfig.json`.
+
+Modified: `apps/api/README.md` (replacing the not-implemented placeholder from workspace setup), root
+`README.md`, `tsconfig.json`, `tsconfig.tests.json`, `vitest.config.ts`. **No analysis package
+changed.**
+
+### Decisions
+
+| Decision | Reason |
+|---|---|
+| Observability in headers, determinism in the body | A request identifier and an elapsed time vary between identical requests, and a body that varies cannot be compared, cached or snapshot-tested. |
+| One endpoint table for routing, validation and OpenAPI | Three uses of one declaration cannot drift; a hand-written spec would be the thing that rots. |
+| Wildcards rather than `%2F` for slash-bearing parameters | A percent-encoded slash is mangled by proxies, and a path is what a client actually holds. |
+| `#` must be `%23`, enforced with a 400 | It is a URL fragment delimiter. Diagnosing it beats a 404 that looks like a missing symbol. |
+| 409 for a missing graph | The request was fine; the server has nothing to answer from yet. A client can tell "scan first" from "not there". |
+| No locking around the graph | Every read capability is synchronous, so a request never yields while holding it; a scan swaps in one synchronous step. Stated in code rather than assumed. |
+| `GraphHolder` on the app instance, not at module scope | Two apps in one process — as two tests are — must not see each other's graph. |
+| A capability result is returned unchanged | Reshaping it would invent information and create a second definition of a payload. |
+| OpenAPI describes payloads as objects | The shapes are defined by each capability's published types; copying them here would make the copy the stale one. |
+| Fixed revision timestamp for a scan | Two scans of one repository write identical databases. |
+| No HTTP testing library | Node's `fetch` against a real ephemeral-port server exercises more and adds no unapproved dependency. |
+
+### Known Limitations
+
+- **A scan is a full rebuild, in-process**: ~1.4 s blocking, ~320 MB retained afterwards.
+- **One repository per server.**
+- **Large payloads** — `/impact` 871 KB, `/health` 517 KB. No field selection, no pagination.
+- **No authentication**, as specified.
+- **No caching headers**; `etag` is explicitly disabled.
+- **`GET /health` is the report, not a liveness probe** — `/ping` is.
+- Everything inherited from below, each present in the payload's own `limitations` field.
+
+### Approvals Needed Before the Frontend
+
+1. **Whether a scan should run out of process.** It blocks the event loop for ~1.4 s and leaves ~320 MB
+   of compiler state resident. A worker or subprocess would fix both, and matters as soon as anything
+   re-scans while serving.
+2. **Whether the API should support field selection or pagination.** A frontend rendering a tree does
+   not need 871 KB, and `/impact`, `/health`, `/hotspots` and `/architecture` are all over 350 KB.
+3. **Whether responses should carry `ETag` and `Cache-Control`.** Bodies are already byte-identical per
+   revision, so conditional requests would be nearly free — but caching correctness across a rescan
+   needs a revision identifier a client can see.
+4. **Whether `/scan` should be asynchronous**, returning a job identifier a client polls, rather than
+   holding the connection for the whole build.
+5. **A `getNodesWithRole(role)` accessor on the Graph API.** Still ~2,300 of the first read's reads.
+6. **Whether the scanner should read sibling workspace packages' sources**, so package dependencies stop
+   being empty on every monorepo.
+7. Carried forward: incremental scanning; four narrow Query Engine operations; a batch node accessor;
+   `SourceRange` to `@traceiq/types`; a property or member-access relationship; interface dispatch as a
+   relationship; a multi-link `this` unresolved reason; property-initializer constructions; mount
+   annotations for route prefix composition.
+
+### Next Milestone
+
+Awaiting instruction. The frontend, the AI Context Builder and Repository Chat are all explicitly not
+started.
+
+## TraceIQ CLI
+
+**Status:** complete. `pnpm build` clean, `pnpm typecheck:tests` clean, `pnpm test`
+1,496 passing across 51 files (74 in the CLI).
+
+### Completed Work
+
+New `apps/cli` — the `traceiq` command — with all fifteen subcommands, and new `@traceiq/pipeline`,
+which owns the write path.
+
+**The CLI contains zero analysis logic.** It parses a command line, opens a graph, calls one
+capability and renders the result. Every number it prints was computed below it.
+
+### The conflict this milestone opened with, and how it was resolved
+
+`traceiq scan` must build and store the graph, which needs the scanner, project host, IR, resolver,
+framework extractor, call graph, graph builder and store — all of which the CLI was forbidden to
+import. Worse, **every read command** needs to open the stored graph, and the only
+`RepositoryGraphApi` implementation lives in `@traceiq/graph`, also forbidden. The conflict covered all
+fifteen commands, not just one.
+
+Resolved by asking, and by the answer chosen: a new `@traceiq/pipeline` package owns `scan` and `open`
+and hands back an abstract `RepositoryGraphApi`. It clears the two-future-consumer bar — the REST API
+and the AI Context Builder both need exactly this, and neither should re-wire nine packages either.
+
+### Self Review
+
+| Criterion | Finding |
+|---|---|
+| API design | `run(argv, io)` is a function returning an exit status. No `process.exit`, no globals, so the whole CLI is testable by calling it. |
+| Code reuse | Every command delegates. The CLI's only contribution is rendering. |
+| Performance | Cold scan 1.45 s; every read command 0.13–0.24 s, one graph read per invocation. |
+| Error handling | Eight codes, three exit statuses, fixed wording, stderr only. A usage error opens no graph. |
+| Output consistency | One `Listing` shape renders one way everywhere; every cap prints its true total; every result's limitations are printed. |
+| Documentation | README covers architecture, a command reference, examples, output rules, errors, performance and limitations. |
+| Boundary violations | None in code. `better-sqlite3` and `ts-morph` are in the installed closure through the pipeline and must be — stated rather than glossed. |
+
+### Defects Found and Fixed During Review
+
+| Defect | Fix |
+|---|---|
+| **The profile reported a meaningless `cache hits: 0`.** Each capability keeps its own cache under the CLI's shared one, so repeats are absorbed a level down and never reach the outer counter. A zero read as "the cache is not working". | Report distinct database reads only, and say in the code why a hit rate cannot be measured at that layer. |
+| **The reuse test asserted an unobservable property** — that hits exceed reads. | Replaced with one that is observable and meaningful: `symbol` drives three capabilities and costs fewer reads than running them as separate commands. |
+
+### Real Repository Validation — every command against TraceIQ
+
+190 files, 2,448 declarations, 2,662 nodes, 10,492 edges, 2,674 call edges.
+
+| Command | Wall clock | Reads | Result |
+|---|---|---|---|
+| `scan` | **1.45 s** | — | 190 files, 2,448 declarations, 9,608 unbound calls |
+| `overview` | 0.20 s | 2,484 | coverage 0.2177, max depth 4, 685 isolated declarations |
+| `architecture` | 0.20 s | 2,868 | Class 47, Interface 196, Function 367, Method 264, Variable 428 |
+| `packages` | 0.18 s | 2,484 | **19 packages**, largest `packages/explorer` at 363 declarations |
+| `package` | 0.22 s | 2,484 | `packages/health`: 14 files, 308 declarations |
+| `file` | 0.20 s | 2,487 | per-file declarations, imports, externals |
+| `symbol` | 0.24 s | 3,357 | `format.ts#table`: 23 callers, 2 callees, 27 references |
+| `impact` | 0.18 s | 886 | `format.ts#heading`: 27 direct, 3 indirect, 136 unknown |
+| `routes` | **0.13 s** | **1** | 0 — TraceIQ registers no Express routes |
+| `route` | — | — | covered by the pipeline fixture, which has a real chain |
+| `health` | 0.20 s | 2,484 | full metrics and findings |
+| `search` | 0.21 s | 2,484 | `render` → 21 declarations |
+| `dependencies` | 0.25 s | 2,588 | `packages/explorer`: closure 80, component 100 |
+| `cycles` | 0.19 s | 2,484 | 17 call cycles, largest 2 |
+| `hotspots` | 0.20 s | 2,484 | largest fan-in 63 — `explorer/src/types.ts#Listing` |
+
+Largest output: `health` at 7.2 KB. Every read command is a fresh process paying its own start-up.
+
+### Files
+
+Created: `packages/pipeline/` — `types.ts`, `repository-pipeline.ts`, `index.ts`, `package.json`,
+`tsconfig.json`. `apps/cli/` — `types.ts`, `errors.ts`, `format.ts`, `render.ts`, `session.ts`,
+`commands.ts`, `cli.ts`, `index.ts`, `bin/traceiq.js`, `cli.test.ts`, `pipeline.test.ts`,
+`package.json`, `tsconfig.json`, `README.md`.
+
+Modified: root `README.md`, `tsconfig.json`, `tsconfig.tests.json`, `vitest.config.ts`. **No analysis
+package changed.**
+
+### Decisions
+
+| Decision | Reason |
+|---|---|
+| `@traceiq/pipeline` owns scan and open | The only way the CLI can build and read a graph without importing nine forbidden packages. Reused by the REST API and the context builder next. |
+| `run(argv, io)` returns a status | A function, not a script: nothing exits the process, nothing is global, and the whole CLI is testable by calling it. |
+| One `CachingGraph` per invocation, capabilities built lazily | A command driving three capabilities reads the database once; a command needing none of them reads nothing. |
+| A fixed revision timestamp | Two scans of one repository produce identical databases. Nothing reads it back, so reproducibility costs nothing. |
+| Three exit statuses, not one | A script can tell "I typed it wrong" from "it is not there". |
+| Hand-written argument parsing | The grammar is two options and a verb; a dependency for that would be a larger surface than the thing it parses. |
+| Profile reports reads, not a hit rate | The inner caches make a hit rate unmeasurable at this layer; reporting one would mislead. |
+| No timing in any output | Output must be byte-identical for identical input. |
+
+### Known Limitations
+
+- **A scan is a full rebuild**; there is no incremental update.
+- **One repository per database**, selected with `--db`.
+- **Terminal lists cap at 20 rows** with the true total shown; the CLI does not page.
+- **`better-sqlite3` and `ts-morph` are in the installed closure** through the pipeline, and must be.
+  No SQLite or compiler concept reaches CLI code.
+- Everything inherited from below — uncomposed route prefixes, partial call coverage, `INFERRED`
+  calls, no interface dispatch, path-derived packages, cross-package imports outside the analysed set
+  — each printed in the `Limitations` section of the command it affects.
+
+### Approvals Needed Before the REST API
+
+1. **Whether `@traceiq/pipeline` should gain incremental scanning.** A full rebuild is 1.45 s here and
+   will not stay that way; an HTTP surface will want to re-scan without blocking.
+2. **Whether the scanner should read sibling workspace packages' sources**, so package dependencies
+   stop being empty on every monorepo. Carried forward and now visible in `traceiq packages`.
+3. **A `getNodesWithRole(role)` accessor on the Graph API.** About 2,300 of every command's 2,484
+   baseline reads are `getRoles`.
+4. **Whether the CLI should gain `--json`.** An HTTP surface will need the same results as data, and
+   the capability results are already plain JSON-safe objects — but it doubles the output surface, so
+   it is not added unilaterally.
+5. **Whether the Framework Extractor should emit mount annotations**, the only route to composed paths.
+6. Carried forward: four narrow Query Engine operations; a batch node accessor; `SourceRange` to
+   `@traceiq/types`; a property or member-access relationship; interface dispatch as a relationship; a
+   multi-link `this` unresolved reason; property-initializer constructions.
+
+### Next Milestone
+
+TraceIQ REST API.
+
+## Repository Navigation
+
+**Status:** complete. `pnpm build` clean, `pnpm typecheck:tests` clean, `pnpm test`
+1,422 passing across 49 files (101 in this package).
+
+### Completed Work
+
+New `@traceiq/navigation`: `RepositoryNavigator` with four operations — `explainRoute`, `routes`,
+`architecture`, `dependencies` — plus `profile`. It combines Explain Route, Architecture Explorer and
+Dependency Explorer into one layer that every future interface consumes.
+
+**Explain Route** takes a method and path — `{ method: 'GET', path: '/users/:id' }` — or an identifier,
+composes the frozen `route:<METHOD>:<path>` identity and **looks it up** rather than trusting it. It
+returns the chain in running order with the whole `ExplainSymbolResult` per handler, the controller,
+service and repository reached with their depths, dependencies, environment variables, external
+packages, impact, call-graph and health summaries, the handlers that could not be linked, and the path
+composition state.
+
+**Architecture navigation** adds four trees: `architectureTree` (roles then kinds), `packageTree`
+(package → file → declaration), `roleTree` (role → package → declaration) and `dependencyTree`
+(package → package with edge counts).
+
+**Dependency navigation** accepts a package, a file, a declaration or a route, adds the three
+relationship graphs separated by type, and merges per-node answers rather than re-walking.
+
+### Architecture decision requiring note
+
+**One graph read for the whole layer.** `RepositoryExplorer` is constructed over navigation's own
+`CachingGraph`, so the explorer's cache delegates here on a miss and only the explorer builds a
+whole-graph index. Navigation never builds a second one — asserted: `getNodes` is called 16 times and
+`getEdges` 13 times, not twice that.
+
+**Impact Analysis and Repository Health are reused through Repository Explorer, not directly**, which
+is why they are not direct dependencies. Constructing either here would build a second cache and a
+second index over the same revision.
+
+No new infrastructure package was introduced, and no frozen package changed.
+
+### Self Review
+
+| Criterion | Finding |
+|---|---|
+| Architecture | Four operations, five runtime dependencies, all repository intelligence packages. |
+| Reuse | Verified by test: a repeated operation reads **nothing** from the database, and the index is built once. |
+| Performance | 72 ms cold for the first operation, 5.45 ms warm; every other operation 0.04–22.9 ms. |
+| API consistency | Every list is a `Listing` with `total` and `truncated`; `null` for a subject the graph lacks; identifier-or-name selectors throughout. |
+| Duplicate traversals | None. Navigation performs no traversal of its own — it asks the explorer, which owns the closures. |
+| Duplicate assembly | **Found and fixed:** the architecture response embedded the explorer's `ArchitectureView` *and* restated it as `architectureTree`. |
+| Documentation | README covers the public API, architecture, route model, architecture model, dependency model, performance, examples and limitations. |
+| Edge cases | Empty repository, no routes at all, a route whose whole chain is unlinked, a single-package repository — all covered. |
+| Large repositories | A 12-package monorepo with a dependency ring and a 400-symbol file for cap behaviour. |
+| Monorepos | The package unit is path-derived; cross-package edges are recovered wherever an import targets an in-repository declaration, and reported as a limitation where it cannot be. |
+
+### Defects Found and Fixed During Review
+
+| Defect | Fix |
+|---|---|
+| **A role sat on a container while reach landed on its members**, so `repositories` was empty for a route that plainly calls `UserRepository.load` — the role is on the class, the reach on the method. Found by a failing test asserting the obvious. | A role-bearing declaration counts as reached when any of its own members is, at that member's depth, read from the frozen `sym:<path>#<chain>` identity. |
+| **Wrapping an already-capped explorer list lost its true total.** The architecture tree reported 100 functions for a 400-function repository, and the role tree reported 100 tests where the repository has 177. | Added `mapListing`, which transforms entries while keeping `total` and `truncated`. Both trees now report true totals. |
+| **The architecture response duplicated itself** — the explorer's `ArchitectureView` embedded alongside `architectureTree`, which carries the same declarations. 766 KB on this repository. | The explorer's grouping is used to build the trees and not re-emitted. Response dropped to **343 KB**. |
+| **A route's environment variables covered only the immediate handlers**, so a handler delegating to a service reading `JWT_SECRET` reported none — inconsistent with `services` and `repositories` being reach-based. | Environment variables are now reach-based too. |
+| **The same role→nodes mapping was written three times** across the route explanation, the architecture tree and the role tree. | One `roleGroupsOf` helper, written as a literal so a new role in the vocabulary is a compile error rather than a silently missing group. |
+| **`@traceiq/health` and `@traceiq/impact` were declared as runtime dependencies but never imported.** | Removed. They are reused through the explorer, which is the correct direction. |
+
+### Real Repository Validation — TraceIQ itself
+
+| | Value |
+|---|---|
+| Largest package | `packages/explorer` — 13 files, **363 declarations** |
+| Largest dependency graph | 518 nodes, 2,291 `IMPORTS`/`EXPORTS` edges |
+| Largest route chain | **0** — TraceIQ registers no Express routes; the pipeline fixture covers a real 2-link chain |
+| Largest middleware chain | 0, same reason |
+| Largest architecture group | `Variable` — **414** declarations; then `Function` 321, `Method` 249, `Interface` 186, `Test` 177 |
+| Largest dependency closure | `packages/explorer` — **112** nodes |
+| Largest navigation tree | `packageTree` — 268 KB over 17 packages |
+| Largest response | `architecture` — **343 KB** (was 766 KB before the duplication fix) |
+| Cold `architecture` | **72.1 ms**, 2,703 graph reads, 215 explorer calls |
+| Warm `architecture` | **5.45 ms** |
+| `dependencies` | declaration 7.67 ms · file 1.87 ms · package 22.9 ms |
+| Cross-package edges | **0** — every inter-package import resolves outside the analysed set |
+| Determinism | byte-identical across calls and across instances |
+
+### Files
+
+Created: `packages/navigation/` — `types.ts`, `limitations.ts`, `navigation-context.ts`,
+`route-explanation.ts`, `trees.ts`, `dependency-navigation.ts`, `repository-navigator.ts`,
+`index.ts`, `fake-graph.test-helper.ts`, `repository-navigator.test.ts`, `pipeline.test.ts`,
+`package.json`, `tsconfig.json`, `README.md`.
+
+Modified: root `README.md`, `tsconfig.json`, `tsconfig.tests.json`, `vitest.config.ts`.
+
+### Decisions
+
+| Decision | Reason |
+|---|---|
+| One `CachingGraph`, with the explorer built over it | The database is read once for the whole layer and only one whole-graph index exists. |
+| Impact Analysis and Repository Health reached through the explorer | Constructing them here would duplicate the cache and the index over one immutable revision. |
+| A route is looked up, never trusted | Composing an identity is not evidence a route exists. An unregistered path yields `null` rather than an invented answer. |
+| Prefix composition reported, never guessed | `effectivePath` equals the written path and `composed` is `false`, with a limitation naming it. |
+| A role counts as reached through its members | Roles annotate containers; reach lands on whichever member is called. Requiring the container itself made the field silently empty. |
+| Role reach follows coupling, not calls alone | A dependency wired by construction rather than an immediate call would otherwise be missed, and call coverage is itself partial. Stated as a limitation. |
+| Trees carry `TreeRef`, not whole nodes | A tree is a navigation index; carrying every field would multiply a repository-wide tree into hundreds of kilobytes the caller has not asked for. |
+| The explorer's grouping builds the trees and is not re-emitted | Embedding it would state the same declarations twice in one response. |
+| A route subject covers its handlers | A route has no dependencies of its own — what it depends on is what its chain depends on. |
+| A package subject covers its files | A package is a derived grouping rather than a node. |
+| Merging, not re-walking | Shortest depth wins where two files reach the same node, and a shared cycle is reported once. |
+| No timing in any response | Responses must be byte-identical for identical input. |
+
+### Known Limitations
+
+- **Route prefix composition is unsupported**, always reported.
+- **A member-expression handler cannot be linked**, so a chain can be shorter than the code registers;
+  the unlinked handlers are listed rather than omitted.
+- **Role reach follows coupling**, and **roles are judgements**.
+- **Call coverage is partial** with no interface or dynamic dispatch, so chains, closures and cycles are
+  lower bounds.
+- **The package boundary is derived from paths.**
+- **Cross-package imports resolve outside the analysed set** on this repository, so `dependencyTree`
+  reports zero cross-package edges.
+- **Lists cap at 100**, with true totals alongside.
+- **`architecture` is 343 KB**, dominated by `packageTree` over 1,993 declarations.
+
+### Approvals Needed Before the Next Milestone
+
+1. **Whether the scanner should read sibling workspace packages' sources**, or the Resolver map a
+   workspace specifier to the in-repository package. Without one, `dependencyTree` and package
+   dependencies are empty on every monorepo — now the most visible gap, since it is a headline field of
+   this milestone.
+2. **A `getNodesWithRole(role)` accessor on the Graph API.** Still the dominant cold-start cost.
+3. **Whether the Framework Extractor should emit mount annotations**, which is the only way route prefix
+   composition can ever work. Until then every route path is reported local.
+4. **Whether a response-shape option belongs on the read layer** — identifiers instead of full nodes —
+   to bring the largest responses down.
+5. Carried forward and still open: four narrow Query Engine operations; a batch node accessor; moving
+   `SourceRange` to `@traceiq/types`; a property or member-access relationship; interface dispatch as a
+   relationship; a new `UNRESOLVED_CALL_REASONS` value for a multi-link `this` chain; property-initializer
+   construction tracking.
+
+### Next Milestone
+
+TraceIQ CLI.
+
+## Repository Explorer
+
+**Status:** complete. `pnpm build` clean, `pnpm typecheck:tests` clean, `pnpm test`
+1,321 passing across 47 files (142 in this package).
+
+### Completed Work
+
+New `@traceiq/explorer`: `RepositoryExplorer` with ten navigation operations — `overview`,
+`browseFile`, `browseSymbol`, `browsePackages`, `browsePackage`, `dependencies`, `architecture`,
+`cycles`, `hotspots`, `search` — plus `profile` for measurement. This is the read layer every future
+interface consumes.
+
+**It reuses rather than reimplements.** Explain Symbol assembles a symbol and is carried **whole** on
+`SymbolView.explain` rather than re-flattened. Impact Analysis supplies the dependents closure.
+Repository Health supplies the whole-graph index, coupling metrics, components and algorithms. The
+Query Engine supplies routes, references, callers and callees, and `parseRouteId` reads route
+identity. The only traversal written here is the **forward** closure, which no existing capability
+performs.
+
+**One memoising graph adapter.** `CachingGraph` wraps the Graph API, and all four reused capabilities
+are constructed over that one instance — so three capabilities reading the same node cost one read.
+Caching is sound because every wrapped operation is a pure read of one immutable revision.
+
+### Architectural decision requiring note
+
+**The package unit is derived, and every response that uses it says so.** The graph records no package
+boundary — the specification omits `Repository` and `Directory`, and `packageJsonPath` never reaches
+the graph — so a package is the first two segments of a file path, one fixed rule with no hardcoded
+directory names and no configuration. Chosen in answer to a question put before implementation.
+
+No new infrastructure package was introduced, and no frozen package's responsibilities moved.
+
+### Self Review
+
+| Criterion | Finding |
+|---|---|
+| Architecture | Ten operations, one class, six runtime dependencies — exactly the allowed layers. |
+| Correctness | **A NUL byte in a composite key silently broke package dependency detection.** See below. |
+| Duplication | `mostCoupled` and `mostConnectedDeclarations` computed the **same measure**; they now count distinct neighbours and total relationships respectively. Dead code — `void` placeholders, unused re-exports and needlessly nested functions — removed from `views.ts`. |
+| Performance | 40 ms cold for the first operation, then 0.06–2.34 ms. The whole graph is read once per instance, never once per operation. |
+| Determinism | Byte-identical across repeated calls and across two explorers over one database. No timing in any response. |
+| Documentation | README covers purpose, public API, architecture, navigation model, package unit, performance, examples, determinism, limitations and testing. |
+| API consistency | Every list is a `Listing` with `total` and `truncated`; every "not that kind of thing" is `null`; every node carries its full `GraphNode` so any result navigates to any operation. |
+| Code reuse | Verified by test: `browseSymbol` drives three capabilities and a second call adds zero graph reads. |
+| Dead code | Removed as above. |
+| Boundary violations | None. `better-sqlite3` absent from the runtime closure; no Project Host, Resolver or Graph Builder import. |
+
+### Defects Found and Fixed During Review
+
+| Defect | Fix |
+|---|---|
+| **A literal NUL byte in five source lines**, from my own authoring. In `explorer-context.ts` the package key was built as `` `${from}\0${to}` `` and split on `' '`, so **every package dependency and dependent silently read zero**. The other four were opaque cache keys where NUL is harmless — but a NUL makes the file binary to `grep`, which is how it stayed invisible. | The composite string key is gone: `crossingEdges` is now a nested `from → to → edges` map, so there is nothing to encode or split. The remaining separators are written as the `\u0000` escape, keeping the files text while retaining a separator that cannot occur in a path. Verified no source file in the workspace contains a NUL. |
+| **Two hotspot measures were identical.** `mostCoupled` and `mostConnectedDeclarations` both ordered by `fanIn + fanOut`. | `mostCoupled` counts distinct neighbours; `mostConnected*` counts total relationships. They now give genuinely different answers — the second surfaces files with many repeated relationships. |
+| **Dead code in `views.ts`** — `void` placeholders, an unused re-export line, and section builders needlessly nested inside `overviewOf`. | Removed; the four summary builders are now top-level functions taking the health report. |
+| **Package dependency zeros looked like a bug.** On TraceIQ every inter-package import resolves to `ext:outside-analysis`, because sibling packages resolve through `dist/` which the scanner excludes. | Added `cross-package-imports-resolve-outside-analysis` as a reported limitation carrying the count, so a zero reads as an explained fact. A fixture test proves the mechanism works when an import targets an in-repository declaration. |
+
+### Real Repository Validation — TraceIQ itself
+
+| | Value |
+|---|---|
+| Overview | 163 files, 1,993 declarations, 2,180 nodes, 8,328 edges |
+| Packages | **16** derived, largest `packages/health` and `packages/explorer` at 308 and 320 declarations |
+| Largest dependency graph | 518 nodes, 2,291 `IMPORTS`/`EXPORTS` edges |
+| Largest call graph | 464 nodes, 1,808 `CALLS` edges, coverage 21.5% |
+| Largest SCC | **2** nodes — the repository has no large tangle |
+| Cycles | 16 call cycles (14 of them one-node), 0 import, 0 reference, 0 inheritance |
+| Largest fan-in | **63** — `explorer/src/types.ts#Listing` |
+| Largest fan-out | **13** — `explorer/src/search.ts#searchOf` |
+| Most connected file | `graph/src/graph-builder.test.ts`, 25 relationships |
+| Largest file | `health/src/graph-index.ts`, 43 declarations |
+| Largest declaration | `health/src/graph-index.ts#GraphIndex`, fan-in 29 |
+| Largest search result | `role: 'Test'` → 164 declarations; `path: 'packages/health'` → 308 |
+| Largest explorer response | `architecture` 420 KB, `hotspots` 412 KB; `overview` 4.6 KB |
+| Cold first operation | 40.4 ms, 2,078 Graph API calls |
+| Every later operation | 0.06–2.34 ms |
+| Determinism | byte-identical across calls and across instances |
+
+### Files
+
+Created: `packages/explorer/` — `types.ts`, `caching-graph.ts`, `explorer-context.ts`, `listing.ts`,
+`views.ts`, `search.ts`, `limitations.ts`, `repository-explorer.ts`, `index.ts`,
+`fake-graph.test-helper.ts`, `repository-explorer.test.ts`, `search.test.ts`, `pipeline.test.ts`,
+`package.json`, `tsconfig.json`, `README.md`.
+
+Modified: `packages/health/src/graph-index.ts` (two literal NUL bytes replaced by the `\u0000`
+escape — no behaviour change, and a frozen package left textually greppable); root `README.md`,
+`tsconfig.json`, `tsconfig.tests.json`, `vitest.config.ts`.
+
+### Decisions
+
+| Decision | Reason |
+|---|---|
+| One memoising Graph API adapter shared by every reused capability | Reuse would otherwise cost one full graph read per capability. Sound because every wrapped operation is a pure read of one immutable revision. |
+| Reuse Repository Health's index and algorithms rather than writing a second copy | The alternative is duplicated traversal logic, which the milestone forbids and which would drift. |
+| `SymbolView` carries the whole `ExplainSymbolResult` | Re-flattening it would duplicate assembly and let the two answers diverge. The explorer adds only what Explain Symbol does not: children, impact and health summaries, and the package. |
+| Shared state is lazy and per-instance | An operation that needs no index pays for none; an instance is a snapshot of one revision, so repeated calls are identical by construction. |
+| A composite key is a nested map, never an encoded string | The one encoded key in this package silently returned zeros for a whole section. Nested maps cannot be mis-split. |
+| Every list is a `Listing` with `total` and `truncated` | A cap must never be silent, and one shape across every operation makes the API predictable. |
+| `null` for the wrong kind of identifier | A hollow response would claim nothing is recorded when the truth is that this is not that kind of thing. |
+| `profile` wraps rather than instruments | Keeps ten operations free of profiling concerns, and measures what reached the graph after caching rather than what was asked for. |
+| No timing in any response | Elapsed time differs between runs; responses must be byte-identical. |
+| Search is case-sensitive | Case folding is a second rule to get wrong, and the milestone asks for exact and prefix only. |
+| An empty query matches nothing | Returning the whole repository for `{}` would be an accident, not a search. |
+
+### Known Limitations
+
+- **The package boundary is derived from paths**, not recorded.
+- **Cross-package imports may resolve outside the analysed set**, so package dependency counts are
+  zero on TraceIQ. Reported as a limitation with its count.
+- **A call cycle may be false self-recursion** — the multi-link `this` chain defect, carried forward.
+- **The connected component can span the repository**: 1,662 of 2,180 nodes here. It says what is
+  reachable, not what is cohesive.
+- **A file rarely has incoming relationships**, since `IMPORTS` targets declarations.
+- **Lists cap at 100**, with the true total alongside.
+- **`architecture` and `hotspots` responses are ~420 KB**, dominated by capped lists of full nodes.
+- Everything inherited from below: partial call coverage, `INFERRED` calls, no interface or dynamic
+  dispatch, no property or member-access relationship.
+
+### Approvals Needed Before the Next Milestone
+
+1. **A `getNodesWithRole(role)` accessor on the Graph API.** About 1,900 of the explorer's 2,078
+   cold-start calls are `getRoles`, one per declaration. This is now the dominant cost of the read
+   layer as well as of Repository Health.
+2. **Whether the scanner should read sibling workspace packages' sources**, or the Resolver should map
+   a workspace specifier to the in-repository package. Without one of these, no monorepo can report
+   package-to-package dependencies — the single largest gap in the explorer's output.
+3. **Whether a response-shape option belongs on the explorer** — for example returning identifiers
+   instead of full nodes — to bring `architecture` and `hotspots` below ~420 KB. It would make the API
+   larger, so it is not done unilaterally.
+4. **Four narrow Query Engine operations**, carried forward and still open.
+5. **A batch node accessor on the Graph API**, carried forward.
+6. **Moving `SourceRange` to `@traceiq/types`**, carried forward — `ts-morph` remains in the runtime
+   closure of every graph reader, including this one.
+7. **A property or member-access relationship**, carried forward.
+8. **Interface dispatch as a graph relationship**, carried forward.
+9. Carried forward: a new `UNRESOLVED_CALL_REASONS` value for a multi-link `this` chain — which is what
+   produces the false self-recursion above — and whether property-initializer constructions should be
+   tracked.
+
+### Next Milestone
+
+Repository Navigation.
+
+## Repository Health
+
+**Status:** complete. `pnpm build` clean, `pnpm typecheck:tests` clean, `pnpm test`
+1,179 passing across 44 files (131 in this package).
+
+### Completed Work
+
+New `@traceiq/health`: `new RepositoryHealthAnalyzer(graphApi).analyze()` →
+`RepositoryHealthReport`. One method, no arguments. Ten sections — summary, architecture,
+dependency health, call graph health, routing, environment, findings, metrics, limitations and
+analysis statistics — every one derived from the graph as it stands.
+
+**One pass over the graph.** `buildGraphIndex` is the only code that touches it: `getNodes` per node
+kind, `getEdges` per relationship type, `getRoles` per declaration, `getUnresolved` once. Everything
+after is a function of that index plus a `Derived` bundle of shared values, so no section can
+re-traverse. Graph API calls are `16 + 13 + 1 + declarations` — fixed in the vocabularies and linear
+in declarations, never in edges or findings.
+
+**No Query Engine operation was added, and no existing module changed.**
+
+### Architectural decision requiring note
+
+**Health reads the Graph API, not the Query Engine.** It is the one capability that must read the
+*whole* graph — a count of classes, a fan-in distribution and a dependency cycle are statements about
+every node and every edge — and no Query Engine operation enumerates. The Graph API is the abstract
+read model, explicitly designed so a reader depends on it without SQLite entering its dependency
+tree, and it is not in the milestone's forbidden list. Consumed through a four-operation
+`HealthGraph` interface. `@traceiq/query` is used for exactly one thing: `parseRouteId`.
+
+No new infrastructure package was introduced. `graph-algorithms.ts` stays local because nothing else
+in the workspace needs strongly connected components today.
+
+### Self Review
+
+| Criterion | Finding |
+|---|---|
+| Correctness | **Two defects found by running against TraceIQ itself** — see below. |
+| Architecture | One package, one class, one method; four-operation consumed interface. |
+| Determinism | Identifier-ordered reads, documented sorts with identifier tiebreaks, no timing in the report. Byte-identical across runs. |
+| Duplicate work | `Derived` exists for this: call components, coupling metrics, module dependency graph and call depth each had two consumers and were being computed twice. Fixed during implementation. |
+| Repeated traversals | None after the index. Asserted by a call-counting fake. |
+| API simplicity | `analyze()`. No options, no thresholds to configure. |
+| Unnecessary abstractions | `metricOf` was duplicated between `sections.ts` and `derived.ts`; removed. |
+| Documentation | README covers architecture notes, analysis strategy, category descriptions, metric definitions, cycle handling, duplicate elimination, complexity and limitations. |
+| Naming | `REFERENCE_TYPES` names the containment exclusion rather than hiding it in a filter. |
+| Test quality | 131 tests: algorithms directly, sections against a known-shape graph, stress, determinism, five unusual repositories, and a pipeline test over a deliberately unhealthy fixture. |
+| Edge cases | Empty repository, single file, all-isolated, pure cycle, file with no declarations — all covered, all returning zeroes rather than `NaN`. |
+| Cycle handling | Iterative Tarjan; 50,000-node stress tests. |
+| Performance | ~37 ms on this repository. The one inefficiency is `getRoles` — see below. |
+
+### Defects Found and Fixed During Review
+
+| Defect | Fix |
+|---|---|
+| **Containment counted as a reference.** `DECLARES` was in the coupling index, so every member had an incoming edge from its own container: `isolated` was 0, `withoutIncoming` was 0 and `fanIn.min` was 1 across the entire repository — nothing could ever read as unreferenced. Every file's fan-out was also inflated by its declaration count. Found by running against TraceIQ and disbelieving the numbers, not by a test. | Added `REFERENCE_TYPES`, excluding `DECLARES` from coupling and from every reference-based finding while keeping it in the relationship totals. `isolated` went 0 → 464, `fanIn.min` 1 → 0, `fanOut.max` 22 → 13. |
+| **Findings carried uncapped node lists**, making the report 1.5 MB — one finding held 1,058 nodes. | Capped at `SAMPLE_LIMIT` with `nodeCount` and `truncated` alongside, so the cap is never silent. Report is now 438 KB. |
+| **Unreferenced counts were misleading without a caveat.** 1,079 of 1,685 declarations have no incoming reference, dominated by the 689 `Property` nodes — no relationship records a property or member access, so a property can *never* appear referenced. | Added the `property-references-not-recorded` limitation, carrying the count of unreferenced properties. |
+| **`metricOf` and the SCC computation were duplicated** across `sections.ts` and `findings.ts`. | Consolidated into `derived.ts`, computed once. |
+
+### Real Repository Validation — TraceIQ itself
+
+| | Value |
+|---|---|
+| Execution time | **~37 ms** |
+| Graph API calls | 1,715 — of which 1,685 are `getRoles`, one per declaration |
+| Graph size | 1,864 nodes, 7,254 edges, 6,969 unresolved references |
+| Files / declarations | 155 / 1,685 |
+| Declaration kinds | 689 Property, 335 Variable, 231 Function, 182 Method, 135 Interface, 46 TypeAlias, 37 Class, 24 Constructor, 6 Accessor |
+| Relationships | `CALLS` 1,808, `IMPORTS` 1,704, `DECLARES` 1,685, `REFERENCES_TYPE` 1,454, `EXPORTS` 587, `EXTENDS` 11, `IMPLEMENTS` 5 |
+| Call graph | 464 nodes, 1,808 edges, **coverage 20.6%**, 115 entry points, max depth 4 |
+| Call clusters | 41 components, largest 65, 2 singletons |
+| Cycles | 6 — four self-recursive functions and two mutual pairs, 8 declarations in total |
+| Largest fan-in | 29 — `health/src/graph-index.ts#GraphIndex` |
+| Largest fan-out | 13 — `RepositoryHealthAnalyzer.analyze` and a test fixture |
+| Most coupled file | `health/src/index.ts`, fan-out 45 |
+| Isolated declarations | 464 |
+| No incoming reference | 1,079 — dominated by 689 properties, which cannot be referenced in this model |
+| Metrics | 10.87 declarations per file, 2.00 references per declaration, density 0.0021, reference coverage 51% |
+| Externals | 7 npm, 12 TypeScript built-ins, 4 Node builtins; `vitest` imported by 45 files |
+| Determinism | byte-identical across runs; report 438 KB |
+
+The largest connected call cluster covering 65 of 464 call-graph nodes, against 41 components,
+matches a workspace of independent packages joined by a shared core.
+
+### Files
+
+Created: `packages/health/` — `types.ts`, `graph-index.ts`, `graph-algorithms.ts`, `derived.ts`,
+`sections.ts`, `findings.ts`, `limitations.ts`, `statistics.ts`, `repository-health-analyzer.ts`,
+`index.ts`, `fake-graph.test-helper.ts`, `graph-algorithms.test.ts`,
+`repository-health-analyzer.test.ts`, `pipeline.test.ts`, `package.json`, `tsconfig.json`,
+`README.md`.
+
+Modified: root `README.md`, `tsconfig.json`, `tsconfig.tests.json`, `vitest.config.ts`.
+
+### Decisions
+
+| Decision | Reason |
+|---|---|
+| Reads the Graph API rather than the Query Engine | No Query Engine operation enumerates nodes or edges, and health is a statement about all of them. The Graph API is the read abstraction and carries no storage concept. |
+| One index, then pure computation | Makes re-traversal impossible rather than merely discouraged, and gives every section one consistent snapshot. |
+| Containment excluded from coupling | A class declaring a method is not a reference to it. Including it made every declaration look referenced. |
+| No overall health score | A single number would be a judgement dressed as a measurement, and the milestone forbids scoring. |
+| "High" fan-in is the repository's own p90 | A fixed threshold would be a guess. A percentile of the measured distribution is a fact, and a uniformly connected repository correctly produces no such findings. |
+| `maxCallDepth` is shortest-from-a-root, maximised | Longest path is not polynomial on a cyclic graph. A metric that cannot be computed exactly should not be reported as if it were. |
+| Percentiles use nearest-rank | Every reported figure is a value that actually occurs, rather than an interpolation between two. |
+| Module dependency graph is projected through `fileId` | `IMPORTS` targets declarations, so file cycles are almost never `File → File` edges. The projection recovers the graph engineers mean without inventing a relationship. |
+| A finding's confidence is the weakest observed among the relationship types it rests on | A finding about calls can be no stronger than the call graph. Nothing is aggregated per edge, which the graph specification forbids. |
+| Aggregated findings for many comparable nodes, per-occurrence for specific ones | A thousand "never referenced" findings would bury the report; one cycle per finding is exactly right. |
+| `statistics` carries no timing | Elapsed time differs between runs and the report must be byte-identical. Timing is measured around `analyze`. |
+| Iterative Tarjan | A health analyser meets the worst case; recursion would overflow on a deep chain. Stress-tested at 50,000 nodes. |
+
+### Known Limitations
+
+- **A reference absence is not proof of disuse** — dynamic access, framework entry points and
+  unresolved references all leave no edge.
+- **No property or member-access relationship exists**, so a property can never appear referenced.
+  689 property nodes dominate any unreferenced count on this repository.
+- **Call coverage is 20.6%** and every `CALLS` edge is `INFERRED`, so every call-graph figure is a
+  lower bound; clusters and depth understate how the code connects.
+- **Duplicate route identities collapse**; a duplicate is visible only as two handler edges at one
+  position.
+- **Module-level calls are attributed to files**, so files appear among callers.
+- **No history**, so no trend can be reported.
+- **`getRoles` is called once per declaration** — 1,685 of 1,715 Graph API calls — for want of a role
+  index.
+
+### Approvals Needed Before the Next Milestone
+
+1. **A `getNodesWithRole(role)` accessor on the Graph API.** 1,685 of 1,715 calls in a health run are
+   `getRoles`, to find 150 annotations. This is now the dominant cost of two capabilities — health
+   and the Query Engine's `findByRole` — and is the clearest remaining performance item.
+2. **Four narrow Query Engine operations**, carried forward and still open: `findRoutesFor(id)`,
+   `findEnvironmentVariablesFor(id)`, `findDependenciesFor(fileId)` and `findUnresolvedFor(id)`, the
+   last needing an optional source filter on `getUnresolved()`. Worth ~48 ms per Explain Symbol and
+   per Impact Analysis call.
+3. **Whether a batch node accessor belongs on the Graph API.**
+4. **Whether `SourceRange` should move from `@traceiq/ir` to `@traceiq/types`**, removing `ts-morph`
+   from the runtime closure of every graph reader.
+5. **Whether a property or member-access relationship should be recorded.** Without one, 689 of this
+   repository's declarations can never appear referenced, which limits health, impact and explain
+   alike. The IR already records `memberAccesses`; nothing turns them into edges.
+6. **Whether interface dispatch should become a graph relationship**, carried forward.
+7. Carried forward: a new `UNRESOLVED_CALL_REASONS` value for a multi-link `this` chain, and whether
+   property-initializer constructions should be tracked.
+
+### Next Milestone
+
+Repository Explorer.
+
+## Impact Analysis
+
+**Status:** complete. `pnpm build` clean, `pnpm typecheck:tests` clean, `pnpm test`
+1,048 passing across 41 files (80 in this package).
+
+### Completed Work
+
+New `@traceiq/impact`: `new ImpactAnalyzer(queryEngine).analyze(id)` →
+`ImpactAnalysisResult | null`. Every requested field is present — target, directly and
+indirectly affected, callers, callees, type references, imports, routes affected, environment
+variables, external dependencies, unresolved relationships, confidence, provenance, known
+limitations — plus `statistics`, so a caller can see the shape and cost of the closure it got.
+
+**No Query Engine operation was added.** The traversal is one breadth-first walk along incoming
+edges using `findReferences` as the only primitive, which covers `CALLS`, `REFERENCES_TYPE`,
+`IMPORTS`, `EXPORTS`, `EXTENDS`, `IMPLEMENTS` and `HANDLED_BY` in one call per node. The four
+whole-collection queries are issued **once each** however large the closure grows, and
+`findRoutes` only when the walk actually passed a `HANDLED_BY` edge.
+
+**Direction.** The closure follows dependents. Callees are reported at depth 1 and never
+expanded: a callee does not break when the target changes, so its own callees are not affected.
+
+### Self Review
+
+| Criterion | Finding |
+|---|---|
+| Architecture | One package, one class, one method. Runtime deps are `query`, `graph-api`, `types`. |
+| Traversal correctness | Asserted against a fixture with a known closure — five nodes at depth 1, three at depth 2, one at depth 3. Inheritance and re-export propagation were **missing from the tests and were added** during review. |
+| Duplicate paths | Eliminated per node at shortest depth; edge-level fields keep every edge. Asserted. |
+| Cycle handling | Self-call, two-node cycle and import cycle all terminate; a node joins `visited` on discovery. Asserted. |
+| Deterministic ordering | Breadth-first FIFO, nothing sorted. 100 declarations analysed twice: 100 byte-identical. |
+| Explainability | Every affected node carries the edge that reached it, and `via.targetId` walks the path back to the target without storing paths. |
+| Performance | ~43 ms per analysis, of which the traversal is under 1 ms. Itemised below. |
+| API simplicity | `analyze(id)`. The consumed surface is an explicit seven-operation interface. |
+| Documentation | README covers traversal strategy, why DIRECT, why INDIRECT, why UNKNOWN, cycle handling and duplicate elimination, as specified. |
+| Missing tests | Inheritance (`EXTENDS`/`IMPLEMENTS`) and re-export (`EXPORTS`) propagation were absent. Added, four tests. |
+
+### Defects Found and Fixed During Review
+
+| Defect | Fix |
+|---|---|
+| **`UNKNOWN` was dominated by irrelevant noise.** Analysing `QueryEngine` produced 522 unresolved entries against a 7-node closure: a file joins the closure by importing the target and then contributes every unbound top-level call in it, which on a test-heavy repository is hundreds of `expect(...)` calls. Found by measuring against the real repository, not by the tests. | Added `scope: 'declaration' \| 'file'` to every entry, so the 6 that matter are separable from the 71 that do not, and a `file-level-unresolved-dominates` limitation that fires when files outnumber declarations. Nothing is dropped and no heuristic is applied. |
+| **The genuinely important `UNKNOWN` fact was missing entirely.** Unresolved references *elsewhere* in the repository could each have been an edge into the closure had they bound — that is what makes the affected set possibly incomplete — and nothing reported it. | Added `closure-may-miss-hidden-dependents`, carrying the repository-wide count. It cannot be attributed to a target without guessing, so it is a count rather than entries. |
+| **`filesOf` was computed twice** and the file set was rebuilt inside `#externalDependencies`. | Computed once in `analyze` and passed to both consumers. |
+
+### Measured on this repository
+
+| | Value |
+|---|---|
+| Per `analyze` | ~43 ms, ~6,220 Graph API calls |
+| `findUnresolved` share | 5,291 `getNode` calls, ~42 ms |
+| `findDependencies` share | ~833 calls, ~7 ms |
+| Closure traversal | 1 `findReferences` per node; under 1 ms |
+| Closure size over 200 declarations | min 1, median 3, max 19–30 |
+| Determinism | 100 analysed twice, 100 identical |
+
+Example — `AuthService.verify` three deep: DIRECT 10, INDIRECT 5, depths {1: 10, 2: 4, 3: 1}.
+
+### Files
+
+Created: `packages/impact/` — `types.ts`, `limitations.ts`, `dependents-closure.ts`,
+`impact-analyzer.ts`, `index.ts`, `fake-queries.test-helper.ts`, `impact-analyzer.test.ts`,
+`pipeline.test.ts`, `package.json`, `tsconfig.json`, `README.md`.
+
+Modified: root `README.md`, `tsconfig.json`, `tsconfig.tests.json`, `vitest.config.ts`.
+
+**No existing module changed.** No Query Engine operation was added, and no completed milestone
+was touched.
+
+### Decisions
+
+| Decision | Reason |
+|---|---|
+| The closure follows dependents only | A caller breaks when the target changes; a callee does not. Expanding callees would fill the result with declarations a change cannot reach. Callees are still reported at depth 1, as an edge list rather than as affected nodes, so the two ideas are not merged. |
+| `findReferences` is the only traversal primitive | It returns every incoming edge except `DECLARES`, so one call per node covers all seven propagating relationship types. Asking per-type would multiply queries for the same rows. |
+| A `File` is expanded like a declaration | A module-level call is attributed to its file, so a file really does depend on what those calls reach. Stopping at files would silently lose every top-level invocation's impact. Reported as the `file-level-attribution` limitation, since it is coarse. |
+| A `Route` is diverted, never expanded | Nothing references a route, so expanding one always finds nothing, and the category vocabulary puts every route reaching the declaration in `INDIRECT`. Keeping routes out of the affected-declaration lists is what stops the categories merging. |
+| `DECLARES` is not traversed | A class does not depend on its own member, so changing a method should not report its class as affected. Containment is a different question, answered by `findEnclosingDeclaration`. |
+| Depth is the shortest distance | Breadth-first gives it for free, and it is the only non-arbitrary choice when several paths reach a node. |
+| Duplicates eliminated per node, kept per edge | One affected node with the first edge that reached it; but "where are the call sites" needs every edge, so the edge-level fields keep them all. |
+| No confidence is aggregated along a path | The graph specification forbids recomputing confidence. Each edge carries its own, and the result carries the target's — combining them would invent a fact. |
+| `via` instead of a stored path | `via.targetId` is the node it was reached through, so a path back to the target is walkable at zero storage cost and with no risk of a stale copy. |
+| Its own limitation vocabulary, not shared with `@traceiq/explain` | The two report different things. One table serving both would grow codes that only ever apply to one, and coupling two capabilities to make nine strings shared is the wrong trade. |
+| No Query Engine operation added | The traversal needs none: `findReferences` suffices, and the whole-collection queries are reused rather than repeated. The 43 ms is inside the Query Engine, not in repeated traversal. |
+
+### Known Limitations
+
+- **No interface or dynamic dispatch.** An interface method with three implementations yields no
+  edge to any of them, so changing the interface method does not report them. The largest
+  correctness boundary, and no traversal can fix it — reported as a limitation on every result.
+- **~43 ms per analysis**, dominated by two Query Engine operations that hydrate the whole
+  repository before this package scopes them.
+- **Call coverage is partial** and every `CALLS` edge is `INFERRED`, so the closure can be
+  narrower than the code.
+- **No signature awareness.** Every dependent is reported for any change; the graph records no
+  parameter or return type, so "this change is source-compatible" cannot be expressed.
+- **Files are affected as a whole**, even when one top-level statement depends on the target.
+- **`externalDependencies` is file-scoped.**
+- **Containment is not followed**, deliberately.
+- **Route prefixes are not composed.**
+
+### Approvals Needed Before the Next Milestone
+
+1. **Four narrow Query Engine operations** — re-raised, and now the more pressing of the two
+   capabilities, since impact analysis is the natural thing to run over many declarations.
+   `findRoutesFor(id)`, `findEnvironmentVariablesFor(id)`, `findDependenciesFor(fileId)` — all
+   already supported by the Graph API — and `findUnresolvedFor(id)`, which additionally needs an
+   optional source filter on `getUnresolved()`. Takes one analysis from ~43 ms to about 1 ms.
+2. **Whether a batch node accessor belongs on the Graph API.** One `getNode` per edge is what
+   makes `findUnresolved` cost 5,291 reads.
+3. **Whether `SourceRange` should move from `@traceiq/ir` to `@traceiq/types`**, removing
+   `ts-morph` from the runtime closure of every graph reader.
+4. **Whether interface dispatch should become a graph relationship.** Today an interface method
+   call produces no edge, so impact analysis cannot report implementations. Recording candidate
+   implementations — as an `AMBIGUOUS` candidate group, which the vocabulary already supports —
+   would be the single largest improvement to impact accuracy. It is a Resolver change and well
+   outside this milestone.
+5. Carried forward, still open: a new `UNRESOLVED_CALL_REASONS` value for a multi-link `this`
+   chain, and whether property-initializer constructions should be tracked.
+
+### Next Milestone
+
+Repository Health.
+
 ## Explain Symbol
 
 **Status:** complete. `pnpm build` clean, `pnpm typecheck:tests` clean, `pnpm test`
@@ -122,7 +926,7 @@ Modified: `packages/query/src/query-engine.ts`, `types.ts`, `index.ts` and its t
 
 ### Next Milestone
 
-Impact Analysis — not started, awaiting approval.
+Impact Analysis.
 
 ## IR Expansion
 

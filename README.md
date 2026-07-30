@@ -30,6 +30,12 @@ Repository
   → Graph Store             SQLite
   → Query Engine            the only way features read the graph
   → Explain Symbol          every fact about one declaration
+  → Impact Analysis         what a change to one declaration reaches
+  → Repository Health       architectural health of the whole repository
+  → Repository Explorer     the read layer every interface consumes
+  → Repository Navigation   routes, architecture trees, dependency navigation
+  → TraceIQ CLI             the first production interface
+  → TraceIQ REST API        the HTTP interface every client consumes
   → Context Builder         minimal context for a question
   → AI Layer                answers
 ```
@@ -37,7 +43,8 @@ Repository
 ## Layout
 
 ```
-apps/api          HTTP surface                    not implemented
+apps/cli          the command-line interface       implemented
+apps/api          the REST API over HTTP           implemented
 apps/web          reserved, no UI milestone yet    not implemented
 packages/scanner  repository discovery             implemented
 packages/project-host  ts-morph Project owner      implemented
@@ -49,6 +56,11 @@ packages/graph-api the only read path to the graph implemented
 packages/graph    graph builder + SQLite store     implemented
 packages/query    query engine                     implemented
 packages/explain  every fact about one declaration implemented
+packages/impact   dependents closure for a change implemented
+packages/health   repository-wide health report    implemented
+packages/explorer the read layer: navigation API   implemented
+packages/navigation routes + architecture + deps   implemented
+packages/pipeline scan and open a stored graph     implemented
 packages/context  context assembly for the LLM     not implemented
 packages/shared   stable identifiers, path rules   implemented
 packages/types    domain vocabulary                implemented

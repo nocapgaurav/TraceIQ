@@ -1,0 +1,31 @@
+{
+  "name": "@traceiq/navigation",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@traceiq/explain": "workspace:*",
+    "@traceiq/explorer": "workspace:*",
+    "@traceiq/graph-api": "workspace:*",
+    "@traceiq/query": "workspace:*",
+    "@traceiq/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@traceiq/call-graph": "workspace:*",
+    "@traceiq/framework": "workspace:*",
+    "@traceiq/graph": "workspace:*",
+    "@traceiq/ir": "workspace:*",
+    "@traceiq/project-host": "workspace:*",
+    "@traceiq/resolver": "workspace:*",
+    "@traceiq/scanner": "workspace:*",
+    "@types/node": "^26.1.2"
+  }
+}

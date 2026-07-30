@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"]
+  },
+  "include": ["src"],
+  "exclude": ["**/*.test.ts", "**/*.test-helper.ts"],
+  "references": [
+    { "path": "../scanner" },
+    { "path": "../project-host" },
+    { "path": "../ir" },
+    { "path": "../resolver" },
+    { "path": "../call-graph" },
+    { "path": "../framework" },
+    { "path": "../graph-api" },
+    { "path": "../graph" }
+  ]
+}
