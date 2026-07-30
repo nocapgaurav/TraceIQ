@@ -3,6 +3,10 @@ dist/
 coverage/
 *.tsbuildinfo
 
+# Next's build output and the type shim it regenerates on every build.
+.next/
+next-env.d.ts
+
 # Per-repository knowledge graphs are generated artefacts, never committed.
 .traceiq/
 *.db

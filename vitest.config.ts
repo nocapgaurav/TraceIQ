@@ -5,8 +5,15 @@ const packageSource = (name: string): string =>
   fileURLToPath(new URL(`./packages/${name}/src/index.ts`, import.meta.url));
 
 /**
- * Tests run directly against package sources so `pnpm test` never depends on a
- * prior build. Aliases must be added here as each package is initialised.
+ * The backend suites.
+ *
+ * Tests run directly against package sources so `pnpm test` never depends on a prior build. Aliases must
+ * be added here as each package is initialised.
+ *
+ * **`apps/web` is excluded.** A component test needs jsdom, the React plugin and a DOM setup file, none
+ * of which belong in a Node suite — the web app carries its own `vitest.config.ts` for that, and the root
+ * `test` script runs both configs in turn. Without this exclusion the glob below would also match the web
+ * app's `.test.ts` files and run them in Node with no document.
  */
 export default defineConfig({
   resolve: {
@@ -28,11 +35,14 @@ export default defineConfig({
       '@traceiq/explorer': packageSource('explorer'),
       '@traceiq/navigation': packageSource('navigation'),
       '@traceiq/pipeline': packageSource('pipeline'),
+      '@traceiq/context': packageSource('context'),
       '@traceiq/cli': fileURLToPath(new URL('./apps/cli/src/index.ts', import.meta.url)),
       '@traceiq/api': fileURLToPath(new URL('./apps/api/src/index.ts', import.meta.url)),
     },
   },
   test: {
+    name: 'backend',
     include: ['{apps,packages}/*/src/**/*.test.ts'],
+    exclude: ['**/node_modules/**', 'apps/web/**'],
   },
 });

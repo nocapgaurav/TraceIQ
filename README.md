@@ -36,7 +36,8 @@ Repository
   → Repository Navigation   routes, architecture trees, dependency navigation
   → TraceIQ CLI             the first production interface
   → TraceIQ REST API        the HTTP interface every client consumes
-  → Context Builder         minimal context for a question
+  → Context Builder         what context belongs together for a question
+  → TraceIQ Web             seven pages over the REST API
   → AI Layer                answers
 ```
 
@@ -45,7 +46,7 @@ Repository
 ```
 apps/cli          the command-line interface       implemented
 apps/api          the REST API over HTTP           implemented
-apps/web          reserved, no UI milestone yet    not implemented
+apps/web          the Next.js web application      implemented
 packages/scanner  repository discovery             implemented
 packages/project-host  ts-morph Project owner      implemented
 packages/ir       syntax → language-independent IR implemented
@@ -61,7 +62,7 @@ packages/health   repository-wide health report    implemented
 packages/explorer the read layer: navigation API   implemented
 packages/navigation routes + architecture + deps   implemented
 packages/pipeline scan and open a stored graph     implemented
-packages/context  context assembly for the LLM     not implemented
+packages/context  deterministic context composition implemented
 packages/shared   stable identifiers, path rules   implemented
 packages/types    domain vocabulary                implemented
 ```

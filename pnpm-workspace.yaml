@@ -1,8 +1,17 @@
 packages:
   - 'apps/*'
   - 'packages/*'
-# better-sqlite3 ships a native addon and needs its install script to fetch or
-# compile the binding. pnpm blocks build scripts by default; this is the explicit
-# approval for the one dependency that requires it.
+# pnpm blocks dependency build scripts by default. These are the explicit approvals.
+#
+# better-sqlite3 ships a native addon and needs its install script to fetch or compile
+# the binding.
+#
+# esbuild ships a platform binary; vite and vitest cannot run without it, so the frontend
+# milestone needs its install script.
+#
+# sharp is Next's optional image optimiser. Approved so `pnpm install` exits clean rather
+# than erroring on an ignored build; no code here uses next/image.
 allowBuilds:
   better-sqlite3: true
+  esbuild: true
+  sharp: true

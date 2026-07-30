@@ -3,6 +3,234 @@
 Milestones are referred to by name rather than number, since the engineering
 contract does not restate the roadmap.
 
+## TraceIQ Web
+
+**Status:** complete. `pnpm --filter @traceiq/web build` clean,
+`pnpm --filter @traceiq/web typecheck` clean, `pnpm test` 1,645 backend + 170 web passing.
+
+### Completed Work
+
+New `apps/web`: Next.js 15 App Router, React 19, Tailwind v4, shadcn/ui over Radix, TanStack Query,
+Zustand, React Flow, Monaco. Seven pages — Dashboard, Explorer, Symbol, Impact, Architecture, Health,
+Search — plus a command palette, dark mode, a responsive shell and error boundaries.
+
+**The frontend imports no backend package.** There is no `@traceiq/*` dependency, no
+`transpilePackages` entry and no path mapping into `packages/`; the only contract is the REST surface.
+`src/types/api.ts` is a hand-written *projection* of the wire format, verified against a live API
+response for every endpoint before being written down.
+
+The layering is one direction only: page → hook → service → api-client → `fetch`. No component builds a
+URL or calls `fetch`; no service holds state or renders. Graph drawing, the one place logic could have
+leaked into a component, is a pure function in `src/lib/graph-models.ts` with its own unit tests.
+
+### Defects Found and Fixed — all found by probing, none by a test suite
+
+| Defect | Fix |
+|---|---|
+| **The browser blocked every request.** The API sends no `Access-Control-Allow-Origin`, so a cross-origin call from the app's origin fails with `net::ERR_FAILED` before it is sent. Nothing in the test suite could see this — the tests stub `fetch`, which has no CORS. | The backend is frozen, so the app calls `/api/…` same-origin and a Next rewrite forwards to the upstream. Only the host changes. Verified that `%23`, slashes and query strings survive the proxy. |
+| **React Flow drew 59 edges as zero edges.** A custom node without `Handle` children silently drops every edge attached to it, so the impact graph rendered as a field of unconnected boxes while the count beside it read "59 edges". | Added a target and a source `Handle` to the node. A regression test asserts both are present, since nothing else in the suite would notice. |
+| **`Most coupled files` was labelled wrongly and showed the wrong column.** `HotspotReport.mostCoupled` holds *declarations* ordered by fan-in plus fan-out; the page called them files and displayed fan-out, which was 0 for most rows. | One shared `MetricList` showing fan-in, fan-out and both edge counts. Displaying a single column silently claims that column was the ordering; showing all four states what was measured. |
+| **A 22-node package graph drew as one unreadable vertical strip**, then `fitView` shrank it until nothing was legible — and gave no hint why there were no edges. | `place` wraps a layer past ten rows into sub-columns; `GraphCanvas` takes a `noEdgesNote` and the Architecture page explains that a pnpm sibling import resolves through built output, so no package-to-package edge exists. |
+| **`pluralise(20, 'entry')` produced "20 entrys".** | `ListingNote` takes an optional plural. |
+| **Root `pnpm test` would have swept the web `.test.ts` files into the Node suite**, running them with no DOM. | The backend config excludes `apps/web`, and the root `test` script runs both configs in turn. A `test.projects` delegation was tried first and rejected: it dropped the JSX transform, failing all nine `.tsx` files. |
+
+### Build configuration — three forced deviations
+
+Next 15.5 does not support TypeScript 7, which the rest of the repository uses.
+
+1. `next.config.mjs` rather than `.ts` — the TS config loader fails with
+   `Cannot read properties of undefined (reading 'fileExists')`.
+2. `typescript@^6` pinned **in `apps/web` only**. Next refuses to build otherwise: *"The TypeScript 7
+   native compiler does not provide the JavaScript compiler API that Next.js requires."* pnpm's isolation
+   keeps this local; no backend package changed. The alternative was Next 16, which the milestone did not
+   specify.
+3. The `@/…` alias is declared in `next.config.mjs` as well as `tsconfig.json`, because Next reads
+   `paths` through that same loader and the alias otherwise never reaches the bundler.
+
+`typescript.ignoreBuildErrors` and `eslint.ignoreDuringBuilds` are set for the same reason. Types are
+still fully checked by `pnpm typecheck` under `strict`, `noUncheckedIndexedAccess` and
+`exactOptionalPropertyTypes`, as a separate script that must pass.
+
+### Performance on TraceIQ — 228 files, 3,148 declarations, 12,911 edges
+
+| Page | Requests | Payload | Slowest request |
+|---|---|---|---|
+| Search | 1 | 16 KB | 2 ms |
+| Symbol | 1 | 197 KB | 6 ms |
+| Explorer | 3 | 366 KB | 4 ms |
+| Dashboard | 3 | 403 KB | 8 ms |
+| Architecture | 2 | 443 KB | 27 ms |
+| Health | 3 | 981 KB | 19 ms |
+| Impact | 2 | 2,024 KB | 18 ms |
+
+First-load JS 103 KB shared plus 2–14 KB per page. React Flow only on the two graph pages; Monaco loaded
+on demand and in no initial bundle. `staleTime: Infinity` because a graph is one immutable revision until
+the next scan; a 4xx is never retried.
+
+### Files Created
+
+`apps/web`: `package.json`, `next.config.mjs`, `postcss.config.mjs`, `tsconfig.json`, `vitest.config.ts`,
+`README.md`; `src/app/` (layout, providers, globals.css, error, loading, not-found and seven pages);
+`src/components/ui/` (button, card, badge, input, table, skeleton, separator, tabs, dialog, scroll-area,
+resizable); `src/components/layout/` (app-shell, nav, theme-toggle, command-palette, error-boundary);
+`src/components/domain/` (states, node-pill, stat, listing-note, limitations, charts, metric-list, trees,
+graph-canvas, json-inspector); `src/hooks/` (queries, use-theme, use-debounced); `src/services/`
+(api-client, repository-service); `src/store/ui-store.ts`; `src/lib/` (utils, format, routes, theme,
+graph-layout, graph-models); `src/types/` (api, assets); `src/test/` (setup, fixtures, harness);
+15 test files.
+
+### Files Modified
+
+- `vitest.config.ts` — excludes `apps/web` from the backend suite, which now has a name.
+- `package.json` — `test` runs both suites; `test:backend`, `test:web`, `typecheck:web`, `build:web` added.
+- `pnpm-workspace.yaml` — `esbuild` and `sharp` added to `allowBuilds`.
+- `README.md` — `apps/web` marked implemented; TraceIQ Web added to the stack diagram.
+
+**No backend package was modified.**
+
+### Known Issues
+
+- **No source code is displayed.** No REST endpoint returns file contents, so Monaco is a read-only
+  payload inspector instead. This is the one place the specified stack and the available API disagree.
+- **`GET /route` has no page.** It is wired in the service and hook layers, but TraceIQ registers no
+  route, so there was nothing to build a page against. Routes are reached through the declarations that
+  serve them.
+- **`POST /scan` is not exposed.** It is a long write-shaped operation and the API offers no progress
+  reporting; the UI shows the API's own hint to run `traceiq scan`.
+- Graphs are capped at 60 nodes. The cap and the true total are always reported.
+- No linter is configured, here as elsewhere in the repository.
+
+### Next Milestone
+
+Repository Chat / the AI layer. **Not started, and not to be started without approval.**
+
+## Context Builder
+
+**Status:** complete. `pnpm build` clean, `pnpm typecheck:tests` clean, `pnpm test`
+1,645 passing across 55 files (79 in this package).
+
+### Completed Work
+
+New `packages/context`: `RepositoryContextBuilder.build(request)` → `RepositoryContext`, over all seven
+request kinds — symbol, impact, file, package, route, repository, search.
+
+**The package cannot reach anything.** The constructor takes the five capabilities; there is no
+`RepositoryGraphApi`, no store, no compiler, no filesystem and no HTTP anywhere in its surface, so the
+boundary is enforced by the type rather than by discipline. The unit suite builds every kind from
+fabricated answers with no graph in the file at all.
+
+One envelope for every kind, with `kind` saying which parts are populated. Every value is a capability
+result carried unchanged; nothing is recomputed, reshaped, ranked, scored or written in words.
+
+`RepositoryNavigator` is deliberately absent — not in the permitted reuse set, and not needed, since
+`QueryEngine.explainRoute` already splits a route's chain.
+
+### Divergence from the reserved design, worth recording
+
+The placeholder README written at workspace setup described **ranking results** and **loading source to
+fit a token budget**. This milestone excludes both explicitly. Selecting source text for a budget needs a
+model's tokeniser and is a judgement, so it belongs above a package that must stay deterministic. The
+README now states this rather than leaving the two descriptions to contradict each other.
+
+### Self Review — probed before the tests were written
+
+| Criterion | Finding |
+|---|---|
+| Duplicate assembly | **Found:** `references.references` was literally the `callers` array again for the impact kind. Fixed to the union of calls, type positions and imports. |
+| Duplicate traversal | None. The builder performs none; a per-build call counter proves each capability is called once per part. |
+| Duplicate queries | **Found:** `explain` was called on `File` nodes, which always return `null` — one wasted capability call per file among affected nodes. Now only declaration kinds are explained. |
+| Hidden graph access | None possible: no graph type appears in the package. Asserted by a test that builds a whole context from fakes. |
+| Ordering issues | Limitations are deduplicated and sorted by code; related nodes keep the capability's order, which is depth-major for impact and alphabetical for search. |
+| Storage leakage | `better-sqlite3` absent from the runtime closure; no context contains a path, connection or the string `sqlite`. |
+| Capability overlap | **Found and resolved by design:** `browseSymbol` runs the impact analyser internally, so a symbol context carries impact as counts rather than running it a second time. The `impact` kind exists for the whole analysis, and `impact-summary-only` says so on every symbol context. |
+
+### Defects Found and Fixed
+
+| Defect | Fix |
+|---|---|
+| **`references.references` duplicated `incomingCalls`** for the impact kind — the same array under two names. | The union of `callers`, `typeReferences` and `imports`, which is what Explain Symbol means by references. |
+| **`explain` was called on nodes that cannot be explained.** An affected set contains files; `explain` returns `null` for one, so five explanations cost six calls and `explainedNodes` disagreed with the call count. | Only declaration kinds are explained. Call count and explained count now agree. |
+| **A package context labelled its imports as `outgoingCalls`.** An import is not a call, and a package is a grouping with no calls of its own. | `references` is empty for the package kind; imports stay on the package view where they belong. |
+| **An impact context was 3 MB**, of which 1.7 MB was twenty explanations at ~85 KB each. A context exists to be consumed whole. | `EXPLAIN_LIMIT` is five, with the reasoning and the measurement recorded. Every affected node is still listed by identifier. Context dropped to 2.1 MB. |
+
+### Performance on TraceIQ — 202 files, 2,594 declarations, 2,822 nodes, 11,185 edges
+
+| Kind | Cold | Warm | Payload |
+|---|---|---|---|
+| `search` | 46.4 ms | **0.3 ms** | 78 KB |
+| `impact` | 19.2 ms | **1.4 ms** | 2.1 MB |
+| `symbol` | 72.1 ms | **2.6 ms** | 198 KB |
+| `package` | 51.9 ms | 4.8 ms | 808 KB |
+| `file` | 55.5 ms | 7.4 ms | 249 KB |
+| `repository` | 161.3 ms | 11.4 ms | 1.4 MB |
+
+**`health.analyze` at 4.9 ms warm is the bottleneck**, and it explains the ranking exactly: every kind
+that calls it is slower than every kind that does not. Next is `hotspots` 1.4 ms, `cycles` 0.9 ms,
+`browseSymbol` 0.7 ms, `impact.analyze` 0.3 ms, `overview` 0.1 ms, `architecture` 0.0 ms.
+
+**Cold is the shared index build**, ~45 ms, paid once by whichever kind builds first — `search` cold at
+46.4 ms is essentially the index and nothing else.
+
+**The `repository` kind computes health twice**: `explorer.overview` derives a summary internally while
+`health.analyze` produces the report. About 4.9 ms of its 11.4 ms, or 43%, reported as
+`repository-health-computed-independently` rather than hidden.
+
+### Files
+
+Created: `packages/context/src/` — `types.ts`, `capabilities.ts`, `limitations.ts`, `builders.ts`,
+`repository-context-builder.ts`, `index.ts`, `fake-capabilities.test-helper.ts`,
+`repository-context-builder.test.ts`, `pipeline.test.ts`; `package.json`, `tsconfig.json`.
+
+Modified: `packages/context/README.md` (replacing the not-implemented placeholder), root `README.md`,
+`tsconfig.json`, `tsconfig.tests.json`, `vitest.config.ts`. **No completed package changed.**
+
+### Decisions
+
+| Decision | Reason |
+|---|---|
+| The constructor takes capabilities, never a graph | Makes traversal, storage and filesystem access unrepresentable rather than merely absent, and lets the unit suite hold no graph at all. |
+| One envelope for every kind | A consumer renders one object. A part that does not apply is `null` or empty rather than absent, so no field has to be probed. |
+| `references` mirrors edges that also live in `primary` | A kind-independent accessor is worth modest repetition; the alternative is every consumer learning where each kind keeps its edges. Stated in the type so it is not mistaken for extra data. |
+| A symbol context carries impact as counts | `browseSymbol` already ran the analyser; asking again would run it twice for one request. |
+| `provenance` names the capability and operation per part | The risk of a composition layer is that a consumer cannot tell where a fact came from. |
+| Explanations capped at five | One explanation is ~85 KB. Twenty made a context 3 MB of mostly bulk. Every related node is still listed, so more is one request away. |
+| `ContextNotFoundError` rather than an empty context | An empty context reads as "nothing is recorded", not "this does not exist". A search matching nothing is not an error. |
+| The repository kind carries three results as its subject | It has no single subject, and the milestone names the overview, architecture and hotspots together. |
+| Per-build call counting | Makes "no duplicated assembly" measurable rather than asserted. |
+
+### Known Limitations
+
+- **Payloads are large** — impact 2.1 MB, repository 1.4 MB — because capability results are carried
+  whole. There is no field selection.
+- **A package context embeds the whole health report**, ~517 KB of its 808 KB. Many package contexts pay
+  for the same report each time.
+- **The repository kind computes health twice.**
+- **At most five related nodes are explained**, with the unexplained count reported.
+- Everything inherited from below: uncomposed route prefixes, partial call coverage, `INFERRED` calls, no
+  interface or dynamic dispatch, path-derived packages, cross-package imports outside the analysed set.
+
+### Approval Items
+
+1. **Whether the explorer should expose the health report it already computes.** It would remove the
+   duplicate computation from the repository kind and take ~43% off its warm time. It is a one-accessor
+   addition to a completed package, so it is not done unilaterally.
+2. **Whether a context should support field selection**, so a consumer can ask for a symbol context
+   without 2 MB of explanations, or a package context without the health report.
+3. **A `getNodesWithRole(role)` accessor on the Graph API.** Still the reason `health.analyze` is the
+   bottleneck of this package, the CLI and the API alike.
+4. **Whether the CLI and REST API should adopt this package** for their multi-capability commands. Both
+   compose capabilities themselves today; routing them through the builder would give one definition of
+   what belongs together, at the cost of touching two completed applications.
+5. Carried forward: scan out of process; incremental scanning; response caching headers; asynchronous
+   scan; four narrow Query Engine operations; a batch node accessor; `SourceRange` to `@traceiq/types`; a
+   property or member-access relationship; interface dispatch as a relationship; a multi-link `this`
+   unresolved reason; property-initializer constructions; mount annotations for route prefixes; whether
+   the scanner should read sibling workspace packages' sources.
+
+### Next Milestone
+
+Awaiting instruction. The frontend, AI and Repository Chat are all explicitly not started.
+
 ## TraceIQ REST API
 
 **Status:** complete. `pnpm build` clean, `pnpm typecheck:tests` clean, `pnpm test`
@@ -124,8 +352,7 @@ changed.**
 
 ### Next Milestone
 
-Awaiting instruction. The frontend, the AI Context Builder and Repository Chat are all explicitly not
-started.
+Context Builder.
 
 ## TraceIQ CLI
 

@@ -45,6 +45,7 @@
     { "path": "./packages/explorer" },
     { "path": "./packages/navigation" },
     { "path": "./packages/pipeline" },
+    { "path": "./packages/context" },
     { "path": "./apps/cli" },
     { "path": "./apps/api" }
   ]

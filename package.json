@@ -11,8 +11,12 @@
     "build": "tsc -b",
     "typecheck:tests": "tsc -b tsconfig.tests.json",
     "clean": "tsc -b --clean",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run && pnpm --filter @traceiq/web test",
+    "test:watch": "vitest",
+    "test:backend": "vitest run",
+    "test:web": "pnpm --filter @traceiq/web test",
+    "typecheck:web": "pnpm --filter @traceiq/web typecheck",
+    "build:web": "pnpm --filter @traceiq/web build"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
