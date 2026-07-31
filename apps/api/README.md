@@ -110,6 +110,8 @@ Every field of `meta` is deterministic. `capability` names the package that prod
 | `GET` | `/dependencies/{id}` | navigation |
 | `GET` | `/cycles` | explorer |
 | `GET` | `/hotspots` | explorer |
+| `POST` | `/chat` | @traceiq/ai. One grounded answer as JSON. `201` |
+| `POST` | `/chat/stream` | @traceiq/ai. The same answer as server-sent events. `200` |
 | `GET` | `/openapi.json` | The generated specification |
 
 ### Identifiers in a URL
@@ -127,18 +129,63 @@ GET /symbol/sym:src/svc.ts#Service.run      the server receives 'sym:src/svc.ts'
 
 Sending it unencoded returns `400 invalid-identifier` naming this fix, rather than a puzzling `404`.
 
+### Chat
+
+```
+POST /chat          { "question": "…", "subject": { "kind": "impact", "id": "sym:src/svc.ts#run" } }
+POST /chat/stream   the same body; the response is text/event-stream
+```
+
+Enabled by starting the server with a model. Without one, both endpoints answer `503 ai-not-configured`
+and every other endpoint is unaffected — a deployment that does not want AI simply omits the variable:
+
+```
+TRACEIQ_MODEL=qwen2.5:7b-instruct traceiq-api
+```
+
+**The model arrives by constructor injection.** `createApp({ databasePath, model })` takes a
+`LanguageModel`; `bin/traceiq-api.js` is the composition root that builds a provider and takes one from
+it. There is no registry, and **nothing under `src/` names a vendor** — a test asserts it.
+
+`subject` must already be resolved. This endpoint does not search: `GET /search` exists for that, and
+resolving free text here would put repository intelligence inside the AI path. A `subject` that is a bare
+string is a `400`.
+
+An answer carries the verdict, every citation flattened to the fact it points at, the omissions, the token
+usage and the model. It carries **no AI internal** — no projection, no fact array, no prompt, no fence:
+those are how an answer was produced, not what it is.
+
+`/chat/stream` frames, in order: `open` once, `grounding` **before any prose** (and again if the prompt had
+to be re-projected smaller), `delta` per token, then `complete` — or `error` if generation failed after the
+stream had opened. A failure detected *before* the first frame is still an ordinary JSON error with a real
+status, because the sink opens the stream lazily on its first write.
+
+`/chat` is `/chat/stream` drained, not a second code path; a test asserts the two bodies are equal.
+
+Disconnecting cancels the generation: the response's `close` fires with `writableFinished` false, which
+aborts the model rather than leaving it burning CPU for an answer nobody will read.
+
 ### Errors
 
 | Status | Codes |
 |---|---|
-| `400` | `bad-request`, `missing-parameter`, `invalid-identifier`, `invalid-package-name` |
-| `404` | `not-found`, `unknown-identifier`, `unknown-route`, `unknown-package` |
+| `400` | `bad-request`, `missing-parameter`, `invalid-identifier`, `invalid-package-name`, `generation-aborted` |
+| `404` | `not-found`, `unknown-identifier`, `unknown-route`, `unknown-package`, `model-not-found`, `subject-not-found` |
 | `405` | `method-not-allowed` |
 | `409` | `repository-not-scanned` |
-| `422` | `invalid-repository` |
+| `422` | `invalid-repository`, `budget-not-satisfiable`, `context-window-exceeded` |
+| `500` | `context-source-failed` |
+| `502` | `stream-interrupted`, `provider-protocol-error` |
+| `503` | `ai-not-configured`, `provider-unavailable`, `model-load-failed` |
+| `504` | `generation-timeout` |
 
 `409` rather than `404` for a missing graph: the request was fine, the server has nothing to answer
 from yet — a client can tell "scan first" from "that symbol is not there".
+
+**The AI codes are the AI layer's own, carried through unchanged.** A client that already branches on an
+`AiError` code keeps working over HTTP; renaming them here would make the transport a second vocabulary to
+learn. `503` for a provider that is absent or cannot load, `502` for one that answered badly — an upstream
+fault, not ours — and `504` for one that went silent.
 
 ## Examples
 

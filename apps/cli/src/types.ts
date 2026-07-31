@@ -20,4 +20,10 @@ export interface Options {
   readonly databasePath: string;
   /** Print what the command cost after its output. */
   readonly profile: boolean;
+  /** `chat` only: which model to answer with. Required, because no default is baked in. */
+  readonly model: string | null;
+  /** `chat` only: which provider holds it. */
+  readonly provider: string;
+  /** `chat` only: what to ask about, as a prefixed identifier. Defaults to the repository as a whole. */
+  readonly subject: string | null;
 }

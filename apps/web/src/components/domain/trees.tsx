@@ -19,7 +19,13 @@ import type { GraphNode } from '@/types/api';
  * so `Tab` walks the list and `Enter` selects, with no key handling to reimplement or get wrong.
  */
 
-function Row({
+/**
+ * One selectable row.
+ *
+ * Exported so the Explorer's grouped navigation renders identical rows rather than a second copy of this
+ * markup — selection styling and focus behaviour stay defined once.
+ */
+export function Row({
   selected,
   onSelect,
   children,

@@ -1,6 +1,12 @@
+import { RepositoryAnswerer, type LanguageModel } from '@traceiq/ai';
+import type { AnalysisRegistry } from '@traceiq/analysis';
 import type { NodeId } from '@traceiq/types';
 
+import { readAnalysisUrl, unknownAnalysis, wireJob } from './analysis.js';
+
+import { isAiError, parseChatRequest, toApiErrorFromAi, wireAnswer, wireGrounding } from './chat.js';
 import {
+  ApiError,
   badRequest,
   identifierMissingChain,
   invalidIdentifier,
@@ -14,6 +20,7 @@ import {
 } from './errors.js';
 import type { GraphHolder } from './graph-holder.js';
 import { API_VERSION } from './respond.js';
+import type { EventSink } from './sse.js';
 
 /** What a handler is given. Nothing else about the request reaches a capability. */
 export interface RequestContext {
@@ -22,6 +29,37 @@ export interface RequestContext {
   readonly query: Readonly<Record<string, string>>;
   readonly body: unknown;
   readonly holder: GraphHolder;
+  /**
+   * The model the application injected, or `null` when none was.
+   *
+   * **Constructor injection, no registry.** The API never selects a provider: the composition root builds
+   * one, takes a model from it and passes it to `createApp`. That is why no vendor name appears anywhere
+   * under `apps/api/src`, and why the chat endpoints answer `ai-not-configured` rather than starting a
+   * provider of their own.
+   */
+  readonly model: LanguageModel | null;
+  /** Aborted when the client disconnects, so a cancelled request stops the model generating. */
+  readonly signal: AbortSignal;
+  /**
+   * Analyses in flight and recently finished.
+   *
+   * Injected for the same reason the model is: the API owns no analysis state of its own, and a test
+   * supplies a registry over a fake cloner without a network.
+   */
+  readonly analyses: AnalysisRegistry;
+}
+
+/** Builds the answerer for one request, over the graph that request already opened. */
+export function answererFor(context: RequestContext): RepositoryAnswerer {
+  if (context.model === null) {
+    throw new ApiError(
+      'ai-not-configured',
+      'this server was started without a language model',
+      'start the API with a model configured, or use the CLI',
+    );
+  }
+
+  return new RepositoryAnswerer(context.holder.capabilities().context(), context.model);
 }
 
 export interface ParameterSpec {
@@ -46,7 +84,16 @@ export interface Endpoint {
   readonly requestBody?: { readonly description: string; readonly example: unknown };
   /** Errors this endpoint can return, beyond the ones every endpoint can. */
   readonly errors: readonly ErrorCode[];
-  handle(context: RequestContext): Promise<unknown> | unknown;
+  /**
+   * Produces the payload. Exactly one of `handle` and `stream` is present.
+   *
+   * A `handle` endpoint returns a value that the app wraps in the standard envelope. A `stream` endpoint
+   * writes frames itself, because once the first byte is sent the status line is gone and the envelope no
+   * longer applies. Keeping both in this table means routing, validation and the OpenAPI document still
+   * have a single source of truth.
+   */
+  handle?(context: RequestContext): Promise<unknown> | unknown;
+  stream?(context: RequestContext, sink: EventSink): Promise<void>;
 }
 
 const IDENTITY_PREFIX = /^(sym|file|route|env|ext):/;
@@ -114,6 +161,89 @@ export const ENDPOINTS: readonly Endpoint[] = [
       holder.reopen();
 
       return summary;
+    },
+  },
+  /*
+   * Repository Analysis.
+   *
+   * `POST /scan` above stays exactly as it was — a synchronous scan of a path already on this machine.
+   * These three add the other half: a public GitHub URL, cloned into a temporary workspace and handed to
+   * the same `RepositoryPipeline`. Nothing here analyses anything; every handler is a call into the
+   * registry and a wire projection.
+   */
+  {
+    method: 'post',
+    path: '/analysis',
+    documentedPath: '/analysis',
+    operationId: 'startAnalysis',
+    summary: 'Analyse a public GitHub repository: clone it, scan it, and replace the stored graph.',
+    capability: 'analysis',
+    parameters: [],
+    requestBody: {
+      description: 'The public GitHub repository to analyse.',
+      example: { url: 'https://github.com/facebook/react' },
+    },
+    errors: ['bad-request', 'missing-parameter'],
+    handle({ body, holder, analyses }) {
+      const url = readAnalysisUrl(body);
+
+      // `accepted: false` means one is already running; the caller is handed that job to follow rather
+      // than a second one being started against the same database.
+      const outcome = analyses.start({
+        url,
+        databasePath: holder.databasePath,
+        createdAt: FIXED_CREATED_AT,
+      });
+
+      return { accepted: outcome.accepted, job: wireJob(outcome.job) };
+    },
+  },
+  {
+    method: 'get',
+    path: '/analysis',
+    documentedPath: '/analysis',
+    operationId: 'listAnalyses',
+    summary: 'Analyses in flight and recently finished, newest first.',
+    capability: 'analysis',
+    parameters: [],
+    errors: [],
+    handle({ analyses }) {
+      return {
+        running: analyses.running() === null ? null : wireJob(analyses.running() as NonNullable<ReturnType<typeof analyses.running>>),
+        entries: analyses.list().map(wireJob),
+      };
+    },
+  },
+  {
+    method: 'get',
+    // `*id` rather than `:id`. An analysis id contains no slash, so the wildcard is not needed here —
+    // but every other path parameter in this table is one, and keeping the rule "a path parameter is a
+    // wildcard" without exception is what lets a test check it mechanically.
+    path: '/analysis/*id',
+    documentedPath: '/analysis/{id}',
+    operationId: 'analysis',
+    summary: 'One analysis, with its current stage. Poll this while an analysis is running.',
+    capability: 'analysis',
+    parameters: [
+      {
+        name: 'id',
+        location: 'path',
+        required: true,
+        description: 'The analysis id returned when it was started.',
+        example: 'analysis-1',
+      },
+    ],
+    errors: ['not-found'],
+    handle({ params, analyses }) {
+      const id = params.id ?? '';
+      const job = analyses.get(id);
+
+      if (job === undefined) {
+        throw unknownAnalysis(id);
+      }
+
+      // A failed analysis is a 200: the request to read it succeeded, and the failure is in the payload.
+      return wireJob(job);
     },
   },
   {
@@ -411,7 +541,157 @@ export const ENDPOINTS: readonly Endpoint[] = [
       return holder.capabilities().explorer().hotspots();
     },
   },
+  {
+    method: 'post',
+    path: '/chat',
+    documentedPath: '/chat',
+    operationId: 'chat',
+    summary: 'Answer one question about the repository, grounded in projected context.',
+    capability: '@traceiq/ai',
+    parameters: [],
+    requestBody: {
+      description:
+        'The question and an already-resolved subject. This endpoint does not search: use GET /search to find an identifier first, because turning free text into a subject is repository intelligence and does not belong in the AI path.',
+      example: {
+        question: 'What would break if I changed this?',
+        subject: { kind: 'impact', id: 'sym:src/auth/user.service.ts#UserService.login' },
+      },
+    },
+    errors: [
+      'ai-not-configured',
+      'provider-unavailable',
+      'model-not-found',
+      'model-load-failed',
+      'subject-not-found',
+      'context-source-failed',
+      'budget-not-satisfiable',
+      'context-window-exceeded',
+      'generation-timeout',
+      'generation-aborted',
+      'stream-interrupted',
+      'provider-protocol-error',
+    ],
+    handle: async (context) => {
+      const request = parseChatRequest(context.body);
+      const answerer = answererFor(context);
+
+      try {
+        // The whole answer, drained from the streaming primitive. `/chat` exists for a caller that wants
+        // one JSON response; it is not a second code path.
+        let answer = null;
+
+        for await (const event of answerer.answer(toAnswerRequest(request), context.signal)) {
+          if (event.type === 'complete') {
+            answer = event.answer;
+          }
+        }
+
+        if (answer === null) {
+          throw new ApiError('stream-interrupted', 'the answer never completed', 'try again');
+        }
+
+        return wireAnswer(answer);
+      } catch (cause) {
+        throw isAiError(cause) ? toApiErrorFromAi(cause) : cause;
+      }
+    },
+  },
+  {
+    method: 'post',
+    path: '/chat/stream',
+    documentedPath: '/chat/stream',
+    operationId: 'chatStream',
+    summary: 'The same answer as POST /chat, streamed as server-sent events.',
+    capability: '@traceiq/ai',
+    parameters: [],
+    requestBody: {
+      description:
+        'Identical to POST /chat. The response is text/event-stream with five event types: open, grounding (always before any delta), delta, complete, and error. A failure after the first byte arrives as a terminal error frame, because the status line has already been sent.',
+      example: {
+        question: 'What does this declaration take part in?',
+        subject: { kind: 'symbol', id: 'sym:src/auth/user.service.ts#UserService.login' },
+      },
+    },
+    errors: [
+      'ai-not-configured',
+      'provider-unavailable',
+      'model-not-found',
+      'subject-not-found',
+      'budget-not-satisfiable',
+      'generation-timeout',
+      'stream-interrupted',
+      'provider-protocol-error',
+    ],
+    stream: async (context, sink) => {
+      // Validation and answerer construction happen before the stream opens, so a malformed request is
+      // still an ordinary JSON error with a real status rather than a 200 carrying an error frame.
+      const request = parseChatRequest(context.body);
+      const answerer = answererFor(context);
+
+      sink.send('open', { model: context.model?.describe().id ?? null });
+
+      try {
+        for await (const event of answerer.answer(toAnswerRequest(request), context.signal)) {
+          if (!sink.open) {
+            // The client has gone. Returning ends the iteration, which aborts the model through `signal`.
+            return;
+          }
+
+          if (event.type === 'grounding') {
+            sink.send('grounding', wireGrounding(event.grounding));
+          } else if (event.type === 'delta') {
+            sink.send('delta', { text: event.text });
+          } else {
+            sink.send('complete', wireAnswer(event.answer));
+          }
+        }
+      } catch (cause) {
+        const error = isAiError(cause) ? toApiErrorFromAi(cause) : toUnexpected(cause);
+
+        sink.send('error', {
+          code: error.code,
+          detail: error.detail,
+          hint: error.hint,
+          partial: isAiError(cause) ? cause.partial : null,
+        });
+      }
+    },
+  },
 ];
+
+/** The chat body, as the AI layer's request. Nothing is added: the fields map one to one. */
+function toAnswerRequest(request: ReturnType<typeof parseChatRequest>): Parameters<RepositoryAnswerer['answer']>[0] {
+  return {
+    question: request.question,
+    subject: request.subject,
+    ...(request.tier === undefined ? {} : { tier: request.tier }),
+    ...(request.maxOutputTokens === undefined ? {} : { maxOutputTokens: request.maxOutputTokens }),
+    ...(request.history === undefined
+      ? {}
+      : {
+          history: {
+            // Prior turns carry only their question and answer. Facts are never replayed — a fact from turn
+            // one could otherwise still be grounding turn eight after a rescan.
+            turns: request.history.map((turn, index) => ({
+              id: String(index),
+              question: turn.question,
+              answer: turn.answer,
+              subject: request.subject,
+              citations: [],
+              verdict: 'unverifiable' as const,
+              projectionDigest: '',
+              model: '',
+            })),
+          },
+        }),
+  };
+}
+
+function toUnexpected(cause: unknown): ApiError {
+  return cause instanceof ApiError
+    ? cause
+    : new ApiError('context-source-failed', cause instanceof Error ? cause.message : String(cause), 'see server logs');
+}
 
 /**
  * The revision timestamp a scan stamps into the store.

@@ -1,6 +1,6 @@
 # @traceiq/web
 
-The TraceIQ web application. Seven pages over the REST API.
+The TraceIQ web application. A landing page and eight pages over the REST API.
 
 ```
 TRACEIQ_DB=.traceiq/graph.db node apps/api/bin/traceiq-api.js   # the API, on :3000
@@ -9,13 +9,15 @@ pnpm --filter @traceiq/web dev                                  # the app, on :3
 
 | Page | Route | What it answers |
 |---|---|---|
-| Dashboard | `/` | what is in this repository, and how healthy is it |
+| Landing | `/` | what TraceIQ is — the only page that fetches nothing but `/version` |
+| Dashboard | `/dashboard` | what is in this repository, and how healthy is it |
 | Explorer | `/explorer` | browse packages → files → declarations |
 | Symbol | `/symbol?id=…` | everything the graph knows about one declaration |
 | Impact | `/impact?id=…` | what a change to one declaration reaches |
 | Architecture | `/architecture` | the package dependency graph and the trees behind it |
 | Health | `/health` | metrics, findings, cycles, hotspots |
 | Search | `/search?q=…` | exact and prefix search across the graph |
+| Chat | `/chat` | ask questions, grounded in projected context and cited |
 
 ## Architecture
 
@@ -51,8 +53,13 @@ and the whole app fails with `net::ERR_FAILED`. Since the API is frozen, the fro
 own origin and `next.config.mjs` rewrites that to the upstream host. Only the host changes: path, query
 string and method pass through untouched, so the browser and the CLI see the same REST surface.
 
-Set `TRACEIQ_API_URL` to point elsewhere. It is read **on the server at request time**, not inlined into
-the bundle, so one build can be pointed at any host.
+Set `TRACEIQ_API_URL` to point elsewhere. **It is a build-time value.** Next compiles `rewrites()` into
+`.next/routes-manifest.json`, so the destination is fixed when the app is built and setting the variable on a
+running server has no effect on it. `next dev` re-reads the config on start, which is why it looks like a
+runtime value in development and is not one in a built image — the container takes it as a build argument.
+
+An earlier version of this file claimed the opposite. It was written before the app had a production build,
+and the release milestone's standalone output is where the difference showed up.
 
 ### Identifiers in URLs
 
@@ -86,6 +93,78 @@ unchanged; nothing is computed, inferred, ranked or scored here.
   column would silently claim that column was the ordering. Fan-in, fan-out and both edge counts are shown.
 - **No AI, no chat, no markdown, no prompts.** There is no text input that sends anything anywhere except
   the two search boxes, both of which call `GET /search`.
+
+## Repository Chat
+
+`/chat` is the one page that renders model prose, and therefore the one page that renders markdown.
+Repository pages stay plain rendered data, as they always have.
+
+```
+page → useChat → chat-service → fetch POST /api/chat/stream → SSE frames
+```
+
+**Streamed with `fetch`, not `EventSource`.** `EventSource` can only issue a GET and cannot carry a body, and
+a chat request carries a question, a subject and a conversation — so the SSE wire format is parsed by hand
+from the response body. Frames are reassembled across chunk boundaries; a delta split across two TCP reads
+must not be lost, and a test drives the whole stream one byte at a time to prove it is not.
+
+The read is raced against the abort signal. A real `fetch` body errors when its signal aborts, but relying on
+that alone would leave **Stop** doing nothing against any body that did not — while a local model kept
+generating.
+
+### What is on screen, and in what order
+
+The order follows the order the evidence arrives in:
+
+1. **Projection summary** — fact count, tokens, tier, digest. From the first `grounding` frame, which the API
+   sends *before any prose*, so a reader sees what an answer may rest on before reading it.
+2. **Omission summary** — `kept` against an exact `total` per capped part. A cap is never silent here either.
+3. **The answer**, streaming, with a caret while tokens arrive.
+4. **Grounding badge** — `grounded`, `ungrounded` or `unverifiable`. Never softened: `unverifiable` is not a
+   pass, it means nothing was cited so nothing could be checked.
+5. **Fabrications**, named individually when the verdict is `ungrounded`.
+6. **Citations**, each carrying the whole fact and the capability that established it, with identifiers
+   linking to their own pages.
+7. **Model, stop reason and token usage**, exactly as the API reported them.
+
+### Subject selection
+
+The chat endpoints refuse a free-text subject on purpose: resolving a name to an identifier is repository
+search, it belongs to the Explorer, and doing it inside the AI path would put repository intelligence there.
+So the picker searches through **`GET /search`**, the user chooses, and a resolved subject is what is sent.
+Ambiguity is the user's to settle — nothing guesses which `Listing` was meant.
+
+Changing the subject drops the conversation: prior answers were about something else.
+
+### Conversations
+
+In memory for the session. Persistence is a deferred milestone and the AI layer ships only the types; a
+conversation restored after a rescan would carry answers grounded in facts that no longer hold.
+
+History replays **only questions and answers**. The facts that grounded a prior turn are never replayed, so a
+fact from turn one cannot still be grounding turn eight. A test asserts no `citations`, no `provenance` and no
+`grounding` reaches the wire in a follow-up.
+
+### The markdown renderer
+
+Hand-written, in `src/lib/markdown.ts`, supporting exactly: paragraphs, headings, inline code, fenced code
+blocks, bullet lists, numbered lists, emphasis and strong emphasis.
+
+**Why not a library.** This renders text a language model produced — untrusted input. A general markdown
+library passes raw HTML through by default, and keeping that disabled is a standing obligation on every
+upgrade. Eight constructs in a hundred lines removes the class of problem entirely: there is no HTML path to
+disable, because none is parsed. `<script>alert(1)</script>` renders as those characters, and a test asserts
+it.
+
+The parser emits a **token tree, not a string**. The component walks it into React elements, so every piece of
+model output is a text node React escapes. There is no `dangerouslySetInnerHTML` anywhere in the app.
+
+Anything unsupported — links, tables, blockquotes, images — is left as literal text rather than guessed at. An
+unterminated fence closes at the end of the input, because half a fenced block is exactly what arrives
+mid-stream and it must read as code rather than as prose.
+
+A heading in a message renders as a styled paragraph, not an `h2`–`h6`: the page already has its `h1`, and
+emitting headings from model output would corrupt the landmark structure a screen reader navigates by.
 
 ## Monaco
 
@@ -170,7 +249,7 @@ steps drive TypeScript through the loader above and cannot run here. **Types are
 ## Testing
 
 ```
-pnpm --filter @traceiq/web test        # 170 tests
+pnpm --filter @traceiq/web test        # 260 tests
 pnpm --filter @traceiq/web typecheck
 pnpm --filter @traceiq/web build
 pnpm test                              # backend, then web
@@ -198,6 +277,7 @@ src/app/                one directory per route, plus layout, providers, error a
 src/components/ui/      shadcn/ui primitives, copy-in over Radix
 src/components/layout/  shell, nav, theme toggle, command palette, error boundary
 src/components/domain/  states, node pills, charts, trees, graph canvas, JSON inspector
+src/components/marketing/  the landing page's bands — the only components that fetch nothing
 src/hooks/              TanStack Query hooks, theme, debounce
 src/services/           api-client and one function per endpoint
 src/store/              the Zustand UI store

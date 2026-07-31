@@ -1,0 +1,39 @@
+{
+  "name": "@traceiq/ai",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    }
+  },
+  "dependencies": {
+    "@traceiq/context": "workspace:*"
+  },
+  "devDependencies": {
+    "@traceiq/call-graph": "workspace:*",
+    "@traceiq/explain": "workspace:*",
+    "@traceiq/explorer": "workspace:*",
+    "@traceiq/framework": "workspace:*",
+    "@traceiq/graph": "workspace:*",
+    "@traceiq/graph-api": "workspace:*",
+    "@traceiq/health": "workspace:*",
+    "@traceiq/impact": "workspace:*",
+    "@traceiq/ir": "workspace:*",
+    "@traceiq/pipeline": "workspace:*",
+    "@traceiq/project-host": "workspace:*",
+    "@traceiq/query": "workspace:*",
+    "@traceiq/resolver": "workspace:*",
+    "@traceiq/scanner": "workspace:*",
+    "@traceiq/types": "workspace:*",
+    "@types/node": "^26.1.2"
+  }
+}

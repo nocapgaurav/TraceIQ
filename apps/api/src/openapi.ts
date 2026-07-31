@@ -72,7 +72,10 @@ function pathsObject(): Readonly<Record<string, unknown>> {
       operationId: endpoint.operationId,
       summary: endpoint.summary,
       'x-capability': endpoint.capability,
-      responses: responsesFor(endpoint.method === 'post' ? 201 : 200, endpoint.errors, endpoint.capability),
+      responses:
+        endpoint.stream === undefined
+          ? responsesFor(endpoint.method === 'post' ? 201 : 200, endpoint.errors, endpoint.capability)
+          : streamResponsesFor(endpoint.errors),
     };
 
     if (endpoint.parameters.length > 0) {
@@ -119,6 +122,39 @@ function pathsObject(): Readonly<Record<string, unknown>> {
  * a missing graph, an unsupported method and a not-found path. Each error status appears once, with the
  * codes that map to it, so a client reading the document sees exactly which codes to expect where.
  */
+/**
+ * A streaming endpoint's responses.
+ *
+ * `200` with `text/event-stream` rather than the standard envelope: once frames are flowing the status is
+ * fixed, so a failure arrives as a terminal `error` frame instead of a status. The frame vocabulary is
+ * documented here because a client cannot discover it from a schema.
+ */
+function streamResponsesFor(errors: readonly ErrorCode[]): Record<string, unknown> {
+  const responses: Record<string, unknown> = {
+    '200': {
+      description:
+        'A server-sent event stream. Events, in order: `open` once; `grounding` before any prose, and again if the prompt had to be re-projected smaller; `delta` per token; then either `complete` with the whole answer, or `error` if generation failed after the stream had opened.',
+      content: {
+        'text/event-stream': {
+          schema: { type: 'string' },
+          example:
+            'event: open\ndata: {"model":"qwen2.5:7b-instruct"}\n\nevent: grounding\ndata: {"kind":"symbol","factCount":166,"tier":"standard","tokens":5995,"digest":"52a4aca4a122a3e1","omissions":[]}\n\nevent: delta\ndata: {"text":"It is a method "}\n\nevent: complete\ndata: {"verdict":"grounded","citations":[…]}\n\n',
+        },
+      },
+    },
+  };
+
+  // A failure detected *before* the first frame is still an ordinary JSON error with a real status.
+  for (const status of new Set(errors.map((code) => HTTP_STATUS[code]))) {
+    responses[String(status)] = {
+      description: 'A failure raised before the stream opened.',
+      content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
+    };
+  }
+
+  return responses;
+}
+
 function responsesFor(
   successStatus: number,
   declared: readonly ErrorCode[],

@@ -15,6 +15,9 @@ describe('the endpoint table', () => {
       'GET /ping',
       'GET /version',
       'POST /scan',
+      'POST /analysis',
+      'GET /analysis',
+      'GET /analysis/{id}',
       'GET /overview',
       'GET /architecture',
       'GET /packages',
@@ -29,6 +32,8 @@ describe('the endpoint table', () => {
       'GET /dependencies/{id}',
       'GET /cycles',
       'GET /hotspots',
+      'POST /chat',
+      'POST /chat/stream',
     ]);
   });
 
@@ -198,8 +203,17 @@ describe('the OpenAPI document', () => {
       const operation = document.paths[endpoint.documentedPath]?.[endpoint.method];
       const statuses = Object.keys(operation?.responses ?? {});
 
-      expect(statuses).toContain(endpoint.method === 'post' ? '201' : '200');
-      expect(statuses).toContain('409');
+      // A streaming endpoint answers 200 with an event stream whatever its method: the envelope, and with
+      // it the 201, no longer applies once frames are flowing.
+      expect(statuses, endpoint.operationId).toContain(
+        endpoint.stream !== undefined ? '200' : endpoint.method === 'post' ? '201' : '200',
+      );
+
+      // `/chat/stream` cannot report a 409 as a status once it has started, and its failures before the
+      // first frame are the AI codes it declares instead.
+      if (endpoint.stream === undefined) {
+        expect(statuses, endpoint.operationId).toContain('409');
+      }
     }
   });
 
@@ -222,10 +236,25 @@ describe('the OpenAPI document', () => {
     }
   });
 
-  it('documents the request body of the only endpoint that takes one', () => {
+  it('documents the request body of every endpoint that takes one', () => {
     const withBody = ENDPOINTS.filter((endpoint) => endpoint.requestBody !== undefined);
 
-    expect(withBody.map((endpoint) => endpoint.operationId)).toEqual(['scan']);
+    expect(withBody.map((endpoint) => endpoint.operationId)).toEqual([
+      'scan',
+      'startAnalysis',
+      'chat',
+      'chatStream',
+    ]);
+  });
+
+  it('gives every endpoint exactly one of handle and stream', () => {
+    // The table is the single source of truth for routing; an endpoint with both or neither would make it
+    // ambiguous, and app.ts would have to guess.
+    for (const endpoint of ENDPOINTS) {
+      const modes = [endpoint.handle, endpoint.stream].filter((mode) => mode !== undefined);
+
+      expect(modes, endpoint.operationId).toHaveLength(1);
+    }
   });
 
   it('publishes the error schema with the closed code vocabulary', () => {

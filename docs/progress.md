@@ -3,6 +3,413 @@
 Milestones are referred to by name rather than number, since the engineering
 contract does not restate the roadmap.
 
+## Release Engineering — v1.0.0 deployment layer
+
+**Status:** complete. `git clone && cd traceiq && docker compose up` brings up the whole stack and opens on a
+dashboard with real data. Verified from a clean slate — no images, no volumes — on Docker 29.4.3 / linux
+aarch64, twice: once with chat disabled (the default) and once with a model configured.
+
+### What was added
+
+Two production Dockerfiles, a Compose file, `.env.example`, a `.dockerignore`, and two small init scripts.
+**No application logic changed.**
+
+| Service | Image | Role |
+|---|---|---|
+| `ollama` | `ollama/ollama:0.32.5` | the model provider; healthchecked with `ollama list` |
+| `ollama-pull` | same | one-shot; pulls the configured model, or exits 0 when none is set |
+| `api` | built from `apps/api/Dockerfile` | the REST API; healthchecked on `GET /ping` |
+| `seed` | `node:22-trixie-slim` | one-shot; scans the repository through `POST /scan`, idempotent |
+| `web` | built from `apps/web/Dockerfile` | the Next.js app; healthchecked on `/` |
+
+Both images are multi-stage and run as the unprivileged `node` user. The API stage produces a self-contained
+bundle with `pnpm deploy --prod --legacy`; the web stage ships Next's `standalone` output. 419 MB each.
+
+Volumes: `traceiq-graph` (the SQLite graph) and `ollama-models` (gigabytes, and worth keeping). Both survive
+`docker compose down`; `down -v` discards them. Every port binds to `127.0.0.1` — nothing in the stack
+authenticates.
+
+### Defects found, all by running it
+
+| Defect | Fix |
+|---|---|
+| **`better-sqlite3` failed on every scan.** Its prebuilt `linux-arm64.node` is linked against GLIBC 2.38 and the loader prefers it over the locally compiled build; Debian bookworm ships 2.36. The API built, started and passed its health check, then answered `invalid-repository` — "the database could not be opened" — naming neither glibc nor the prebuild. | Both stages moved to `node:22-trixie-slim` (glibc 2.41). |
+| **`@traceiq/ai-ollama` was a devDependency** of `apps/api`, but `bin/traceiq-api.js` — the production entry point — imports it. Any `--prod` install produced an image that could not start. | Moved to `dependencies`. `apps/api/src` still never imports it, so the boundary test is unaffected. |
+| **`tsc -b apps/api` did not build `ai-ollama`**, because it was absent from the project references — `src/` deliberately does not import it. The bundle shipped without its `dist`. | Added the project reference, so the build graph matches the dependency graph. |
+| **The web README claimed `TRACEIQ_API_URL` is read at request time.** A standalone build compiles `rewrites()` into `routes-manifest.json`, so it is a **build-time** value. The claim was written before the app had a production build. | Corrected in the README and in `next.config.mjs`; the image takes it as a build argument. |
+| A guessed `ollama/ollama:0.12.12` tag does not exist. | Pinned `0.32.5`, from the registry. |
+
+### Decisions
+
+**Chat is opt-in.** `TRACEIQ_MODEL` is empty by default. A model is several gigabytes and a first
+`docker compose up` should not begin with a download nobody requested; everything else works and the chat page
+already renders `ai-not-configured` with what to do. Set it in `.env` and `up` again — the pull runs to
+completion *before* the API starts, because the API resolves its model at startup and exits if it is absent.
+
+**The stack scans itself on first run.** Without it, a fresh `up` yields an API with nothing in it and a UI
+showing its empty state — correct, but a poor first impression when the repository is right there. The `seed`
+service goes through the published `POST /scan`, so it contains no analysis and opens no database, and it
+skips itself when a graph already exists.
+
+**Health checks use Node's `fetch`, not curl.** The slim images have no curl, and adding one to serve a health
+check would be a package in a runtime image for no other purpose.
+
+**`/ping`, not `/health`, for the API's liveness.** `/ping` answers without opening a graph, so an unscanned
+API is reported healthy — which it is. `/health` is the repository health report and would mark it broken.
+
+### Verified
+
+Clean-slate `docker compose up`: all services healthy, `ollama-pull` and `seed` exited 0. The seed scanned
+TraceIQ itself — 330 files, 4,009 declarations, 4,416 nodes, 16,845 edges — and the dashboard rendered it in a
+browser. `GET /overview` through the API and through the web proxy agree.
+
+With `TRACEIQ_MODEL=qwen2.5:0.5b`: the pull completed, the API logged `chat enabled`, `POST /chat` answered
+`grounded` with a citation and usage, and `POST /chat/stream` delivered `open → grounding → delta ×12 →
+complete` in order through the proxy.
+
+Across `docker compose down` then `up`: the graph and the model both persisted, and `seed` correctly skipped.
+
+### Files Created
+
+`apps/api/Dockerfile`, `apps/web/Dockerfile`, `docker-compose.yml`, `.env.example`, `.dockerignore`,
+`docker/pull-model.sh`, `docker/seed-graph.mjs`.
+
+### Files Modified
+
+- `apps/api/package.json` — `@traceiq/ai-ollama` moved to `dependencies` (packaging correctness).
+- `apps/api/tsconfig.json` — the matching project reference.
+- `apps/web/next.config.mjs` — `output: 'standalone'`, `outputFileTracingRoot`, corrected comment.
+- `README.md` — a "Running it" quickstart, requirements, deployment commands.
+- `apps/web/README.md` — the build-time correction.
+
+### Known Issues
+
+- **`TRACEIQ_API_URL` is build-time for the web image.** Changing it needs `docker compose build web`. Making
+  it runtime would mean replacing the rewrite with a route handler, which is an application change.
+- **No CI job builds the images.** The workflow runs build, typecheck and tests; a `docker build` step would
+  catch a broken Dockerfile before a release rather than at one.
+- Images are 419 MB each. The API's bundle carries each package's `src/` and `tsbuildinfo`, which `pnpm deploy`
+  copies wholesale; a `files` field per package would trim it but would touch twenty manifests.
+- Single-architecture builds only — whatever the host is. No `buildx` multi-arch manifest.
+- No production concerns beyond local use: no TLS, no authentication, no resource limits, no log shipping.
+
+## Repository Chat — Web UI
+
+**Status:** complete. The Repository Chat milestone is now finished across all three consumers. `pnpm build`
+clean, `pnpm typecheck:tests` clean, web typecheck and `next build` clean, `pnpm test` 1,868 backend + **260
+web** passing. Verified in a real browser against Ollama 0.31.1 / `qwen2.5:7b-instruct` over a live scan.
+
+### What was built
+
+`/chat` — an eighth page, and the only one that renders model prose. Sidebar with an in-session conversation
+list, streaming answers, Stop, Retry, Clear, subject selection through `GET /search`, citations, grounding
+badge, projection summary, omission summary, model information, token usage, dark mode, responsive layout,
+error boundary and loading states.
+
+```
+page → useChat → chat-service → fetch POST /api/chat/stream → SSE frames
+```
+
+**The frontend still consumes only the REST API.** No `@traceiq` dependency and no `@traceiq` import anywhere
+under `apps/web/src` — the only matches are comments and provenance *strings* that arrive in a payload.
+
+### Markdown, as approved
+
+Hand-written in `src/lib/markdown.ts`: paragraphs, headings, inline code, fenced code, bullet and numbered
+lists, emphasis, strong emphasis. Nothing else, and **no raw HTML** — `<script>alert(1)</script>` renders as
+those characters, asserted by test. No markdown library, no sanitiser, no `dangerouslySetInnerHTML` anywhere
+in the app.
+
+The parser emits a token tree, not a string, so every piece of model output is a text node React escapes.
+Used by chat messages only; repository pages remain plain rendered data.
+
+Two decisions worth recording: an unterminated fence closes at the end of the input, because half a fenced
+block is exactly what arrives mid-stream and must read as code; and a heading inside a message renders as a
+styled paragraph rather than an `h2`–`h6`, because the page already owns its `h1` and emitting headings from
+model output would corrupt the landmark structure a screen reader navigates by.
+
+### Defects found and fixed
+
+| Defect | Fix |
+|---|---|
+| **Stop could hang against a body that ignores its abort signal.** `reader.read()` would block forever and the model would keep generating while the UI showed nothing changing. Found because a test that stubbed a `Response` — which is not linked to an `AbortController` — hung. The same class of bug as the one in the Ollama NDJSON reader. | The read is raced against the abort. Cancellation is now the reader's own guarantee rather than the platform's. |
+| **Plain text was wrapped in a `span`**, putting a node between `<strong>` and its content — so `getByText` found the wrapper, not the emphasis. Harmless visually, wrong semantically. | A `Fragment`: plain text needs no element. |
+| **jsdom implements no `scrollIntoView`**, so every chat page test failed on the streaming follow. | Stubbed in the test setup, beside the existing `matchMedia` and `ResizeObserver` shims. Guarding in the component would have been the test shaping the source. |
+| The command palette asserted a fixed count of six nav sections; Chat made seven. | Asserts against `NAV_ITEMS.length`, so the next page does not break it either. |
+
+### Browser verification, against a real model
+
+Asked "How large is this repository and what limits the analysis?" — streamed live, rendered as markdown with
+bold labels and a bullet list (no raw asterisks), reported 64 facts / 1,920 tokens / tier standard / digest
+`c0a8bdfbb1fe2e3f`, listed both omissions (`externalPackages` 15 of 51, `cycles` 15 of 18), showed the
+`grounded` badge, `qwen2.5:7b-instruct`, `stop-sequence`, `2005 prompt / 197 output tokens`, and six citations
+each with its provenance.
+
+Also verified: Stop mid-answer (button reverts, "Stopped." appears, caret clears, Retry enables), Retry, Clear,
+dark mode, the mobile overlay sidebar with **no horizontal overflow** at 414px, subject search resolving
+`RepositoryExplorer` through `GET /search` with its `impact` variant, and **no console errors**.
+
+### Files Created
+
+`apps/web/src/`: `lib/markdown.ts`, `services/chat-service.ts`, `store/chat-store.ts`, `hooks/use-chat.ts`,
+`components/domain/chat/{markdown,grounding,subject-picker,turn,sidebar}.tsx`, `app/chat/page.tsx`; tests
+`lib/markdown.test.ts`, `services/chat-service.test.ts`, `store/chat-store.test.ts`, `app/chat-page.test.tsx`.
+
+### Files Modified
+
+- `apps/web/src/types/api.ts` — the chat wire types, hand-written like the rest of the file.
+- `apps/web/src/components/layout/nav.tsx` — Chat added to `NAV_ITEMS`.
+- `apps/web/src/lib/routes.ts` — `routes.chat()`.
+- `apps/web/src/test/setup.ts` — `scrollIntoView` shim.
+- `apps/web/src/components/layout/command-palette.test.tsx` — asserts against `NAV_ITEMS.length`.
+- `apps/web/src/lib/markdown.test.ts` — two `readonly` casts for `exactOptionalPropertyTypes`.
+- `README.md`, `apps/web/README.md`, `docs/progress.md`.
+
+**No backend package was modified in this part.**
+
+### Known Issues
+
+- **Conversations do not persist.** Deferred by approval; a conversation restored after a rescan would carry
+  answers grounded in facts that no longer hold.
+- Only `symbol`, `impact`, `file` and `repository` subjects are reachable from the picker. `package` and
+  `route` are valid over the wire and in the CLI, but the picker offers no path to them yet.
+- A weak model still produces weak answers; the badge reports the verdict rather than hiding it.
+- No linter, here as elsewhere.
+
+## Repository Chat — REST API and CLI
+
+**Status:** REST API and CLI complete. Web UI not started. `pnpm build` clean, `pnpm typecheck:tests`
+clean, `pnpm test` 1,866 backend + 170 web passing (97 in `apps/api`, 113 in `apps/cli`). Verified end to
+end against Ollama 0.31.1 with `qwen2.5:7b-instruct` over a real scan of TraceIQ.
+
+### One strictly-required change to a completed package
+
+`Answer` did not carry token usage: the provider reports it in the `end` event and `RepositoryAnswerer`
+discarded it. "Preserve token usage" cannot be satisfied downstream of a layer that threw it away, so one
+additive field was added, read from the event already being handled. Nothing else in `packages/ai` changed.
+
+### REST API
+
+`POST /chat` and `POST /chat/stream`, both in the endpoint table so routing, validation and the OpenAPI
+document keep a single source of truth. `Endpoint` gained an optional `stream` beside `handle`; a test
+asserts every endpoint has exactly one.
+
+`createApp({ databasePath, model })` takes a `LanguageModel`. **No registry**, and nothing under
+`apps/api/src` names a vendor — `bin/traceiq-api.js` is the composition root and a test asserts the rest.
+Without a model both endpoints answer `503 ai-not-configured` and every other endpoint is unaffected.
+
+The wire answer carries the verdict, citations flattened to the fact each points at, the omissions, the
+usage and the model — and no AI internal. A test asserts no `REPOSITORY-FACTS`, no fact array and no prompt
+appears in a response.
+
+`/chat` is `/chat/stream` drained rather than a second code path, and a test asserts the two bodies are
+equal. The AI error codes are surfaced verbatim with one HTTP status each.
+
+### CLI
+
+`traceiq chat` — an interactive REPL with `--model`, `--provider`, `--subject`, streaming output, coloured
+citations, the grounding verdict and graceful Ctrl+C. It is dispatched before the command table because a
+`Command` returns one string when it finishes and a REPL writes as it goes.
+
+`CommandSession` gained `context()`, so `chat.ts` receives a `ContextSource` — one method — and imports no
+graph type at all. `src/providers.ts` is the single file that names a vendor.
+
+**Colour is a deliberate reversal.** The CLI milestone said "no colours"; this one requires coloured
+citations. Colour is therefore on for a terminal and off for a pipe or `NO_COLOR`, so redirected output
+stays plain and diffable and every existing command's output is unchanged.
+
+### Defects found and fixed — all four by running it, none by a first test run
+
+| Defect | Fix |
+|---|---|
+| **The REPL hung after its first answer.** The interrupt watcher drained an `AsyncIterable` of interrupts, which never ends, so the `await` releasing it never settled: the answer printed, the footer printed, and then nothing. Node's "unsettled top-level await" warning was the only symptom. | `onInterrupt(handler) => unsubscribe`. A subscription can be released synchronously, which is what a per-answer watcher needs. Guarded by a test that asks three questions in one session. |
+| **Every chat POST cancelled itself instantly.** The abort listener was on the request; `close` on an `IncomingMessage` fires when that readable is destroyed — as soon as the body is consumed — so every answer failed `generation-aborted`. | Listen on the **response**, and abort only when `writableFinished` is false, which distinguishes "the client left" from "we finished answering". |
+| **A malformed body on `/chat/stream` returned `200` carrying an error frame.** The stream opened before the handler validated anything, fixing the status. | The sink opens the stream **lazily on its first write**, so every failure raised before the first frame — bad body, unknown subject, no model — is an ordinary JSON error with a real status. |
+| **The vendor name leaked out of `providers.ts` into `cli.ts`** through the `--provider` default and the help text. | `DEFAULT_PROVIDER` and `EXAMPLE_MODEL` exported from `providers.ts`; a grep now finds the vendor in exactly one CLI file. |
+
+### Verification performed
+
+Build, typecheck, 1,866 + 170 tests, boundary audit, and by hand against a live provider: SSE frame order
+and content over `curl`; three consecutive CLI prompts with `/clear` between them and a clean `bye`;
+Ctrl+C mid-answer cancelling and the session surviving to answer again (exit 0); Ctrl+C while idle exiting
+130; `NO_COLOR` producing byte-plain output; and each of the four error paths with its own exit status
+(`2` wrong flag, `3` provider down, `4` no such model, `5` nothing answerable).
+
+### Boundary audit
+
+`packages/ai`'s compiled closure is still exactly one external import, `node:crypto`. `apps/api/src`
+contains no vendor name and no `@traceiq/ai-ollama` import. `apps/cli/src/chat.ts` imports only
+`@traceiq/ai`, `@traceiq/context` (types) and `@traceiq/types` — no graph, no capability, no vendor.
+
+### Files Created
+
+`apps/api/src/`: `chat.ts`, `sse.ts`, `chat.test.ts`.
+`apps/cli/src/`: `chat.ts`, `providers.ts`, `chat.test.ts`.
+
+### Files Modified
+
+- `packages/ai/src/answer.ts` — `usage` on `Answer` (strictly required, above).
+- `apps/api/src/`: `endpoints.ts` (two endpoints, `RequestContext.model`/`signal`, `answererFor`, optional
+  `stream`), `app.ts` (streaming route, abort wiring, `AppOptions.model`), `errors.ts` (AI codes and
+  statuses), `graph-holder.ts` (`context()`), `openapi.ts` (event-stream responses), `server.ts`,
+  `index.ts`, `api.test.ts`, `package.json`, `tsconfig.json`, `bin/traceiq-api.js`.
+- `apps/cli/src/`: `cli.ts` (chat dispatch, three flags, help), `errors.ts` (four codes), `session.ts`
+  (`context()`), `types.ts` (three options), `index.ts`, `cli.test.ts`, `package.json`, `tsconfig.json`,
+  `bin/traceiq.js`.
+- `README.md`, `apps/api/README.md`, `apps/cli/README.md`, `docs/progress.md`.
+
+### Known Issues
+
+- **The web UI is not started.** See the next milestone.
+- A weak model still produces weak answers; the layer reports the verdict rather than hiding it. On the
+  live CLI run, questions about repository scale were `grounded` with correct citations, while an open
+  question about a symbol came back `unverifiable`.
+- `generation-aborted` maps to `400`, which is effectively unobservable on `/chat`: by the time it is
+  raised the client has gone.
+- No linter, here as elsewhere.
+
+### Next Milestone
+
+**Repository Chat — Web UI.** Not started. Continuation point is recorded in the implementation report.
+
+## AI Layer
+
+**Status:** complete. `pnpm build` clean, `pnpm typecheck:tests` clean, `pnpm test` 1,800 backend + 170 web
+passing (128 in `@traceiq/ai`, 28 in `@traceiq/ai-ollama`, one of those opt-in against a live provider).
+
+Two packages: `packages/ai`, provider-agnostic; `packages/ai-ollama`, the first provider. Verified end to
+end against Ollama 0.31.1 with `qwen2.5:7b-instruct` over a real scan of TraceIQ.
+
+### The finding that shaped the milestone
+
+`RepositoryContext` cannot go in a prompt. Measured before any code was written:
+
+| Kind | context | ≈ tokens | vs 128k window |
+|---|---|---|---|
+| `search` | 197 KB | 56,146 | 0.4× |
+| `file` | 288 KB | 81,899 | 0.6× |
+| `symbol` | 621 KB | 176,712 | 1.3× |
+| `package` | 834 KB | 237,286 | 1.8× |
+| `repository` | 1,450 KB | 412,508 | 3.1× |
+| `impact` | 4,201 KB | **1,194,962** | **9.1×** |
+
+An `impact` context is 1.2 million tokens, 146× an 8k window. The Context Builder deliberately stopped short
+of solving this — choosing what fits a budget needs a tokeniser. So the **projection is the milestone**, and
+the provider is the small part.
+
+Two other audit findings drove decisions. `@traceiq/context` imports every capability as **types only**; its
+compiled output contains no `@traceiq` import at all, so the AI layer's runtime closure can be genuinely
+empty. And the read API exposes **no graph revision**, which is why grounding identity is a digest of the
+projection rather than of the repository.
+
+### Architecture as approved and amended
+
+```
+question + resolved subject
+   │  ContextSource.build()      ← the one inbound path, one method
+RepositoryContext   [≤1.2M tokens]
+   │  project()                  fixed priority, capped, counted, deduplicated
+ContextProjection   [facts · closed identifier set · omissions · digest]
+   │  assemble()                 deterministic, fenced, declared to be data
+   │  LanguageModel.generate()   streaming is the only primitive
+   │  checkGrounding()           every identifier must be in the closed set
+AnswerEvent stream
+```
+
+`RepositoryAnswerer(source, model)` — **constructor injection is the entire configuration surface**. No
+registry (removed on amendment), no provider name, no vendor anywhere in `packages/ai`. Conversation is
+**types only**; no store, no persistence. **No subject resolution**: turning free text into a subject is
+repository search and stays in the Explorer. **No synthetic repository fingerprint**: dropped on amendment,
+pending a real revision identifier.
+
+### Defects found and fixed — every one by probing, none by a first test run
+
+| Defect | Fix |
+|---|---|
+| **40 of 276 facts in a real symbol projection were exact duplicates.** The context mirrors some edges by design — `references` is documented as "a kind-independent view, not additional data" — so a type reference arrives twice. 15% of a scarce budget paid twice, and apparent evidence inflated. | Deduplication by (subject, predicate, object); the earlier, higher-priority extractor wins. Omission totals count only facts nothing earlier had said. |
+| **A real 7B model wrote `[f8, f10]` and two of three citations were silently dropped.** The pattern matched only `[f12]`. Losing evidence an answer really provided is the worst direction to fail in. | The pattern accepts the combined form; `citationIds` splits it. Confirmed live: citations on one question went from 1 to 9. |
+| **The identifier set contained `sym:… at depth 1`** as though it were an identifier, so a model citing the bare name would have been accused of inventing it. | The depth suffix is stripped; the set holds identifiers only. |
+| **A stalled provider could never time out.** `readNdjson` checked the abort flag only *between* reads, so a body that opens and then sends nothing left the reader blocked *inside* `read()`. Found by a test that hung. | The read is raced against the abort, and the reader is cancelled so the connection is not held open. |
+| **The caps always bound before the token budget**, so a larger context window bought nothing and a long question cost nothing. | Caps raised so both are real constraints; each has a test. |
+| **The vendor name leaked into a published `.d.ts`** through a doc comment in the provider-agnostic package. | Reworded, and the leak test now covers the published types, not only source. |
+| **Three source files contained a literal NUL byte** where a separator was intended. Nothing failed — the NUL worked, every test passed — but `file` reported them as binary and **`grep` skipped them entirely**, which silently defeated the boundary audits: a grep that matches nothing looks identical to a grep that finds nothing wrong. I nearly reported "no external imports" on that basis. | Separators written as `\u0000` escapes. A test now rejects any control byte in source or build output. |
+
+### Self-review — probed before the tests were written
+
+| Criterion | Finding |
+|---|---|
+| Duplicate facts | **Found and fixed**, above. Now zero across all six kinds. |
+| Empty or nullish facts | None across all kinds: no `undefined`, `null`, `NaN` or `[object …]` reaches a fact. |
+| Prompt actually fits | Measured, not assumed: `symbol` 4,791 tokens, `impact` 5,897, against a declared 6,000 and an 8k window. |
+| Source code leakage | None. `export class`, `export function`, `=>`, `return` all absent from the fact region. Asserted by test. |
+| One fact eating the budget | Longest are limitation details at ~270 characters — long, but they are the honesty guarantee and there are ten. |
+| Duplicated repository intelligence | None. The extractors read the context's kind-independent parts; only one small switch looks inside a capability result, and it reads the subject's identity. |
+| Hidden second inbound path | Impossible: `ContextSource` has one method. Asserted by test. |
+| Ordering / determinism | Same context and tier produce byte-identical facts and prompts, over fakes and over a real graph. |
+
+### Performance on TraceIQ — 228 files, 3,148 declarations, 12,911 edges
+
+| Kind | context tokens | projected | reduction | facts | cold | warm |
+|---|---|---|---|---|---|---|
+| `repository` | 412,508 | 1,920 | **215×** | 64 | 0.74 ms | 0.10 ms |
+| `symbol` | 176,712 | 5,995 | 29× | 166 | 0.27 ms | 0.16 ms |
+| `impact` | 1,194,962 | 5,989 | **200×** | 152 | 0.20 ms | 0.12 ms |
+| `file` | 81,899 | 3,176 | 26× | 81 | 0.09 ms | 0.06 ms |
+| `package` | 237,286 | 1,428 | 166× | 47 | 0.07 ms | 0.05 ms |
+| `search` | 56,146 | 907 | 62× | 30 | 0.03 ms | 0.02 ms |
+
+The projection is sub-millisecond and never the bottleneck. Generation dominates completely: against a local
+7B model, first token ~4 s, a 200-token answer ~10 s.
+
+### Live verification
+
+Three questions over a real scan, real capabilities, real Context Builder, real Ollama. One answer
+`grounded` with nine resolved citations and correct figures. One `unverifiable` — the model wrote plausible
+prose and cited nothing. One `ungrounded` — the model mangled a real identifier and the guard named it. The
+layer reported all three accurately rather than presenting any of them as grounded, which is the intended
+behaviour and the reason the verdict is part of the answer.
+
+### Files Created
+
+`packages/ai`: `package.json`, `tsconfig.json`, `README.md`; `src/` — `answer.ts`, `budget.ts`,
+`context-source.ts`, `conversation.ts`, `errors.ts`, `facts.ts`, `grounding.ts`, `index.ts`, `model.ts`,
+`projection.ts`, `prompt.ts`, `stream.ts`, `testing.ts`; 7 test files plus `fixtures.test-helper.ts`.
+
+`packages/ai-ollama`: `package.json`, `tsconfig.json`, `README.md`; `src/` — `index.ts`, `ndjson.ts`,
+`ollama-model.ts`, `ollama-provider.ts`; 1 test file plus `stub.test-helper.ts`.
+
+### Files Modified
+
+- `tsconfig.json`, `tsconfig.tests.json` — two project references.
+- `vitest.config.ts` — three aliases, including `@traceiq/ai/testing` mirroring the package's `exports` map.
+- `README.md` — both packages listed; the AI layer named in the stack.
+
+**No previously completed package was modified.**
+
+### Runtime dependencies
+
+**None**, in either package. `@traceiq/context` is type-only; Ollama is reached with Node's own `fetch` and
+streams. The repository's total external runtime surface stays `better-sqlite3`, `ts-morph`, `fast-glob`,
+`express`.
+
+Precisely: the only external import in `@traceiq/ai`'s compiled output is `node:crypto`, a platform builtin
+used for the projection digest. `@traceiq/ai-ollama` imports only `@traceiq/ai`.
+
+### Known Issues
+
+- **The token counter is an estimate** — 3.6 chars/token, the measured ratio. The tier step-down exists
+  because it can be wrong; a provider that can count exactly supplies its own counter.
+- **The guard checks identifiers, not claims.** "f12 proves X" when f12 proves Y passes.
+- **Prompt injection is mitigated, not solved.** Repository content reaches the prompt.
+- **No graph revision**, so staleness cannot be detected. Pending an additive `revision()` on the read API.
+- **Answer quality is not tested.** That is model evaluation and needs labelled data.
+- No linter, here as elsewhere.
+
+### Next Milestone
+
+Exposing answers through `apps/api` (SSE) and `apps/cli`, and conversation persistence. **Not started.**
+Each touches a frozen app and needs its own approval.
+
 ## TraceIQ Web
 
 **Status:** complete. `pnpm --filter @traceiq/web build` clean,

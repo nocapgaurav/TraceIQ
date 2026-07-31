@@ -17,8 +17,17 @@ export async function startServer(input: {
   /** 0 asks the operating system for a free port, which is what a test wants. */
   readonly port: number;
   readonly log?: Parameters<typeof createApp>[0]['log'];
+  /** The model the chat endpoints answer with. Omitted, they answer `ai-not-configured`. */
+  readonly model?: Parameters<typeof createApp>[0]['model'];
+  /** Analyses in flight. Omitted, the app builds one over the real git cloner. */
+  readonly analyses?: Parameters<typeof createApp>[0]['analyses'];
 }): Promise<StartedServer> {
-  const app = createApp({ databasePath: input.databasePath, ...(input.log === undefined ? {} : { log: input.log }) });
+  const app = createApp({
+    databasePath: input.databasePath,
+    ...(input.log === undefined ? {} : { log: input.log }),
+    ...(input.model === undefined ? {} : { model: input.model }),
+    ...(input.analyses === undefined ? {} : { analyses: input.analyses }),
+  });
 
   return await new Promise<StartedServer>((resolve) => {
     const server = app.express.listen(input.port, () => {

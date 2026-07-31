@@ -16,6 +16,22 @@ export const ERROR_CODES = [
   'method-not-allowed',
   'repository-not-scanned',
   'invalid-repository',
+
+  // The AI layer's own codes, carried through unchanged. A client that already branches on an `AiError`
+  // code keeps working over HTTP, which is what "preserve error codes" has to mean; renaming them here
+  // would make the transport a second vocabulary to learn.
+  'ai-not-configured',
+  'provider-unavailable',
+  'model-not-found',
+  'model-load-failed',
+  'subject-not-found',
+  'context-source-failed',
+  'budget-not-satisfiable',
+  'context-window-exceeded',
+  'generation-timeout',
+  'generation-aborted',
+  'stream-interrupted',
+  'provider-protocol-error',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -41,6 +57,24 @@ export const HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   'method-not-allowed': 405,
   'repository-not-scanned': 409,
   'invalid-repository': 422,
+
+  // `503` for a provider that is not there or cannot load a model: the request was fine and the server
+  // cannot answer yet. `502` for a provider that answered badly — it is an upstream fault, not ours.
+  // `504` for a provider that went silent. `422` for a prompt that cannot be made to fit.
+  'ai-not-configured': 503,
+  'provider-unavailable': 503,
+  'model-not-found': 404,
+  'model-load-failed': 503,
+  'subject-not-found': 404,
+  'context-source-failed': 500,
+  'budget-not-satisfiable': 422,
+  'context-window-exceeded': 422,
+  // Reachable only when the client cancelled, in which case there is nobody left to receive it. Given a
+  // status it must have, `400` says the request ended by the client's choice rather than by a fault here.
+  'generation-aborted': 400,
+  'generation-timeout': 504,
+  'stream-interrupted': 502,
+  'provider-protocol-error': 502,
 };
 
 /**

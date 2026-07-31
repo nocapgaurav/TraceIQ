@@ -69,11 +69,11 @@ describe('Nav', () => {
   });
 
   it('marks the current page with aria-current, so it is announced', () => {
-    pathname.current = '/health';
+    pathname.current = '/impact';
 
     renderWithQuery(<Nav />);
 
-    expect(screen.getByRole('link', { name: 'Health' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: 'Impact' })).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('link', { name: 'Explorer' })).not.toHaveAttribute('aria-current');
   });
 });

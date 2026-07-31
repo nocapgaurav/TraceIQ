@@ -1,3 +1,5 @@
+import { RepositoryContextBuilder } from '@traceiq/context';
+import { SymbolExplainer } from '@traceiq/explain';
 import { RepositoryHealthAnalyzer } from '@traceiq/health';
 import { CachingGraph, RepositoryExplorer } from '@traceiq/explorer';
 import { ImpactAnalyzer } from '@traceiq/impact';
@@ -22,6 +24,7 @@ export class CommandSession {
   #navigator: RepositoryNavigator | null = null;
   #impact: ImpactAnalyzer | null = null;
   #health: RepositoryHealthAnalyzer | null = null;
+  #context: RepositoryContextBuilder | null = null;
 
   constructor(session: RepositorySession) {
     this.#graph = new CachingGraph(session.api);
@@ -37,6 +40,29 @@ export class CommandSession {
     this.#navigator ??= new RepositoryNavigator(this.#graph);
 
     return this.#navigator;
+  }
+
+  /**
+   * The context builder, over the same shared graph.
+   *
+   * The **only** thing `chat` receives from this class. It is handed to `RepositoryAnswerer` as a
+   * `ContextSource`, which has one method — so the chat mode cannot traverse, query, search or reach a
+   * capability directly, and `chat.ts` imports no graph type at all.
+   */
+  context(): RepositoryContextBuilder {
+    if (this.#context === null) {
+      const queries = new QueryEngine(this.#graph);
+
+      this.#context = new RepositoryContextBuilder({
+        explorer: this.explorer(),
+        explain: new SymbolExplainer(queries),
+        impact: new ImpactAnalyzer(queries),
+        health: this.health(),
+        queries,
+      });
+    }
+
+    return this.#context;
   }
 
   /** Full Impact Analysis. The explorer carries only a summary. */

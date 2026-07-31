@@ -7,6 +7,7 @@ import { renderWithQuery, stubFetch, type FetchStub } from '@/test/harness';
 import { DEFAULT_PANEL_SIZES, useUiStore } from '@/store/ui-store';
 
 import { CommandPalette } from './command-palette';
+import { NAV_ITEMS } from './nav';
 
 /**
  * The command palette — the reason the whole app is usable without a pointer.
@@ -48,8 +49,8 @@ describe('CommandPalette', () => {
 
     const list = await screen.findByRole('listbox', { name: 'Results' });
 
-    expect(within(list).getAllByRole('option')).toHaveLength(6);
-    expect(within(list).getByText('Dashboard')).toBeInTheDocument();
+    expect(within(list).getAllByRole('option')).toHaveLength(NAV_ITEMS.length);
+    expect(within(list).getByText('Overview')).toBeInTheDocument();
   });
 
   it('focuses the input on open, so typing works immediately', async () => {
@@ -81,7 +82,7 @@ describe('CommandPalette', () => {
 
     await userEvent.keyboard('{ArrowUp}');
 
-    expect(screen.getAllByRole('option', { selected: true })[0]).toHaveTextContent('Dashboard');
+    expect(screen.getAllByRole('option', { selected: true })[0]).toHaveTextContent('Overview');
   });
 
   it('wraps from the last option back to the first', async () => {
@@ -92,7 +93,10 @@ describe('CommandPalette', () => {
 
     await userEvent.keyboard('{ArrowUp}');
 
-    expect(screen.getAllByRole('option', { selected: true })[0]).toHaveTextContent('Search');
+    // Wrapping lands on the last section, whatever the nav happens to hold.
+    expect(screen.getAllByRole('option', { selected: true })[0]).toHaveTextContent(
+      NAV_ITEMS.at(-1)?.label ?? '',
+    );
   });
 
   it('navigates on Enter and closes', async () => {
@@ -113,10 +117,10 @@ describe('CommandPalette', () => {
     renderWithQuery(<CommandPalette />);
     await screen.findByRole('listbox', { name: 'Results' });
 
-    await userEvent.type(screen.getByLabelText('Search declarations, files, routes'), 'heal');
+    await userEvent.type(screen.getByLabelText('Search declarations, files, routes'), 'impa');
 
-    expect(screen.getByText('Health')).toBeInTheDocument();
-    expect(screen.queryByText('Dashboard')).not.toBeInTheDocument();
+    expect(screen.getByText('Impact')).toBeInTheDocument();
+    expect(screen.queryByText('Overview')).not.toBeInTheDocument();
   });
 
   it('searches the repository and links a result with the hash encoded', async () => {

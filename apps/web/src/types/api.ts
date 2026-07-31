@@ -136,6 +136,71 @@ export interface ScanSummary {
 }
 
 // ---------------------------------------------------------------------------------------------
+// POST /analysis, GET /analysis/{id}
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Repository Analysis, as the wire carries it.
+ *
+ * Hand-written like the rest of this file. **There is no percentage here and there must not be**: the
+ * server reports which stage it is on, because that is what it can observe. A field this app computed to
+ * look like progress would be invented.
+ */
+export type AnalysisStageStatus = 'pending' | 'active' | 'done' | 'failed' | 'skipped';
+
+export interface AnalysisStage {
+  readonly name: string;
+  readonly label: string;
+  readonly status: AnalysisStageStatus;
+  /** What the stage produced, once it has. Null while pending. */
+  readonly detail: string | null;
+}
+
+export type AnalysisJobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
+
+export interface AnalysisResult {
+  readonly repository: string;
+  readonly slug: string;
+  readonly htmlUrl: string;
+  readonly files: number;
+  readonly declarations: number;
+  readonly nodes: number;
+  readonly edges: number;
+  readonly routes: number;
+  readonly environmentVariables: number;
+  readonly externalPackages: number;
+  readonly callEdges: number;
+  readonly unresolvedCalls: number;
+  readonly unresolvedReferences: number;
+}
+
+export interface AnalysisJob {
+  readonly id: string;
+  readonly url: string;
+  readonly slug: string | null;
+  readonly htmlUrl: string | null;
+  readonly status: AnalysisJobStatus;
+  readonly stages: readonly AnalysisStage[];
+  readonly result: AnalysisResult | null;
+  readonly error: { readonly code: string; readonly detail: string; readonly hint: string } | null;
+  /** How long the analysis has taken. Elapsed time, never a share of an unknown total. */
+  readonly elapsedMs: number;
+  readonly workspaceWarning: string | null;
+}
+
+/** What `GET /analysis` returns: the running analysis if there is one, and the recent history. */
+export interface AnalysisList {
+  readonly running: AnalysisJob | null;
+  readonly entries: readonly AnalysisJob[];
+}
+
+/** `accepted: false` means an analysis was already running; `job` is that one, to follow instead. */
+export interface StartAnalysis {
+  readonly accepted: boolean;
+  readonly job: AnalysisJob;
+}
+
+// ---------------------------------------------------------------------------------------------
 // GET /overview
 // ---------------------------------------------------------------------------------------------
 
@@ -559,3 +624,110 @@ export interface DependencyNavigation {
   readonly connectedComponent: Listing<GraphNode>;
   readonly limitations: readonly Limitation[];
 }
+
+// ---------------------------------------------------------------------------------------------
+// POST /chat, POST /chat/stream
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Repository Chat, as the wire carries it.
+ *
+ * Hand-written like the rest of this file: the frontend cannot import `@traceiq/ai`, so these mirror
+ * `apps/api/src/chat.ts` by contract rather than by type. Only the fields this UI reads are declared.
+ *
+ * A citation is **flat** — the fact's fields, not a fact object — because that is what the API sends and
+ * what a consumer needs to display the evidence without a second request.
+ */
+export interface ChatCitation {
+  readonly factId: string;
+  readonly subject: string;
+  readonly predicate: string;
+  readonly object: string;
+  readonly confidence: string;
+  /** Which capability established the fact. */
+  readonly provenance: string;
+}
+
+/** What a cap left out of the facts the model was shown. Never omitted, so a cap is never silent. */
+export interface ChatOmission {
+  readonly part: string;
+  readonly kept: number;
+  readonly total: number;
+}
+
+export interface ChatGrounding {
+  readonly kind: string;
+  readonly subject: string | null;
+  readonly factCount: number;
+  readonly tier: string;
+  readonly tokens: number;
+  /** Identity of the facts that grounded this answer. Two equal digests ground identically. */
+  readonly digest: string;
+  readonly omissions: readonly ChatOmission[];
+}
+
+export type ChatVerdict = 'grounded' | 'ungrounded' | 'unverifiable';
+
+export interface ChatAnswer {
+  readonly question: string;
+  readonly subject: ChatSubject;
+  readonly text: string;
+  readonly verdict: ChatVerdict;
+  readonly citations: readonly ChatCitation[];
+  /** Identifiers the answer named that no fact contained. Empty unless the verdict is `ungrounded`. */
+  readonly fabricatedIdentifiers: readonly string[];
+  readonly unknownCitations: readonly string[];
+  readonly grounding: ChatGrounding;
+  readonly model: string;
+  readonly stopReason: string;
+  readonly usage: { readonly promptTokens: number | null; readonly outputTokens: number | null };
+}
+
+/**
+ * What to ask about, already resolved.
+ *
+ * The API refuses to turn free text into a subject, so this UI resolves one through `GET /search` — the
+ * Explorer, not the AI layer — and sends the result.
+ */
+export type ChatSubject =
+  | { readonly kind: 'symbol'; readonly id: string }
+  | { readonly kind: 'impact'; readonly id: string }
+  | { readonly kind: 'file'; readonly path: string }
+  | { readonly kind: 'package'; readonly name: string }
+  | { readonly kind: 'route'; readonly method: string; readonly path: string }
+  | { readonly kind: 'repository' }
+  | { readonly kind: 'search'; readonly query: { readonly text: string } };
+
+/** One prior turn, replayed as conversation. Facts are never replayed — each turn grounds itself. */
+export interface ChatHistoryTurn {
+  readonly question: string;
+  readonly answer: string;
+}
+
+export interface ChatRequest {
+  readonly question: string;
+  readonly subject: ChatSubject;
+  readonly history?: readonly ChatHistoryTurn[];
+  readonly maxOutputTokens?: number;
+}
+
+/**
+ * A frame from `POST /chat/stream`.
+ *
+ * `grounding` always arrives before any `delta`, and again if the prompt had to be re-projected smaller.
+ * `error` is terminal and arrives instead of `complete`: once the stream has opened the status line is
+ * gone, so a mid-answer failure cannot be an HTTP error.
+ */
+export type ChatEvent =
+  | { readonly type: 'open'; readonly model: string | null }
+  | { readonly type: 'grounding'; readonly grounding: ChatGrounding }
+  | { readonly type: 'delta'; readonly text: string }
+  | { readonly type: 'complete'; readonly answer: ChatAnswer }
+  | {
+      readonly type: 'error';
+      readonly code: string;
+      readonly detail: string;
+      readonly hint: string;
+      /** Whatever had already been generated when it failed. */
+      readonly partial: string | null;
+    };

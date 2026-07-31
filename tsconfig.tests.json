@@ -46,6 +46,8 @@
     { "path": "./packages/navigation" },
     { "path": "./packages/pipeline" },
     { "path": "./packages/context" },
+    { "path": "./packages/ai" },
+    { "path": "./packages/ai-ollama" },
     { "path": "./apps/cli" },
     { "path": "./apps/api" }
   ]

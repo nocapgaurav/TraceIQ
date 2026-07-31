@@ -1,6 +1,6 @@
 'use client';
 
-import { Activity, GitBranch, LayoutDashboard, Network, Search, Target } from 'lucide-react';
+import { GitBranch, LayoutDashboard, MessageSquare, Network, Search, Target } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
@@ -12,16 +12,30 @@ export interface NavItem {
   readonly icon: React.ComponentType<{ readonly className?: string }>;
 }
 
+/**
+ * The product's vocabulary, in one place.
+ *
+ * **Health is deliberately absent.** Its analysis still runs and its endpoint still answers — the AI
+ * layer and future features read those metrics — but the page measured the graph's own diagnostics
+ * rather than anything a reader learns about their repository, so it is no longer part of the product.
+ * The route still resolves for anyone holding a link.
+ *
+ * The labels here are the only names these features have anywhere in the interface: Overview, not
+ * Dashboard; Ask TraceIQ, not Chat or AI.
+ */
 export const NAV_ITEMS: readonly NavItem[] = [
-  { href: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/dashboard', label: 'Overview', icon: LayoutDashboard },
   { href: '/explorer', label: 'Explorer', icon: GitBranch },
   { href: '/architecture', label: 'Architecture', icon: Network },
   { href: '/impact', label: 'Impact', icon: Target },
-  { href: '/health', label: 'Health', icon: Activity },
   { href: '/search', label: 'Search', icon: Search },
+  { href: '/chat', label: 'Ask TraceIQ', icon: MessageSquare },
 ];
 
-/** `/` matches only itself; every other item matches its subtree, so `/symbol/x` keeps Explorer lit. */
+/**
+ * `/` matches only itself — the landing page must not light up a nav item from every route — while every
+ * other item matches its subtree, so `/symbol/x` keeps Explorer lit.
+ */
 export function isActive(pathname: string, href: string): boolean {
   return href === '/' ? pathname === '/' : pathname === href || pathname.startsWith(`${href}/`);
 }

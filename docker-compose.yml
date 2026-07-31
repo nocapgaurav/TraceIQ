@@ -1,0 +1,153 @@
+# TraceIQ, running locally.
+#
+#   git clone <repo> && cd traceiq && docker compose up
+#
+# Brings up four things in order: Ollama, a one-shot model pull, the REST API, and the web application — plus
+# a one-shot scan so the app has something to show. Open http://localhost:3001.
+#
+# **Chat is off until you ask for it.** `TRACEIQ_MODEL` is empty by default, because a model is several
+# gigabytes and a first `docker compose up` should not begin with a download nobody requested. Everything
+# else works; the chat page says `ai-not-configured` and what to do. Set `TRACEIQ_MODEL` in `.env` and run
+# `docker compose up` again to enable it.
+
+name: traceiq
+
+services:
+  # -------------------------------------------------------------------------------------------
+  # The model provider
+  # -------------------------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:0.32.5
+    restart: unless-stopped
+    # Bound to the loopback interface: this is a local development stack and an unauthenticated model server
+    # should not be reachable from the network. Remove the prefix deliberately, not by accident.
+    ports:
+      - '127.0.0.1:${OLLAMA_PORT:-11434}:11434'
+    volumes:
+      # Models are gigabytes and survive `docker compose down`. Losing them to a container rebuild would mean
+      # re-downloading every time.
+      - ollama-models:/root/.ollama
+    healthcheck:
+      # `ollama list` exercises the same API the provider uses and needs no extra tool in the image. A plain
+      # process check would report healthy while the server was still starting.
+      test: ['CMD', 'ollama', 'list']
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 6
+
+  # -------------------------------------------------------------------------------------------
+  # One-shot: make sure the configured model is present before the API looks for it
+  # -------------------------------------------------------------------------------------------
+  ollama-pull:
+    image: ollama/ollama:0.32.5
+    # A one-shot job, not a service: it must run to completion and stay finished. Restarting it would
+    # re-verify a multi-gigabyte model on every container event.
+    restart: 'no'
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      # The pull runs in its own container and talks to the server over the network, so it needs the address.
+      OLLAMA_HOST: http://ollama:11434
+      TRACEIQ_MODEL: ${TRACEIQ_MODEL:-}
+    volumes:
+      - ./docker/pull-model.sh:/pull-model.sh:ro
+    entrypoint: ['/bin/sh', '/pull-model.sh']
+
+  # -------------------------------------------------------------------------------------------
+  # The REST API
+  # -------------------------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:${API_PORT:-3000}:3000'
+    depends_on:
+      # Waits for the pull to *finish*, not merely to start. The API resolves its model at startup and exits
+      # if the provider does not hold it, so starting before the pull completed would be a crash loop until
+      # the download happened to finish.
+      ollama-pull:
+        condition: service_completed_successfully
+    environment:
+      PORT: 3000
+      TRACEIQ_DB: /data/graph.db
+      TRACEIQ_PROVIDER: ${TRACEIQ_PROVIDER:-ollama}
+      TRACEIQ_MODEL: ${TRACEIQ_MODEL:-}
+      TRACEIQ_OLLAMA_URL: http://ollama:11434
+    volumes:
+      # The graph. Persistent, so a rebuilt API image does not mean rescanning.
+      - traceiq-graph:/data
+      # The repository to analyse, read-only. `POST /scan` reads a path inside *this* container, so a
+      # repository has to be visible here for the API to scan it. Read-only because analysis never writes.
+      - ${TRACEIQ_SCAN_PATH:-.}:/workspace:ro
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/ping').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+
+  # -------------------------------------------------------------------------------------------
+  # One-shot: give the API something to answer about
+  # -------------------------------------------------------------------------------------------
+  seed:
+    image: node:22-trixie-slim
+    restart: 'no'
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      TRACEIQ_API_URL: http://api:3000
+      # The path *inside the API container*, since the API is what performs the scan.
+      TRACEIQ_SCAN_PATH: /workspace
+    volumes:
+      - ./docker/seed-graph.mjs:/seed-graph.mjs:ro
+    # Skips itself when a graph already exists, so this is a first-run step and not a rescan on every up.
+    command: ['node', '/seed-graph.mjs']
+
+  # -------------------------------------------------------------------------------------------
+  # The web application
+  # -------------------------------------------------------------------------------------------
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # Build-time, and it has to be: Next compiles its rewrites into the build, so the browser's `/api/*`
+        # destination is fixed when the image is built. The Compose service name is what makes this work
+        # unconfigured.
+        TRACEIQ_API_URL: ${TRACEIQ_API_URL:-http://api:3000}
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:${WEB_PORT:-3001}:3001'
+    depends_on:
+      # Healthy, not merely started: every page fetches through the proxy, and a web server that came up
+      # first would render its error states for as long as the API took to open a graph.
+      api:
+        condition: service_healthy
+    environment:
+      PORT: 3001
+      HOSTNAME: 0.0.0.0
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3001/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+volumes:
+  # Named rather than bind-mounted: the graph is a generated artefact and belongs to Docker, not to a
+  # directory in the checkout that would then differ between host and container.
+  traceiq-graph:
+  ollama-models:

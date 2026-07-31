@@ -1,5 +1,6 @@
 import { apiClient, encodeSegment } from './api-client';
 import type {
+  AnalysisList,
   ArchitectureNavigation,
   CycleReport,
   DependencyNavigation,
@@ -32,6 +33,9 @@ export const repositoryService = {
   version: (): Promise<VersionInfo> => apiClient.get('/version'),
 
   scan: (repository: string): Promise<ScanSummary> => apiClient.post('/scan', { repository }),
+
+  /** Analyses this API has run. The Overview reads it to learn which repository it is describing. */
+  analyses: (): Promise<AnalysisList> => apiClient.get('/analysis'),
 
   overview: (): Promise<Overview> => apiClient.get('/overview'),
 

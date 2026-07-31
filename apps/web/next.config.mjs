@@ -3,8 +3,9 @@ import { fileURLToPath } from 'node:url';
 /**
  * Where the TraceIQ REST API is listening.
  *
- * Read on the **server** at request time, not inlined into the browser bundle, so the same build can be
- * pointed at another host by restarting with a different value.
+ * Read when this config is loaded, which for a built app is **build time**: Next compiles `rewrites()` into
+ * the routes manifest, so the destination is baked and setting this on a running server changes nothing. The
+ * container image therefore takes it as a build argument. It is never inlined into the browser bundle.
  */
 const API_UPSTREAM = process.env.TRACEIQ_API_URL ?? 'http://127.0.0.1:3000';
 
@@ -23,6 +24,20 @@ const API_UPSTREAM = process.env.TRACEIQ_API_URL ?? 'http://127.0.0.1:3000';
  */
 const config = {
   reactStrictMode: true,
+
+  /**
+   * A self-contained server bundle, for the container image.
+   *
+   * Without this the runtime image would need the whole workspace `node_modules` — hundreds of megabytes of
+   * symlinks into a pnpm store that the image would also have to carry. `standalone` traces only the files
+   * the server actually loads and copies them, so the runtime stage needs no package manager and no install.
+   *
+   * `outputFileTracingRoot` must point at the workspace root: this is a pnpm monorepo, so the files Next
+   * traces live above `apps/web`, and without it the trace stops at this package and the bundle is missing
+   * its dependencies.
+   */
+  output: 'standalone',
+  outputFileTracingRoot: fileURLToPath(new URL('../..', import.meta.url)),
 
   /**
    * The API proxy.

@@ -5,7 +5,7 @@ import { COMMANDS, COMMAND_NAMES, findCommand, requireArguments } from './comman
 import { CliError, ERROR_CODES, EXIT_STATUS } from './errors.js';
 import { counted, fields, heading, indent, list, sections, short, table } from './format.js';
 
-const defaults = { databasePath: DEFAULT_DATABASE, profile: false };
+const defaults = { databasePath: DEFAULT_DATABASE, profile: false, model: null, provider: 'ollama', subject: null };
 
 describe('command line parsing', () => {
   it('reads a command with no arguments', () => {

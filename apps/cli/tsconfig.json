@@ -15,6 +15,9 @@
     { "path": "../../packages/health" },
     { "path": "../../packages/explorer" },
     { "path": "../../packages/navigation" },
-    { "path": "../../packages/pipeline" }
+    { "path": "../../packages/pipeline" },
+    { "path": "../../packages/ai-ollama" },
+    { "path": "../../packages/ai" },
+    { "path": "../../packages/context" }
   ]
 }

@@ -1,3 +1,5 @@
+import { RepositoryContextBuilder } from '@traceiq/context';
+import { SymbolExplainer } from '@traceiq/explain';
 import { RepositoryHealthAnalyzer } from '@traceiq/health';
 import { CachingGraph, RepositoryExplorer } from '@traceiq/explorer';
 import { ImpactAnalyzer } from '@traceiq/impact';
@@ -24,6 +26,7 @@ export class Capabilities {
   #navigator: RepositoryNavigator | null = null;
   #impact: ImpactAnalyzer | null = null;
   #health: RepositoryHealthAnalyzer | null = null;
+  #context: RepositoryContextBuilder | null = null;
 
   constructor(session: RepositorySession) {
     this.#graph = new CachingGraph(session.api);
@@ -51,6 +54,30 @@ export class Capabilities {
     this.#health ??= new RepositoryHealthAnalyzer(this.#graph);
 
     return this.#health;
+  }
+
+  /**
+   * The context builder, over the same shared graph.
+   *
+   * Built here rather than in a route so a chat request reads the database through the same cache every
+   * other endpoint uses. It is the **only** thing the chat endpoints receive from this class: they never
+   * touch the explorer, the explainer, the impact analyser, the health analyser or the query engine
+   * directly, and the AI layer cannot — a `ContextSource` has one method.
+   */
+  context(): RepositoryContextBuilder {
+    if (this.#context === null) {
+      const queries = new QueryEngine(this.#graph);
+
+      this.#context = new RepositoryContextBuilder({
+        explorer: this.explorer(),
+        explain: new SymbolExplainer(queries),
+        impact: new ImpactAnalyzer(queries),
+        health: this.health(),
+        queries,
+      });
+    }
+
+    return this.#context;
   }
 
   /** Reads that reached the database since this graph was opened. */

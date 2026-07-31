@@ -20,10 +20,13 @@ export function MetricList({
   title,
   description,
   listing,
+  cappedBy,
 }: {
   readonly title: string;
   readonly description?: string;
   readonly listing: Listing<NodeMetric>;
+  /** Passed through where a caller shortened the listing itself, so the note attributes the cap correctly. */
+  readonly cappedBy?: string;
 }) {
   return (
     <Card>
@@ -64,7 +67,12 @@ export function MetricList({
             </ul>
           </>
         )}
-        <ListingNote listing={listing} noun="entry" plural="entries" />
+        <ListingNote
+          listing={listing}
+          noun="entry"
+          plural="entries"
+          {...(cappedBy === undefined ? {} : { cappedBy })}
+        />
       </CardContent>
     </Card>
   );

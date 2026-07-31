@@ -5,6 +5,7 @@ import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 import { ApiError } from '@/services/api-client';
 import { repositoryService } from '@/services/repository-service';
 import type {
+  AnalysisList,
   ArchitectureNavigation,
   CycleReport,
   DependencyNavigation,
@@ -48,6 +49,7 @@ export const queryKeys = {
   dependencies: (subject: string) => ['dependencies', subject] as const,
   cycles: () => ['cycles'] as const,
   hotspots: () => ['hotspots'] as const,
+  analyses: () => ['analyses'] as const,
 };
 
 /**
@@ -142,6 +144,16 @@ export function useHealth(): UseQueryResult<HealthReport, Error> {
 
 export function useCycles(): UseQueryResult<CycleReport, Error> {
   return useQuery({ queryKey: queryKeys.cycles(), queryFn: repositoryService.cycles, ...IMMUTABLE });
+}
+
+/**
+ * Analyses this API has run, newest first.
+ *
+ * Read by the Overview to name the repository. **Not `IMMUTABLE`**: unlike a graph, this list changes
+ * whenever an analysis runs, so it is refetched on mount rather than cached for ever.
+ */
+export function useAnalyses(): UseQueryResult<AnalysisList, Error> {
+  return useQuery({ queryKey: queryKeys.analyses(), queryFn: repositoryService.analyses, retry: shouldRetry });
 }
 
 export function useHotspots(): UseQueryResult<HotspotReport, Error> {

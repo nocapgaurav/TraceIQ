@@ -1,5 +1,8 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 
+import type { LanguageModel } from '@traceiq/ai';
+import { AnalysisRegistry, RepositoryAnalyzer } from '@traceiq/analysis';
+
 import { ENDPOINTS, methodsFor, type Endpoint } from './endpoints.js';
 import {
   ApiError,
@@ -9,6 +12,7 @@ import {
 } from './errors.js';
 import { GraphHolder } from './graph-holder.js';
 import { openApiDocument } from './openapi.js';
+import { openEventStream } from './sse.js';
 import {
   API_VERSION,
   REQUEST_ID_HEADER,
@@ -33,6 +37,21 @@ export interface AppOptions {
   readonly log?: (entry: LogEntry) => void;
   /** Request identifiers, injected so a test can make them predictable. */
   readonly requestId?: () => string;
+  /**
+   * The language model the chat endpoints answer with.
+   *
+   * **Constructor injection, no registry.** The API never selects a provider: a composition root builds
+   * one, takes a model from it, and passes it here. That is why nothing under `apps/api/src` names a
+   * vendor. Omitted, the chat endpoints answer `ai-not-configured` and every other endpoint is unaffected.
+   */
+  readonly model?: LanguageModel;
+  /**
+   * Analyses in flight.
+   *
+   * Injected so a test drives the whole endpoint over a cloner that writes a fixture instead of reaching
+   * GitHub. Omitted, the app builds its own with the real git cloner.
+   */
+  readonly analyses?: AnalysisRegistry;
 }
 
 export interface TraceIqApp {
@@ -54,6 +73,23 @@ export interface TraceIqApp {
  */
 export function createApp(options: AppOptions): TraceIqApp {
   const holder = new GraphHolder(options.databasePath);
+  /*
+   * A successful analysis has written a new graph over the old one, so the open session is stale — it
+   * still points at the previous repository. Reopening here is what makes the Overview show the newly
+   * analysed repository without the browser being asked to reload anything.
+   *
+   * Only on success: a failed analysis leaves the previous graph untouched and still correct.
+   */
+  const analyses =
+    options.analyses ??
+    new AnalysisRegistry({
+      analyzer: new RepositoryAnalyzer(analyzerLimits()),
+      onSettled: (job) => {
+        if (job.status === 'succeeded') {
+          holder.reopen();
+        }
+      },
+    });
   const log = options.log ?? (() => {});
   const nextRequestId = options.requestId ?? defaultRequestId();
 
@@ -112,7 +148,7 @@ export function createApp(options: AppOptions): TraceIqApp {
   // 4. Every endpoint, from the one table.
   for (const endpoint of ENDPOINTS) {
     app[endpoint.method](endpoint.path, (request, response, next) => {
-      void handle(endpoint, request, response, holder).catch(next);
+      void handle(endpoint, request, response, holder, options.model ?? null, analyses).catch(next);
     });
   }
 
@@ -147,18 +183,77 @@ export function createApp(options: AppOptions): TraceIqApp {
   };
 }
 
+/**
+ * The two ceilings a deployment may raise, read from the environment.
+ *
+ * Read here rather than inside the analysis package, so that package stays a library with no opinion
+ * about how it is configured — the same reason nothing under `packages/` reads `process.env` for its
+ * behaviour. An unset or unparseable value falls back to the analyzer's own default rather than to zero,
+ * which would refuse every repository.
+ */
+function analyzerLimits(): { readonly cloneTimeoutMs?: number; readonly maxCloneBytes?: number } {
+  const timeout = Number(process.env.TRACEIQ_CLONE_TIMEOUT_MS);
+  const megabytes = Number(process.env.TRACEIQ_MAX_CLONE_MB);
+
+  return {
+    ...(Number.isFinite(timeout) && timeout > 0 ? { cloneTimeoutMs: timeout } : {}),
+    ...(Number.isFinite(megabytes) && megabytes > 0 ? { maxCloneBytes: megabytes * 1024 * 1024 } : {}),
+  };
+}
+
 async function handle(
   endpoint: Endpoint,
   request: Request,
   response: Response,
   holder: GraphHolder,
+  model: LanguageModel | null,
+  analyses: AnalysisRegistry,
 ): Promise<void> {
-  const data = await endpoint.handle({
+  // Aborted when the client disconnects, so a cancelled request actually stops the model generating rather
+  // than leaving a local model burning CPU for an answer nobody will read.
+  //
+  // **The listener is on the response, not the request.** `close` on an `IncomingMessage` fires when that
+  // readable stream is destroyed, which happens as soon as the body has been consumed — so listening there
+  // aborted every POST with a body the instant it was parsed, and every chat answer failed with
+  // `generation-aborted`. The response closes when the connection does, and `writableFinished`
+  // distinguishes "the client left" from "we finished answering".
+  const controller = new AbortController();
+
+  response.on('close', () => {
+    if (!response.writableFinished) {
+      controller.abort();
+    }
+  });
+
+  const context = {
     params: joinWildcards(request.params),
     query: readQuery(request.query),
     body: request.body,
     holder,
-  });
+    model,
+    signal: controller.signal,
+    analyses,
+  };
+
+  if (endpoint.stream !== undefined) {
+    // The sink opens the stream on its first frame, so anything the handler throws beforehand — a malformed
+    // body, an unknown subject, no model configured — still reaches the error handler with a real status.
+    const sink = openEventStream(response);
+
+    await endpoint.stream(context, sink);
+
+    if (sink.started) {
+      response.end();
+    }
+
+    return;
+  }
+
+  if (endpoint.handle === undefined) {
+    throw new Error(`endpoint ${endpoint.operationId} has neither a handle nor a stream`);
+  }
+
+  const data = await endpoint.handle(context);
 
   response.status(endpoint.method === 'post' ? 201 : 200).json(
     success(data, metaFor(request, holder, endpoint.capability, endpoint.documentedPath)),

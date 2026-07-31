@@ -41,12 +41,21 @@ afterEach(() => {
 });
 
 describe('Impact page', () => {
-  it('prompts for a declaration when none is chosen', () => {
+  /**
+   * The empty state used to say "No declaration chosen", which named the reader's omission and explained
+   * nothing. It now explains what Impact answers and where to pick a subject, and still asks for nothing
+   * from the API.
+   */
+  it('explains what Impact does when nothing is chosen, and requests nothing', () => {
     stub = stubFetch([]);
 
     renderWithQuery(<ImpactPage />);
 
-    expect(screen.getByText('No declaration chosen')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'What would this change break?' })).toBeInTheDocument();
+    // Matched on a run of text that no <strong> splits.
+    expect(screen.getByText(/at a time — a class, function/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Browse the Explorer/ })).toHaveAttribute('href', '/explorer');
+    expect(screen.getByRole('link', { name: /Search by name/ })).toHaveAttribute('href', '/search');
     expect(stub.calls).toEqual([]);
   });
 

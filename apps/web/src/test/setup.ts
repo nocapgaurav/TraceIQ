@@ -78,6 +78,19 @@ class MemoryStorage implements Storage {
 
 Object.defineProperty(globalThis, 'localStorage', { writable: true, value: new MemoryStorage() });
 
+/**
+ * `scrollIntoView`, which jsdom does not implement at all.
+ *
+ * The chat page follows a streaming answer with it. Stubbed rather than guarded in the component: a browser
+ * always has it, and a `typeof` check in production code to satisfy a test environment would be the test
+ * shaping the source.
+ */
+if (typeof Element.prototype.scrollIntoView !== 'function') {
+  Element.prototype.scrollIntoView = function scrollIntoView(): void {
+    // Nothing to do: a component test asserts what was rendered, not where the viewport ended up.
+  };
+}
+
 class ResizeObserverStub {
   observe(): void {}
   unobserve(): void {}

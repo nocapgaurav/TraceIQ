@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HOTSPOTS, OVERVIEW } from '@/test/fixtures';
 import { renderWithQuery, stubFetch, type FetchStub } from '@/test/harness';
 
-import DashboardPage from './page';
+import DashboardPage from './dashboard/page';
 
 /**
  * The Dashboard, end to end from `fetch` upwards.
@@ -43,8 +43,10 @@ describe('Dashboard', () => {
     expect(await screen.findByText('228')).toBeInTheDocument();
     expect(screen.getByText('12,911')).toBeInTheDocument();
     // 3,148 is both the declaration count and the DECLARES edge count — one per declaration, so the
-    // repetition is the data agreeing with itself rather than a duplicated element.
-    expect(screen.getAllByText('3,148')).toHaveLength(2);
+    // repetition is the data agreeing with itself rather than a duplicated element. It now appears three
+    // times rather than two: the Declarations stat, the DECLARES row of the metrics chart, and the
+    // DECLARES bar in the Architecture snapshot, which is a new section showing the same fact.
+    expect(screen.getAllByText('3,148')).toHaveLength(3);
   });
 
   it('formats coverage as a percentage', async () => {
@@ -57,7 +59,7 @@ describe('Dashboard', () => {
     expect(screen.getByText('53.1%')).toBeInTheDocument();
   });
 
-  it('requests overview and hotspots, and nothing else', async () => {
+  it('requests overview, hotspots and the analysis record, and nothing else', async () => {
     stub = stubFetch([{ path: '/overview', data: OVERVIEW }, { path: '/hotspots', data: HOTSPOTS }]);
 
     renderWithQuery(<DashboardPage />);
@@ -67,7 +69,9 @@ describe('Dashboard', () => {
       expect(stub?.calls.some((call) => call.includes('/hotspots'))).toBe(true);
     });
 
-    expect(new Set(stub?.calls)).toEqual(new Set(['/api/overview', '/api/hotspots']));
+    // `/analysis` is the third: it is the only place the analysed repository's real name exists, because
+    // the graph stores the temporary workspace directory for anything cloned from GitHub.
+    expect(new Set(stub?.calls)).toEqual(new Set(['/api/overview', '/api/hotspots', '/api/analysis']));
   });
 
   it('lists packages with links into the explorer', async () => {
@@ -122,19 +126,30 @@ describe('Dashboard', () => {
     expect(screen.getByText('exploded')).toBeInTheDocument();
   });
 
-  it('never renders a chat, prompt or markdown affordance', async () => {
+  /**
+   * This replaces "never renders a chat, prompt or markdown affordance".
+   *
+   * The Repository Overview now carries an Ask TraceIQ box, so the original prohibition no longer holds.
+   * What it was really protecting does: **this page must not become a second chat implementation.** The
+   * box collects a question and navigates; it renders no answer, no markdown and no conversation, and it
+   * calls no chat endpoint. That is the part worth keeping a test on.
+   */
+  it('offers to ask, but implements no chat of its own', async () => {
     stub = stubFetch([{ path: '/overview', data: OVERVIEW }, { path: '/hotspots', data: HOTSPOTS }]);
 
     const { container } = renderWithQuery(<DashboardPage />);
 
     await screen.findByText('228');
 
-    const text = container.textContent ?? '';
+    expect(screen.getByRole('heading', { name: 'Ask TraceIQ' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Ask about this repository' })).toBeInTheDocument();
 
-    for (const forbidden of ['Ask ', 'Chat', 'prompt', 'Prompt', '```']) {
-      expect(text).not.toContain(forbidden);
-    }
+    // No answer surface: no conversation transcript, no markdown, no streaming controls.
+    expect(container.textContent ?? '').not.toContain('```');
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
 
-    expect(container.querySelector('textarea')).toBeNull();
+    // And nothing was posted to the model.
+    expect(stub.calls.some((call) => call.includes('/chat'))).toBe(false);
   });
 });

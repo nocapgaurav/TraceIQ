@@ -62,6 +62,7 @@ what lets the whole CLI be tested by calling it.
 | `traceiq dependencies <id>` | Direct and transitive dependencies |
 | `traceiq cycles` | Import, call, reference and inheritance cycles |
 | `traceiq hotspots` | The most connected declarations and files |
+| `traceiq chat` | Ask questions, grounded and cited — interactive |
 
 | Option | |
 |---|---|
@@ -117,16 +118,69 @@ environment.
 Every capped list prints `shown of total` or a `... N more` line, so a truncation is never silent.
 Every result that carries limitations prints them, because a caveat belongs where you read the number.
 
+## Chat
+
+```
+$ traceiq chat --model qwen2.5:7b-instruct
+$ traceiq chat --model qwen2.5:7b-instruct --subject impact:sym:packages/core/src/service.ts#UserService.find
+```
+
+| Option | |
+|---|---|
+| `--model <id>` | Which model answers. **Required** — no default is assumed, so an answer never comes from whatever happened to be installed |
+| `--provider <name>` | Which provider holds it. Default `ollama`, the only one implemented |
+| `--subject <what>` | What to ask about: `repository`, `sym:<id>`, `impact:sym:<id>`, `file:<path>`, `pkg:<name>`, `route:<METHOD>:<path>`. Default `repository` |
+
+In a session: `/subject` shows or changes what is being asked about, `/clear` forgets the conversation,
+`/exit` leaves. **Ctrl+C cancels the answer in progress without ending the session** — a local model can
+take ten seconds, and losing a whole session because one answer was going nowhere would make the REPL
+unusable. A press with nothing generating, or a second within two seconds, exits with `130`.
+
+Each answer prints its grounding first — how many facts, what they cost, and **what was left out** — then
+the prose as it streams, then the verdict and every citation with the capability that established it:
+
+```
+> How large is this repository?
+64 facts · 1920 tokens · tier standard · c0a8bdfbb1fe2e3f
+  externalPackages: showing 15 of 51
+  cycles: showing 15 of 18
+
+The repository contains 228 files [f2] and 3148 declarations [f3].
+
+verdict grounded · qwen2.5:7b-instruct · stop-sequence · 2002 prompt / 27 output tokens
+  [f2] repository contains 228 files @traceiq/explorer
+  [f3] repository contains 3148 declarations @traceiq/explorer
+```
+
+**`chat` contains no AI logic.** It reads a line, hands it to `RepositoryAnswerer`, prints what streams
+back and formats the result. Its only access to the repository is a `ContextSource` — one method — so it
+cannot traverse, query, search or reach a capability, and `chat.ts` imports no graph type at all.
+
+**It will not resolve a subject from free text.** `--subject UserService` is refused, not guessed at:
+turning a name into an identifier is repository search, it belongs to `traceiq search`, and doing it here
+would put repository intelligence in the AI path. The error says so and points at `search`.
+
+Colour is on for a terminal and off for a pipe or when `NO_COLOR` is set, so redirected output stays plain
+and diffable — the same reason no other command colours anything.
+
+`--provider` is the one place a vendor is named, in `src/providers.ts`. Every other file, including the
+REPL, sees a `LanguageModel` and never learns what is behind it.
+
 ## Errors
 
-Eight failures, each with a fixed code and an exit status. A script can branch on the status without
+Twelve failures, each with a fixed code and an exit status. A script can branch on the status without
 matching prose.
 
 | Status | Codes | Meaning |
 |---|---|---|
 | `2` | `unknown-command`, `missing-argument`, `unknown-option` | The command line was wrong |
 | `3` | `repository-not-scanned`, `invalid-repository` | The repository is not in a usable state |
-| `4` | `unknown-identifier`, `unknown-route`, `unknown-package` | The command was fine; the thing does not exist |
+| `4` | `unknown-identifier`, `unknown-route`, `unknown-package`, `model-not-found` | The command was fine; the thing does not exist |
+| `5` | `chat-failed` | A session started and nothing in it could be answered |
+
+Chat adds four: `unknown-provider` (2), `provider-unavailable` (3), `model-not-found` (4) and
+`chat-failed` (5). A failure raised by the AI layer during a session is printed with **its own code**,
+unreworded, so a code seen here is the same code seen over HTTP.
 
 ```
 $ traceiq symbol sym:nowhere.ts#Absent

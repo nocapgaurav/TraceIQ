@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useMemo } from 'react';
 
+import { ChangeScope } from '@/components/domain/impact/change-scope';
+import { ImpactOnboarding } from '@/components/domain/impact/onboarding';
 import { PageHeader, Section } from '@/components/layout/app-shell';
 import { GraphCanvas } from '@/components/domain/graph-canvas';
 import { JsonInspector } from '@/components/domain/json-inspector';
@@ -40,20 +42,8 @@ function ImpactView() {
   if (id === null || id === '') {
     return (
       <>
-        <PageHeader title="Impact analysis" />
-        <EmptyState
-          title="No declaration chosen"
-          detail="Impact is analysed for one declaration at a time. Search for one, or open it from the Explorer."
-        >
-          <div className="mt-2 flex gap-2">
-            <Button size="sm" variant="outline" asChild>
-              <Link href={routes.search()}>Search</Link>
-            </Button>
-            <Button size="sm" variant="outline" asChild>
-              <Link href={routes.explorer()}>Explorer</Link>
-            </Button>
-          </div>
-        </EmptyState>
+        <PageHeader title="Impact" />
+        <ImpactOnboarding />
       </>
     );
   }
@@ -69,6 +59,12 @@ function ImpactView() {
       <QueryState query={impact} loadingRows={6}>
         {(analysis) => (
           <div className="flex flex-col gap-6">
+            <ChangeScope
+              direct={analysis.directlyAffected}
+              indirect={analysis.indirectlyAffected}
+              unknown={analysis.unknown.length}
+            />
+
             <StatGrid>
               <Stat label="Directly affected" value={analysis.directlyAffected.length} detail="reference the target itself" />
               <Stat

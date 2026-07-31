@@ -5,7 +5,9 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "bin": { "traceiq": "./bin/traceiq.js" },
+  "bin": {
+    "traceiq": "./bin/traceiq.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -13,6 +15,9 @@
     }
   },
   "dependencies": {
+    "@traceiq/ai": "workspace:*",
+    "@traceiq/ai-ollama": "workspace:*",
+    "@traceiq/context": "workspace:*",
     "@traceiq/explain": "workspace:*",
     "@traceiq/explorer": "workspace:*",
     "@traceiq/health": "workspace:*",

@@ -29,6 +29,37 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
   --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  /*
+   * Motion, declared as theme tokens so `animate-fade-up` is a utility like any other rather than a
+   * one-off class. Two entrances are enough for the whole landing page: content either rises into place
+   * or simply appears. `both` holds the opening frame during the stagger delay, so nothing flashes at
+   * full opacity before its turn.
+   */
+  --animate-fade-up: fade-up 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-fade-in: fade-in 0.6s ease-out both;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 :root {
@@ -118,11 +149,30 @@
   background-color: var(--card);
 }
 
+/*
+ * The faint rule grid behind the hero. A pair of repeating gradients rather than an image: it costs no
+ * request, scales to any viewport, and is drawn in `--border`, so it re-tints with the theme instead of
+ * being a light-mode asset that has to be swapped in the dark.
+ */
+.grid-backdrop {
+  background-image:
+    linear-gradient(to right, var(--border) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--border) 1px, transparent 1px);
+  background-size: 56px 56px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+    /*
+     * Delays have to go too, not just durations. A staggered entrance holds its opening frame — opacity
+     * zero — until the delay elapses, so shortening only the duration would leave content invisible for
+     * the length of the stagger and then pop in. Zeroing both means it is simply already there.
+     */
+    animation-delay: 0ms !important;
+    transition-delay: 0ms !important;
   }
 }

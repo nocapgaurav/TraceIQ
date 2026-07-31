@@ -13,6 +13,13 @@ export const ERROR_CODES = [
   'unknown-identifier',
   'unknown-route',
   'unknown-package',
+
+  // Chat. The AI layer's own codes are surfaced verbatim where they reach the user, so a code seen in the
+  // CLI is the same code seen over HTTP; these are the two the CLI itself raises before it ever gets there.
+  'unknown-provider',
+  'provider-unavailable',
+  'model-not-found',
+  'chat-failed',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -25,6 +32,14 @@ export type ErrorCode = (typeof ERROR_CODES)[number];
  * not exist. Distinct statuses let a script tell "I typed it wrong" from "it is not there".
  */
 export const EXIT_STATUS: Readonly<Record<ErrorCode, number>> = {
+  // `2` for a wrong provider name — a usage error. `3` for a provider that is not running: the command was
+  // fine and the environment is not ready, which is the same shape as "not scanned". `4` for a model that
+  // does not exist, matching every other "the thing you named is not there". `5` for a generation that
+  // started and failed, which is neither the user's mistake nor a missing prerequisite.
+  'unknown-provider': 2,
+  'provider-unavailable': 3,
+  'model-not-found': 4,
+  'chat-failed': 5,
   'unknown-command': 2,
   'missing-argument': 2,
   'unknown-option': 2,

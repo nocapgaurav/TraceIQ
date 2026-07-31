@@ -36,6 +36,11 @@ export default defineConfig({
       '@traceiq/navigation': packageSource('navigation'),
       '@traceiq/pipeline': packageSource('pipeline'),
       '@traceiq/context': packageSource('context'),
+      // Mirrors the package's own `exports` map: the fakes and the provider contract battery
+      // ship as a separate entry point so they cannot reach production code.
+      '@traceiq/ai/testing': fileURLToPath(new URL('./packages/ai/src/testing.ts', import.meta.url)),
+      '@traceiq/ai': packageSource('ai'),
+      '@traceiq/ai-ollama': packageSource('ai-ollama'),
       '@traceiq/cli': fileURLToPath(new URL('./apps/cli/src/index.ts', import.meta.url)),
       '@traceiq/api': fileURLToPath(new URL('./apps/api/src/index.ts', import.meta.url)),
     },

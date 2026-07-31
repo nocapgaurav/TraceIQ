@@ -12,6 +12,10 @@
     }
   },
   "dependencies": {
+    "@traceiq/ai": "workspace:*",
+    "@traceiq/ai-ollama": "workspace:*",
+    "@traceiq/analysis": "workspace:*",
+    "@traceiq/context": "workspace:*",
     "@traceiq/explain": "workspace:*",
     "@traceiq/explorer": "workspace:*",
     "@traceiq/health": "workspace:*",

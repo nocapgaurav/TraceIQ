@@ -1,0 +1,49 @@
+# What never belongs in a build context.
+#
+# The context is the whole workspace, because both images build from the monorepo root — a pnpm workspace
+# cannot be installed from one package's directory alone. Excluding build output and local state keeps the
+# context small and, more importantly, keeps a stale local `dist/` or `.next/` from being copied in and
+# shadowing what the builder produces.
+
+# Dependencies and build output — always rebuilt inside the image.
+node_modules
+**/node_modules
+dist
+**/dist
+.next
+**/.next
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+# Generated graphs. A container writes its own into a volume; copying a host one in would ship whichever
+# repository happened to be scanned locally.
+.traceiq
+**/.traceiq
+*.db
+*.db-journal
+*.db-wal
+
+# Local environment. `.env.example` is committed and copied; `.env` is the user's and is read by Compose,
+# never baked into an image.
+.env
+.env.*
+!.env.example
+
+# Version control and editor state.
+.git
+.github
+.vscode
+.idea
+.DS_Store
+
+# Tests and coverage add nothing to a runtime image.
+coverage
+**/*.test.ts
+**/*.test.tsx
+**/*.test-helper.ts
+
+# The deployment layer itself, except what an image genuinely needs.
+Dockerfile
+**/Dockerfile
+docker-compose.yml
+docker-compose.*.yml
