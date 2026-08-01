@@ -67,6 +67,47 @@ const STATISTICS = {
 
 const PROVENANCE_PART = { producer: 'context', parts: [], subject: null };
 
+/**
+ * A single-region TypeScript repository, which is what these fixtures have always implicitly been.
+ *
+ * Stated rather than left undefined so the composition facts a projection now emits are exercised by
+ * every fixture, and so a fixture cannot accidentally assert that a repository has no languages.
+ */
+/**
+ * One technology, so a projection test exercises the `built-with` facts rather than skipping them.
+ *
+ * Deliberately a single entry: the fixture's job is to prove the extractor runs and carries the
+ * evidence through, not to enumerate the rule table — `@traceiq/technology` owns that.
+ */
+const TECHNOLOGIES = [
+  {
+    id: 'express',
+    name: 'Express',
+    category: 'backend',
+    regionPath: '',
+    confidence: 'CERTAIN',
+    evidence: "Express is used: package.json declares 'express'",
+  },
+];
+
+const CAPABILITIES = {
+  depth: 'semantic',
+  isPolyglot: false,
+  languages: [{ language: 'typescript', files: 2 }],
+  regions: [
+    {
+      path: '',
+      primaryLanguage: 'typescript',
+      languages: [{ language: 'typescript', files: 2 }],
+      ecosystems: ['npm'],
+      fileCount: 2,
+      sourceFileCount: 2,
+      depth: 'semantic',
+      reason: 'the TypeScript compiler read these sources',
+    },
+  ],
+};
+
 function base(kind: string, primary: unknown, overrides: Record<string, unknown> = {}): RepositoryContext {
   return {
     kind,
@@ -79,6 +120,8 @@ function base(kind: string, primary: unknown, overrides: Record<string, unknown>
     health: { report: null, subject: null },
     limitations: [],
     provenance: PROVENANCE_PART,
+    capabilities: CAPABILITIES,
+    technologies: TECHNOLOGIES,
     statistics: STATISTICS,
     ...overrides,
   } as unknown as RepositoryContext;
@@ -188,9 +231,42 @@ export function repositoryContext(): RepositoryContext {
         overview: {
           repository: { files: 228, declarations: 3148, routes: 0 },
           graph: { nodes: 3428, edges: 12911, unresolvedReferences: 11418 },
+          // Deliberately *not* in size order, and with a dotfile first: the fixture reproduces the
+          // shape the Explorer really returns — alphabetical, single-file entries at the front — so a
+          // test that expects the largest packages is testing the ordering rather than the input.
+          packages: {
+            entries: [
+              { name: '.editorconfig', files: 1, declarations: 0, dependencies: 0, dependents: 0 },
+              { name: 'packages/api', files: 40, declarations: 420, dependencies: 3, dependents: 1 },
+              { name: 'packages/core', files: 120, declarations: 2100, dependencies: 1, dependents: 6 },
+              { name: 'packages/util', files: 20, declarations: 180, dependencies: 0, dependents: 4 },
+            ],
+            total: 4,
+            truncated: false,
+          },
         },
-        architecture: {},
-        hotspots: {},
+        architecture: {
+          controllers: { entries: [node('sym:packages/api/src/routes.ts#getUser')], total: 1, truncated: false },
+          services: { entries: [node(SUBJECT)], total: 1, truncated: false },
+          repositories: { entries: [], total: 0, truncated: false },
+          middleware: { entries: [], total: 0, truncated: false },
+          models: { entries: [], total: 0, truncated: false },
+          tests: { entries: [], total: 96, truncated: true },
+        },
+        hotspots: {
+          mostReferenced: {
+            entries: [{ node: node(SUBJECT), fanIn: 63, fanOut: 4, incomingEdges: 71, outgoingEdges: 4 }],
+            total: 1,
+            truncated: false,
+          },
+          mostConnectedFiles: {
+            entries: [
+              { node: node(FILE, { kind: 'File' }), fanIn: 0, fanOut: 12, incomingEdges: 0, outgoingEdges: 14 },
+            ],
+            total: 1,
+            truncated: false,
+          },
+        },
       },
     },
     {
@@ -208,4 +284,63 @@ export function repositoryContext(): RepositoryContext {
       limitations: [{ code: 'capped-lists', detail: 'lists are capped', affected: 960 }],
     },
   );
+}
+
+/**
+ * A repository too large for one budget, so the supplement is exercised.
+ *
+ * The intent can only change what a projection contains when the projection has to leave something
+ * out — on a small repository every part fits and the core is the whole answer. This inflates the
+ * ranked parts past any tier's core share so the ordering is observable.
+ */
+export function wideRepositoryContext(size: number): RepositoryContext {
+  const base = repositoryContext();
+  const primary = base.primary as unknown as { type: 'repository'; value: Record<string, unknown> };
+  const overview = primary.value.overview as Record<string, unknown>;
+
+  return {
+    ...base,
+    technologies: Array.from({ length: size }, (_unused, index) => ({
+      id: `tech:t${index}`,
+      name: `Tech${index}`,
+      category: 'build',
+      regionPath: `region/${index}`,
+      confidence: 'CERTAIN',
+      evidence: `manifest ${index} declares it`,
+    })),
+    primary: {
+      type: 'repository',
+      value: {
+        ...primary.value,
+        overview: {
+          ...overview,
+          packages: {
+            entries: Array.from({ length: size }, (_unused, index) => ({
+              name: `packages/p${index}`,
+              files: size - index,
+              declarations: (size - index) * 10,
+              dependencies: 1,
+              dependents: 1,
+            })),
+            total: size,
+            truncated: false,
+          },
+        },
+        hotspots: {
+          mostReferenced: {
+            entries: Array.from({ length: size }, (_unused, index) => ({
+              node: node(`sym:packages/p${index}/src/a.ts#H${index}`),
+              fanIn: size - index,
+              fanOut: 1,
+              incomingEdges: size - index,
+              outgoingEdges: 1,
+            })),
+            total: size,
+            truncated: false,
+          },
+          mostConnectedFiles: { entries: [], total: 0, truncated: false },
+        },
+      },
+    },
+  } as unknown as RepositoryContext;
 }

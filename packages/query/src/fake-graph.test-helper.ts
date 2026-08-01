@@ -4,6 +4,7 @@ import type {
   GraphRole,
   GraphUnresolvedReference,
   NodeKind,
+  RepositoryCapabilities,
   RepositoryGraphApi,
 } from '@traceiq/graph-api';
 import type { ConfidenceLevel, NodeId, RelationshipType, Role } from '@traceiq/types';
@@ -20,6 +21,14 @@ import type { ConfidenceLevel, NodeId, RelationshipType, Role } from '@traceiq/t
  * role name — so a test cannot pass here and fail against SQLite.
  */
 export class FakeGraph implements RepositoryGraphApi {
+  /** Overridable, so a test can exercise a capability-aware consumer. */
+  capabilities: RepositoryCapabilities = {
+    depth: 'universal',
+    regions: [],
+    languages: [],
+    isPolyglot: false,
+  };
+
   readonly #nodes = new Map<NodeId, GraphNode>();
   readonly #edges: GraphEdge[] = [];
   readonly #roles: GraphRole[] = [];
@@ -116,6 +125,16 @@ export class FakeGraph implements RepositoryGraphApi {
       .sort((left, right) => left.role.localeCompare(right.role));
   }
 
+  /**
+   * A fake graph describes no repository, so it claims no analysis depth.
+   *
+   * `universal` with no regions is the honest answer for hand-built nodes: a test that
+   * needs a specific capability states it through `capabilities`.
+   */
+  getCapabilities(): RepositoryCapabilities {
+    return this.capabilities;
+  }
+
   getUnresolved(): readonly GraphUnresolvedReference[] {
     this.calls.getUnresolved += 1;
 
@@ -157,6 +176,9 @@ export function node(input: {
     isExportedFromModule: null,
     externalKind: input.externalKind ?? null,
     externalName: input.externalName ?? null,
+    language: null,
+    fileRole: null,
+    category: null,
     confidence: input.confidence ?? 'CERTAIN',
     provenance: {
       producer: 'graph-builder',

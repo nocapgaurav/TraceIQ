@@ -26,7 +26,7 @@ export interface DeclarationInput {
 interface CollectedDeclaration {
   readonly id: NodeId;
   readonly fileId: NodeId;
-  readonly kind: DeclarationKind;
+  kind: DeclarationKind;
   readonly name: string;
   readonly containerChain: readonly string[];
   visibility: Visibility | null;
@@ -47,8 +47,11 @@ interface CollectedDeclaration {
  * than once. Merging across files never happens, because the identifier contains
  * the file path.
  *
- * When sites disagree, the first in source order wins for `kind`, the first
- * non-null wins for `visibility`, and modifiers are unioned — an overload set
+ * When sites disagree, the first in source order wins for `kind` — **except** that a
+ * site able to hold nested declarations beats one that cannot, whatever the order. See
+ * `CONTAINER_KINDS`.
+ *
+ * The first non-null wins for `visibility`, and modifiers are unioned — an overload set
  * whose `export` sits only on the first signature is exported.
  */
 export interface CollectedDeclarationRef {
@@ -87,6 +90,7 @@ export class DeclarationCollector {
     existing.locations.push(...input.locations);
     existing.modifiers = unionModifiers(existing.modifiers, input.modifiers);
     existing.visibility ??= input.visibility;
+    existing.kind = mergedKind(existing.kind, input.kind);
 
     return { id, isNew: false };
   }
@@ -104,6 +108,49 @@ export class DeclarationCollector {
       locations: [...declaration.locations].sort(compareSourceRanges),
     }));
   }
+}
+
+/**
+ * Kinds that can hold nested declarations.
+ *
+ * A merged symbol has one kind but may have several meanings, and this decides which meaning the
+ * label describes. `type-alias`, `property`, `enum-member` and `interface`-less shapes hold nothing;
+ * the rest own the declarations nested inside them.
+ */
+const CONTAINER_KINDS: ReadonlySet<DeclarationKind> = new Set<DeclarationKind>([
+  'class',
+  'interface',
+  'enum',
+  'namespace',
+  'function',
+  'method',
+  'constructor',
+  'accessor',
+  'variable',
+]);
+
+/**
+ * The kind for a symbol declared as two different things.
+ *
+ * First in source order wins, unless the later site can contain declarations and the earlier cannot.
+ * That exception is not theoretical: zod declares
+ *
+ * ```ts
+ * export type StandardSchemaV1<...> = { ... };
+ * export declare namespace StandardSchemaV1 { export interface Props<...> { ... } }
+ * ```
+ *
+ * which is one symbol with a type meaning and a namespace meaning. Labelling it `type-alias` because
+ * the alias came first left `Props` parented to something that cannot declare anything, and the
+ * graph rejected the edge — **failing the entire scan of the repository**. The namespace meaning is
+ * the one its members depend on, so that is the meaning the kind records.
+ */
+function mergedKind(existing: DeclarationKind, incoming: DeclarationKind): DeclarationKind {
+  if (existing === incoming || CONTAINER_KINDS.has(existing)) {
+    return existing;
+  }
+
+  return CONTAINER_KINDS.has(incoming) ? incoming : existing;
 }
 
 function unionModifiers(

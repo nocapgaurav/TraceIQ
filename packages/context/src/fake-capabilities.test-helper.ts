@@ -40,6 +40,8 @@ export class FakeCapabilities implements ContextCapabilities {
     health?: unknown;
     explainRoute?: unknown;
     findRoutes?: unknown;
+    capabilities?: unknown;
+    technologies?: unknown;
   } = {};
 
   readonly explorer: ExplorerCapability;
@@ -74,6 +76,21 @@ export class FakeCapabilities implements ContextCapabilities {
     this.queries = {
       explainRoute: () => record('queries.explainRoute', this.results.explainRoute ?? null) as never,
       findRoutes: () => record('queries.findRoutes', this.results.findRoutes ?? []) as never,
+      // Every build reads this now: capability is carried on every context kind, because a claim about
+      // a Python symbol needs its region's depth as much as a claim about the repository does.
+      capabilities: () =>
+        record(
+          'queries.capabilities',
+          this.results.capabilities ?? {
+            depth: 'semantic',
+            isPolyglot: false,
+            languages: [],
+            regions: [],
+          },
+        ) as never,
+      // Read on every build too, beside capabilities, for the same reason: an answer that cannot
+      // say what a repository *is* can only describe a pile of files.
+      technologies: () => record('queries.technologies', this.results.technologies ?? []) as never,
     };
   }
 
@@ -108,6 +125,9 @@ export function node(input: {
     isExportedFromModule: null,
     externalKind: null,
     externalName: null,
+    language: null,
+    fileRole: null,
+    category: null,
     confidence: 'CERTAIN',
     provenance: {
       producer: 'graph-builder',

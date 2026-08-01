@@ -136,6 +136,9 @@ export function node(input: {
     isExportedFromModule: null,
     externalKind: null,
     externalName: null,
+    language: null,
+    fileRole: null,
+    category: null,
     confidence: input.confidence ?? 'CERTAIN',
     provenance: {
       producer: 'graph-builder',

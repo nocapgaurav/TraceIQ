@@ -160,6 +160,19 @@ export function repositoryNotScanned(databasePath: string): ApiError {
   return new ApiError('repository-not-scanned', `no graph at '${databasePath}'`, 'POST /scan with { "repository": "<path>" } first');
 }
 
+/**
+ * A path that could not be scanned.
+ *
+ * The hint used to read "check the path and that it holds a TypeScript project", which was true when
+ * the scanner refused anything else and became a lie the moment discovery went universal — a Python
+ * or Go repository that failed for an unrelated reason was told its language was the problem. The
+ * only precondition left is that the path exists and holds files; every language reaches at least
+ * discovery depth, and how deeply it was read is a capability rather than an error.
+ */
 export function invalidRepository(repositoryPath: string, reason: string): ApiError {
-  return new ApiError('invalid-repository', `cannot scan '${repositoryPath}': ${reason}`, 'check the path and that it holds a TypeScript project');
+  return new ApiError(
+    'invalid-repository',
+    `cannot scan '${repositoryPath}': ${reason}`,
+    'check the path exists, is readable and holds files; any language is analysable',
+  );
 }

@@ -1,3 +1,4 @@
+import type { ContextTechnology } from './types.js';
 import type { ExplainSymbolResult } from '@traceiq/explain';
 import type {
   ArchitectureView,
@@ -15,6 +16,7 @@ import type {
 } from '@traceiq/explorer';
 import type { RepositoryHealthReport } from '@traceiq/health';
 import type { ImpactAnalysisResult } from '@traceiq/impact';
+import type { RepositoryCapabilities } from '@traceiq/graph-api';
 import type { RouteExplanation, RouteResult } from '@traceiq/query';
 import type { NodeId } from '@traceiq/types';
 
@@ -60,6 +62,23 @@ export interface HealthCapability {
 export interface QueryCapability {
   explainRoute(routeId: NodeId): RouteExplanation | null;
   findRoutes(): readonly RouteResult[];
+  /**
+   * What the graph can and cannot answer, by region.
+   *
+   * Read for **every** context kind, not only the repository one. A question about a Python
+   * declaration needs the depth of the region that declaration lives in as much as a question about
+   * the repository does, and it is the only thing that distinguishes "no callers" from "callers were
+   * never analysed".
+   */
+  capabilities(): RepositoryCapabilities;
+  /**
+   * The frameworks, runtimes and infrastructure the repository is built from.
+   *
+   * Read for every context kind, beside `capabilities`, and for the same reason: an answer that
+   * cannot say what a repository *is* can only describe a pile of files. One graph read, not an
+   * overview build — the technologies are nodes, and reading them is a lookup.
+   */
+  technologies(): readonly ContextTechnology[];
 }
 
 export interface ContextCapabilities {
@@ -120,6 +139,8 @@ export class CountingCapabilities implements ContextCapabilities {
     this.queries = {
       explainRoute: (id) => count('queries.explainRoute', () => inner.queries.explainRoute(id)),
       findRoutes: () => count('queries.findRoutes', () => inner.queries.findRoutes()),
+      capabilities: () => count('queries.capabilities', () => inner.queries.capabilities()),
+      technologies: () => count('queries.technologies', () => inner.queries.technologies()),
     };
   }
 

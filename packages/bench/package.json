@@ -1,0 +1,26 @@
+{
+  "name": "@traceiq/bench",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "traceiq-bench": "./bin/traceiq-bench.js",
+    "traceiq-ground-truth": "./bin/traceiq-ground-truth.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@traceiq/graph-api": "workspace:*",
+    "@traceiq/pipeline": "workspace:*",
+    "@traceiq/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2"
+  }
+}

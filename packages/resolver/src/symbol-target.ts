@@ -1,6 +1,7 @@
 import type { ConfidenceLevel } from '@traceiq/types';
 import { Node, type Symbol as TsSymbol } from 'ts-morph';
 
+import { aliasedSymbolOf, type CheckerSymbol } from './checker-symbol.js';
 import type { DeclarationIndex } from './declaration-index.js';
 import { classifyExternalFile } from './external-classification.js';
 import { sourceRangeOf } from './source-position.js';
@@ -32,9 +33,22 @@ export type SymbolResolution =
  * targets are all returned and reported as AMBIGUOUS; none is dropped.
  */
 export function resolveSymbol(
-  symbol: TsSymbol | undefined,
+  lookup: CheckerSymbol | TsSymbol | undefined,
   index: DeclarationIndex,
 ): SymbolResolution {
+  // A checker fault is not an absence. Reported under its own reason so a reader is never told the
+  // source has no symbol here when the truth is that the compiler could not say.
+  if (lookup !== undefined && 'outcome' in lookup && lookup.outcome === 'failed') {
+    return {
+      outcome: 'unresolved',
+      reason: 'checker-failed',
+      evidence: `the type checker threw while resolving this reference: ${lookup.detail}`,
+    };
+  }
+
+  const symbol =
+    lookup !== undefined && 'outcome' in lookup ? lookup.symbol : (lookup as TsSymbol | undefined);
+
   if (symbol === undefined) {
     return {
       outcome: 'unresolved',
@@ -43,7 +57,7 @@ export function resolveSymbol(
     };
   }
 
-  const aliased = symbol.getAliasedSymbol();
+  const aliased = aliasedSymbolOf(symbol);
   const resolved = aliased ?? symbol;
   const aliasNote = aliased === undefined ? '' : ` after following the alias '${symbol.getName()}'`;
   const declarations = resolved.getDeclarations();
@@ -71,6 +85,7 @@ export function resolveSymbol(
         kind: 'external',
         origin: external.origin,
         name: external.name,
+        ecosystem: external.ecosystem,
       });
 
       continue;

@@ -1,3 +1,4 @@
+import type { RepositoryCapabilities } from '@traceiq/graph-api';
 import type { GraphNode, NodeKind, RepositoryGraphApi } from '@traceiq/graph-api';
 import type { NodeId, Role } from '@traceiq/types';
 
@@ -15,6 +16,7 @@ import type {
   RouteExplanation,
   RouteResult,
   UnresolvedResult,
+  TechnologyResult,
 } from './types.js';
 
 /**
@@ -198,8 +200,9 @@ export class QueryEngine {
   }
 
   /**
-   * Every external thing the repository imports: packages, Node builtins and TypeScript
-   * built-ins. `node.externalKind` distinguishes them.
+   * Every external thing the repository reaches: a package in any ecosystem, a standard-library
+   * module, or a language builtin. `node.externalKind` distinguishes them, and it is built from
+   * `ECOSYSTEMS` rather than enumerated, so a new language's packaging system needs no entry here.
    */
   findDependencies(): readonly DependencyResult[] {
     return this.#api.getNodes('External').map((node) => ({
@@ -208,6 +211,37 @@ export class QueryEngine {
         .getIncoming(node.id, 'IMPORTS')
         .map((edge) => toReference(this.#api, edge)),
     }));
+  }
+
+  /**
+   * What the graph can answer, by technology region.
+   *
+   * A pass-through, like every other query here: the capability record is written with the
+   * graph and this engine interprets nothing about it.
+   */
+  capabilities(): RepositoryCapabilities {
+    return this.#api.getCapabilities();
+  }
+
+  /**
+   * The frameworks, runtimes and infrastructure the repository is built from.
+   *
+   * A pass-through like the rest: technologies are `Technology` nodes written at scan time, and
+   * this reads them back. Deriving them again here would be a second answer to a question the
+   * graph already records — and search reads the same nodes, so the two cannot disagree.
+   */
+  technologies(): readonly TechnologyResult[] {
+    return this.#api
+      .getNodes('Technology')
+      .map((node) => ({
+        id: node.externalName ?? node.name,
+        name: node.name,
+        category: node.category ?? 'unknown',
+        regionPath: node.containerChain ?? '',
+        confidence: node.confidence,
+        evidence: node.provenance.evidence,
+      }))
+      .sort((a, b) => a.regionPath.localeCompare(b.regionPath) || a.name.localeCompare(b.name));
   }
 
   findUnresolved(): readonly UnresolvedResult[] {

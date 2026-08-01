@@ -1,4 +1,4 @@
-import type { FrameworkAnnotations, RouteAnnotation } from '@traceiq/framework';
+import type { FrameworkAnnotations, RoleAnnotation, RouteAnnotation } from '@traceiq/framework';
 import type { GraphEdge, GraphNode, GraphRole, GraphUnresolvedReference } from '@traceiq/graph-api';
 import type { SourceRange } from '@traceiq/ir';
 import { InvalidNodeIdError, environmentVariableId, routeId } from '@traceiq/shared';
@@ -122,7 +122,11 @@ export function translateAnnotations(input: {
     ],
     edges,
     unresolved,
-    roles: input.annotations.roles.map((role) => ({
+    // One node with one role is one fact, whatever produced it. Two annotations meaning the same role —
+    // Spring's `@Service` beside `@Component`, both of which mark a service — used to emit two rows and
+    // the store's primary key rejected the write, costing Apache Commons Lang its whole scan. Deduped
+    // here, where identity is decided, rather than in each analyser.
+    roles: dedupeRoles(input.annotations.roles).map((role) => ({
       nodeId: role.declarationId,
       role: role.role,
       confidence: role.confidence,
@@ -138,7 +142,43 @@ function translateRoute(input: {
   readonly unresolved: GraphUnresolvedReference[];
 }): void {
   const { route } = input;
-  const id = routeId(route.method, route.path);
+
+  let id: NodeId;
+
+  try {
+    id = routeId(route.method, route.path);
+  } catch (cause) {
+    // A path the frozen `route:<METHOD>:/<path>` form cannot carry. This is not hypothetical: a
+    // FastAPI OpenAPI callback registers `@router.post("{$callback_url}/invoices/{$request.body.id}")`,
+    // which is a real endpoint declaration with a path that is deliberately not absolute.
+    //
+    // Recorded unresolved rather than thrown, and the reason matters more than the record: this
+    // previously escaped the whole graph build, so one such decorator anywhere in a repository cost
+    // the reader every other fact about it. An annotation TraceIQ cannot address is one missing
+    // route, never a failed scan.
+    input.unresolved.push({
+      // `HANDLED_BY` because that is the relationship actually lost: without a route node there is
+      // nothing to link the handler to. The vocabulary is frozen and has no route-registration type,
+      // so inventing one here is not an option.
+      id: `unresolved|HANDLED_BY|${route.provenance.fileId}|${route.method} ${route.path}|${route.location.startLine}:${route.location.startColumn}`,
+      type: 'HANDLED_BY',
+      sourceId: route.registeredInDeclarationId ?? route.provenance.fileId,
+      name: `${route.method} ${route.path}`,
+      reason: 'unaddressable-route-path',
+      text: route.path,
+      provenance: {
+        producer: route.provenance.annotator,
+        fileId: route.provenance.fileId,
+        evidence:
+          cause instanceof InvalidNodeIdError
+            ? cause.message
+            : `'${route.method} ${route.path}' cannot form a route: identifier`,
+      },
+      location: route.location,
+    });
+
+    return;
+  }
 
   merge(input.routes, id, {
     name: `${route.method} ${route.path}`,
@@ -276,6 +316,9 @@ function materialise(
         isExportedFromModule: null,
         externalKind: null,
         externalName: null,
+        language: null,
+        fileRole: null,
+    category: null,
         confidence: node.confidence,
         provenance: {
           producer: PRODUCER,
@@ -287,5 +330,28 @@ function materialise(
         ),
       },
     ];
+  });
+}
+
+/**
+ * One role per node per role name, first occurrence kept.
+ *
+ * The same rule the graph already applies to nodes, edges and unresolved references. An annotator may
+ * legitimately see the same role twice — several annotations that all mean "service", or the same
+ * annotation repeated — and the *fact* is that the node has that role, once.
+ */
+function dedupeRoles(roles: readonly RoleAnnotation[]): readonly RoleAnnotation[] {
+  const seen = new Set<string>();
+
+  return roles.filter((role) => {
+    const key = `${role.declarationId}|${role.role}`;
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+
+    return true;
   });
 }

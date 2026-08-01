@@ -1,3 +1,4 @@
+export { extractClientCalls } from './client-call-extractor.js';
 export { FrameworkExtractor } from './framework-extractor.js';
 export {
   ANNOTATORS,
@@ -5,6 +6,7 @@ export {
   NO_ANNOTATIONS,
   type AnnotationProvenance,
   type AnnotatorName,
+  type ClientCallAnnotation,
   type EnvironmentVariableAnnotation,
   type FrameworkAnnotations,
   type HttpMethod,

@@ -28,6 +28,14 @@ export interface CloneOutcome {
   readonly failure: AnalysisFailure | null;
   /** What git reported, kept for the failure detail. */
   readonly stderr: string;
+  /**
+   * What the working tree weighs, once cloned. `null` when the clone did not finish.
+   *
+   * Measured rather than estimated, and reported because it is the one honest predictor of what an
+   * analysis is about to cost. The size watcher already walks the directory to enforce `maxBytes`, so
+   * this is one more walk of a tree that is already in the page cache rather than new work.
+   */
+  readonly bytes: number | null;
 }
 
 export interface GitCloner {
@@ -68,9 +76,17 @@ export class GitCommandCloner implements GitCloner {
         ...(signal === undefined ? {} : { signal }),
       });
 
-      return { ok: true, failure: null, stderr };
+      // A failure to measure must not fail a clone that worked.
+      const bytes = await directorySize(destination).catch(() => null);
+
+      return { ok: true, failure: null, stderr, bytes };
     } catch (cause) {
-      return { ok: false, failure: classify(cause, repository, timeoutMs, maxBytes), stderr: stderrOf(cause) };
+      return {
+        ok: false,
+        failure: classify(cause, repository, timeoutMs, maxBytes),
+        stderr: stderrOf(cause),
+        bytes: null,
+      };
     }
   }
 }

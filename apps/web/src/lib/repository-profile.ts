@@ -1,4 +1,10 @@
-import type { Overview, PackageSummary, Role } from '@/types/api';
+import type {
+  AnalysisDepth,
+  Overview,
+  PackageSummary,
+  Role,
+  TechnologySummary,
+} from '@/types/api';
 
 /**
  * "What is this repository?", assembled from the overview payload.
@@ -35,6 +41,18 @@ export interface StackItem {
   readonly detail: string;
 }
 
+/** One region, reduced to what the Overview shows about it. */
+export interface AnalysedRegion {
+  /** `'repository root'` for the root region, so the label never renders empty. */
+  readonly label: string;
+  readonly language: string | null;
+  readonly depth: AnalysisDepth;
+  readonly files: number;
+  readonly sourceFiles: number;
+  /** The API's own words for why analysis stopped where it did. Shown verbatim. */
+  readonly reason: string;
+}
+
 export interface RepositoryProfile {
   /**
    * Always `null`. No endpoint reports the analysed repository's name or root path — `/version` carries
@@ -57,7 +75,30 @@ export interface RepositoryProfile {
   readonly entryPoints: Maybe<readonly string[]>;
   readonly importantDirectories: readonly DirectoryGroup[];
   readonly stack: readonly StackItem[];
+  /**
+   * How deeply each part of the repository was analysed.
+   *
+   * **The UI showed none of this, and that was the gap behind every "why is this page empty?".** A
+   * region at `universal` depth has no declarations, no calls and no types — and a reader shown zero of
+   * each with no explanation reasonably concludes the code has no dependencies. The reason string comes
+   * from the API so the explanation is the analysis's own, not the interface's guess at it.
+   */
+  readonly regions: readonly AnalysedRegion[];
+  /** The deepest analysis reached anywhere, with what that means for the reader. */
+  readonly depth: Derived<AnalysisDepth>;
 }
+
+/**
+ * What each depth means for what a reader may expect on the page.
+ *
+ * Fixed text, one per depth, so the explanation of an empty panel is the same wherever it appears.
+ */
+export const DEPTH_MEANING: Readonly<Record<AnalysisDepth, string>> = {
+  universal: 'files, languages, manifests and declared dependencies only — no declarations, calls or types',
+  structural: 'declarations and structure, but no resolved references between them',
+  semantic: 'declarations, imports, calls and types, resolved',
+  framework: 'declarations, imports, calls and types, plus the routes a framework registers',
+};
 
 /** The message the UI shows wherever a value is `null`. One string, so every gap reads identically. */
 export const UNAVAILABLE = 'Available after Repository Intelligence generation.';
@@ -69,12 +110,7 @@ export function deriveProfile(overview: Overview): RepositoryProfile {
   const directories = groupByDirectory(packages.entries);
   const monorepo = isMonorepo(packages.entries, directories);
 
-  const shape: Derived<string> = {
-    value: monorepo ? 'TypeScript monorepo' : 'TypeScript project',
-    evidence: monorepo
-      ? `${packages.total} derived packages across ${describeList(directories.map((entry) => entry.name))}`
-      : `${packages.total} derived package${packages.total === 1 ? '' : 's'}`,
-  };
+  const shape = describeShape(overview, monorepo, directories);
 
   return {
     name: null,
@@ -82,18 +118,159 @@ export function deriveProfile(overview: Overview): RepositoryProfile {
     description: describe(overview, shape.value, directories),
     purpose: null,
     architectureStyle: architectureStyle(architecture.roleCounts, monorepo, packages.total),
-    languages: {
-      // Not a detection. TraceIQ's scanner reads TypeScript projects and nothing else, so every file in
-      // any graph it produced is TypeScript by construction. Saying so is honest; claiming to have
-      // detected it would not be.
-      value: ['TypeScript'],
-      evidence: 'the analysis reads TypeScript projects only, so every analysed file is TypeScript',
-    },
-    frameworks: frameworks(repository.routes, repository.environmentVariables),
+    languages: languages(overview),
+    frameworks: frameworks(
+      overview.technologies ?? [],
+      repository.routes,
+      repository.environmentVariables,
+    ),
     mainPackages: mainPackages(packages.entries),
     entryPoints: entryPoints(repository.routes, architecture.roleCounts),
     importantDirectories: directories,
-    stack: stack(repository, graph),
+    stack: stack(repository, graph, overview.capabilities),
+    regions: regionsOf(overview),
+    depth: {
+      value: overview.capabilities.depth,
+      evidence: DEPTH_MEANING[overview.capabilities.depth],
+    },
+  };
+}
+
+
+/**
+ * A display name for a language the scanner reported.
+ *
+ * The API uses lower-case identifiers — `typescript`, `cpp`, `csharp` — and a reader expects the names
+ * the ecosystems use. A lookup for the ones whose casing is not simply capitalised, and capitalisation
+ * for the rest, so a language added to the scanner still renders sensibly without a change here.
+ */
+const LANGUAGE_NAMES: Readonly<Record<string, string>> = {
+  typescript: 'TypeScript',
+  javascript: 'JavaScript',
+  python: 'Python',
+  java: 'Java',
+  kotlin: 'Kotlin',
+  go: 'Go',
+  rust: 'Rust',
+  c: 'C',
+  cpp: 'C++',
+  csharp: 'C#',
+  php: 'PHP',
+  ruby: 'Ruby',
+  swift: 'Swift',
+  scala: 'Scala',
+  shell: 'Shell',
+  sql: 'SQL',
+  html: 'HTML',
+  css: 'CSS',
+  markdown: 'Markdown',
+  json: 'JSON',
+  yaml: 'YAML',
+  toml: 'TOML',
+  xml: 'XML',
+  terraform: 'Terraform',
+  dockerfile: 'Dockerfile',
+  make: 'Make',
+  gradle: 'Gradle',
+  protobuf: 'Protobuf',
+  graphql: 'GraphQL',
+};
+
+function regionsOf(overview: Overview): readonly AnalysedRegion[] {
+  return overview.capabilities.regions.map((region) => ({
+    label: region.path === '' ? ROOT_GROUP : region.path,
+    language: region.primaryLanguage === null ? null : languageName(region.primaryLanguage),
+    depth: region.depth,
+    files: region.fileCount,
+    sourceFiles: region.sourceFileCount,
+    reason: region.reason,
+  }));
+}
+
+/**
+ * Exported because two derivations need the same display name.
+ *
+ * The Overview's profile and the repository identity header both render a language, and letting each
+ * spell `cpp` its own way is how one page ends up saying "C++" and another "Cpp".
+ */
+export function languageName(language: string): string {
+  return LANGUAGE_NAMES[language] ?? language.charAt(0).toUpperCase() + language.slice(1);
+}
+
+/**
+ * The languages the repository is written in, by file count.
+ *
+ * **This replaced a hardcoded `['TypeScript']`.** The old value came with the evidence "the analysis
+ * reads TypeScript projects only, so every analysed file is TypeScript" — true when written, and false
+ * from the moment discovery became universal. A Flask repository was shown, on the first page a reader
+ * sees, as a TypeScript project. Nothing else in the product stated anything as wrong as that.
+ *
+ * `capabilities.languages` is the scanner's own count, identified by file extension. Presented as
+ * evidence rather than proof, which is what the confidence on those graph facts already says.
+ */
+function languages(overview: Overview): Derived<readonly string[]> {
+  const counted = overview.capabilities.languages;
+
+  if (counted.length === 0) {
+    return { value: [], evidence: 'the scan recorded no files with a recognised language' };
+  }
+
+  return {
+    value: counted.map((entry) => languageName(entry.language)),
+    evidence: `file counts by extension across ${plural(
+      counted.reduce((total, entry) => total + entry.files, 0),
+      'file',
+    )}`,
+  };
+}
+
+/**
+ * What kind of project this is, named after what it is actually written in.
+ *
+ * Three cases, and the distinction between them is the point. A polyglot repository is not a
+ * "TypeScript monorepo" with extra files in it — the languages sit in different regions, and saying so
+ * is the honest description. A region's primary language is the scanner's, by file count.
+ */
+function describeShape(
+  overview: Overview,
+  monorepo: boolean,
+  directories: readonly DirectoryGroup[],
+): Derived<string> {
+  const { capabilities, packages } = overview;
+  const layout = monorepo ? 'monorepo' : 'project';
+
+  const primaries = [
+    ...new Set(
+      capabilities.regions
+        .map((region) => region.primaryLanguage)
+        .filter((language): language is string => language !== null),
+    ),
+  ];
+
+  const where =
+    directories.length > 1
+      ? `${packages.total} derived packages across ${describeList(directories.map((entry) => entry.name))}`
+      : `${packages.total} derived package${packages.total === 1 ? '' : 's'}`;
+
+  if (primaries.length === 0) {
+    return {
+      value: `${layout} with no dominant source language`,
+      evidence: `${where}; no region has a dominant source language`,
+    };
+  }
+
+  if (capabilities.isPolyglot) {
+    return {
+      value: `polyglot ${layout} (${describeList(primaries.map(languageName))})`,
+      evidence: `${capabilities.regions.length} technology regions, whose primary languages are ${describeList(
+        primaries.map(languageName),
+      )}`,
+    };
+  }
+
+  return {
+    value: `${languageName(primaries[0] as string)} ${layout}`,
+    evidence: where,
   };
 }
 
@@ -110,8 +287,8 @@ function describe(overview: Overview, shape: string, directories: readonly Direc
     graph.edges === 0 ? '' : ` The analysis resolved ${plural(graph.edges, 'relationship')} between them.`;
 
   return {
-    // `shape` is not lower-cased: it begins with "TypeScript", which is a proper noun and stays capitalised
-    // mid-sentence.
+    // `shape` is not lower-cased: it begins with a language name, which is a proper noun and stays
+    // capitalised mid-sentence.
     value:
       `A ${shape} of ${plural(packages.total, 'package')}${where}, ` +
       `holding ${plural(repository.files, 'file')} and ${plural(repository.declarations, 'declaration')}.` +
@@ -162,12 +339,27 @@ function architectureStyle(
 /**
  * Frameworks.
  *
- * The API reports the *outcomes* of framework extraction — routes and environment variables — but never
- * names the framework itself. So this states what was found and stops there; putting a lookup table of
- * package names in the browser would be moving detection into the interface.
+ * **This used to say "framework extraction reports these outcomes; it does not name the framework".**
+ * That was true and it was a gap: a reader was shown "HTTP routing (16 routes registered)" for a
+ * Spring Boot service and left to work out what it was. The API names them now, with the files that
+ * prove each, so the interface reports the detection rather than paraphrasing its side effects.
+ *
+ * The rule the old comment stated still holds and is why this reads rather than derives: putting a
+ * lookup table of package names in the browser would move detection into the interface. Every name
+ * here came from the API, and so did every reason.
  */
-function frameworks(routes: number, environmentVariables: number): Maybe<readonly string[]> {
-  const found: string[] = [];
+function frameworks(
+  technologies: readonly TechnologySummary[],
+  routes: number,
+  environmentVariables: number,
+): Maybe<readonly string[]> {
+  // Frontend and backend only. A reader asking what a repository *is* is not asking which test
+  // runner it uses, and the full list is on the technology section below.
+  const named = technologies
+    .filter((entry) => entry.category === 'frontend' || entry.category === 'backend')
+    .map((entry) => (entry.regionPath === '' ? entry.name : `${entry.name} (${entry.regionPath})`));
+
+  const found = [...new Set(named)];
 
   if (routes > 0) {
     found.push(`HTTP routing (${plural(routes, 'route')} registered)`);
@@ -179,7 +371,13 @@ function frameworks(routes: number, environmentVariables: number): Maybe<readonl
 
   return found.length === 0
     ? null
-    : { value: found, evidence: 'framework extraction reports these outcomes; it does not name the framework' };
+    : {
+        value: found,
+        evidence:
+          named.length === 0
+            ? 'framework extraction reports these outcomes; no framework was named'
+            : 'each framework is named by a manifest entry or a marker file in the repository',
+      };
 }
 
 /** The largest packages by declaration count. Ties break by name, so the order is stable. */
@@ -245,26 +443,55 @@ export function groupByDirectory(entries: readonly PackageSummary[]): readonly D
  * Only what the payload states outright. "39 npm packages" is a count the analysis made; naming them
  * would need a repository-wide list of externals that no endpoint returns.
  */
-function stack(repository: Overview['repository'], graph: Overview['graph']): readonly StackItem[] {
-  const items: StackItem[] = [
-    { label: 'TypeScript', detail: 'the only language the analysis reads' },
-    { label: `${format(repository.files)} files`, detail: 'analysed into the graph' },
-    { label: `${format(repository.declarations)} declarations`, detail: 'classes, interfaces, functions, methods and more' },
-  ];
+function stack(
+  repository: Overview['repository'],
+  graph: Overview['graph'],
+  capabilities: Overview['capabilities'],
+): readonly StackItem[] {
+  const items: StackItem[] = [];
 
-  // `externalsByKind` is an open record, so every lookup is `number | undefined`. Bound once each, rather
-  // than guarded and then read again — the second read would not be narrowed by the first.
-  const runtime = (repository.externalsByKind.builtin ?? 0) + (repository.externalsByKind.node ?? 0);
-  const npm = repository.externalsByKind.npm ?? 0;
-
-  if (runtime > 0) {
-    items.push({ label: 'Node.js', detail: `${format(runtime)} runtime modules imported` });
+  // The languages the scan counted, not a constant. This row led with the chip `TypeScript` and the
+  // detail "the only language the analysis reads" — which was true once and then described a Spring
+  // repository. Found by opening the page, not by a test.
+  for (const entry of capabilities.languages.slice(0, 3)) {
+    items.push({
+      label: languageName(entry.language),
+      detail: `${format(entry.files)} ${entry.files === 1 ? 'file' : 'files'}, identified by extension`,
+    });
   }
 
-  if (npm > 0) {
+  items.push(
+    { label: `${format(repository.files)} files`, detail: 'analysed into the graph' },
+    {
+      label: `${format(repository.declarations)} declarations`,
+      detail: 'classes, interfaces, functions, methods and more',
+    },
+  );
+
+  // A standard-library module, in whichever language. `builtin` and `node` were the only kinds when
+  // this was written; `stdlib` covers Python, Java and Go, and omitting it reported zero for all three.
+  const runtime =
+    (repository.externalsByKind.builtin ?? 0) +
+    (repository.externalsByKind.node ?? 0) +
+    (repository.externalsByKind.stdlib ?? 0);
+
+  // Every dependency ecosystem, summed, with the kinds named in the detail rather than assumed to be
+  // npm. A Maven or Go dependency counted for nothing here.
+  const ecosystems = Object.entries(repository.externalsByKind).filter(
+    ([kind]) => kind !== 'builtin' && kind !== 'node' && kind !== 'stdlib' && kind !== 'outside-analysis',
+  );
+  const packages = ecosystems.reduce((total, [, count]) => total + count, 0);
+
+  if (runtime > 0) {
+    items.push({ label: 'Standard library', detail: `${format(runtime)} modules imported` });
+  }
+
+  if (packages > 0) {
     items.push({
-      label: `${format(npm)} npm packages`,
-      detail: 'external dependencies reached from this repository',
+      label: `${format(packages)} packages`,
+      detail: `external dependencies reached from this repository, from ${ecosystems
+        .map(([kind]) => kind)
+        .join(', ')}`,
     });
   }
 

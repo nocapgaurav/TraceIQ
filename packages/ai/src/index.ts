@@ -53,13 +53,16 @@ export {
 export {
   FACTS_CLOSE,
   FACTS_OPEN,
+  REMINDER,
   SYSTEM_PROMPT,
   assemble,
   renderFacts,
   renderHistory,
+  stablePrefixOf,
   reservedTokens,
   type PromptInput,
 } from './prompt.js';
+export { INTENTS, INTENT_PARTS, intentOf, type QuestionIntent } from './intent.js';
 export { project, subjectOf, type ProjectionOptions } from './projection.js';
 export { collect, collectText, type AnswerEvent, type GroundingSummary } from './stream.js';
 

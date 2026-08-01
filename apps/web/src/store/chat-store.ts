@@ -2,7 +2,7 @@
 
 import { create } from 'zustand';
 
-import type { ChatAnswer, ChatGrounding, ChatSubject, ChatVerdict } from '@/types/api';
+import type { ChatAnswer, ChatGrounding, ChatPhase, ChatSubject, ChatVerdict } from '@/types/api';
 
 /**
  * Conversations, in memory for the session.
@@ -25,6 +25,13 @@ export interface ChatTurn {
   /** Present once the answer completes. `null` while streaming or after a failure. */
   readonly answer: ChatAnswer | null;
   readonly status: 'streaming' | 'complete' | 'failed' | 'cancelled';
+  /**
+   * The stage the answer is at, while it is streaming.
+   *
+   * Held per turn rather than globally because a conversation may be scrolled while one turn works, and
+   * a phase belongs to the answer it describes.
+   */
+  readonly phase: ChatPhase | null;
   readonly error: { readonly code: string; readonly detail: string; readonly hint: string } | null;
 }
 

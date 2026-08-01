@@ -72,6 +72,14 @@ const RESULT = {
   callEdges: 5481,
   unresolvedCalls: 9294,
   unresolvedReferences: 11_461,
+  languages: [
+    { language: 'javascript', files: 400 },
+    { language: 'typescript', files: 100 },
+  ],
+  regions: 3,
+  depth: 'semantic' as const,
+  isPolyglot: false,
+  analyzerFailures: [],
 };
 
 /**

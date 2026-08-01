@@ -1,3 +1,5 @@
+import { NODE_KINDS } from '@traceiq/graph-api';
+import { RELATIONSHIP_TYPES } from '@traceiq/types';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -115,6 +117,11 @@ beforeAll(async () => {
     lockfile: null,
     entryPoints: [],
     ignoredPaths: [],
+    workspacePackages: [],
+      files: [],
+      languages: [],
+      manifests: [],
+      regions: [],
   };
 
   const context = new ProjectHost().load(inventory);
@@ -296,9 +303,11 @@ describe('real analysis quality', () => {
 
 describe('one pass and determinism over a real graph', () => {
   it('reads the graph a fixed number of times', () => {
-    // Sixteen node kinds, thirteen relationship types, one unresolved read, one role read per
+    // Every node kind, every relationship type, one unresolved read, one role read per
     // declaration. Nothing scales with edges or findings.
-    expect(report.statistics.graphApiCalls).toBe(16 + 13 + 1 + report.summary.declarations);
+    expect(report.statistics.graphApiCalls).toBe(
+      NODE_KINDS.length + RELATIONSHIP_TYPES.length + 1 + report.summary.declarations,
+    );
   });
 
   it('answers identically on repeated analysis', () => {

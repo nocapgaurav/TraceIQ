@@ -4,7 +4,7 @@ import { externalIdentityOf } from './external-identity.js';
 import { externalTarget } from './graph-fixture.test-helper.js';
 
 const target = (
-  origin: 'package' | 'node-builtin' | 'typescript-lib' | 'outside-analysis',
+  origin: 'package' | 'standard-library' | 'language-builtin' | 'outside-analysis',
   name: string | null = null,
 ) => externalTarget(origin, name) as Extract<ReturnType<typeof externalTarget>, { kind: 'external' }>;
 
@@ -34,11 +34,11 @@ describe('ext:node — Node builtins', () => {
   ])('strips the reserved prefix, naming %s as %s', (name, expected) => {
     // The prefix is what identifies a builtin; repeating it inside the identity
     // would read as `ext:node:node:fs`.
-    expect(externalIdentityOf(target('node-builtin', name), null).id).toBe(expected);
+    expect(externalIdentityOf(target('standard-library', name), null).id).toBe(expected);
   });
 
   it('accepts a name that already lacks the prefix', () => {
-    expect(externalIdentityOf(target('node-builtin', 'fs'), null).id).toBe('ext:node:fs');
+    expect(externalIdentityOf(target('standard-library', 'fs'), null).id).toBe('ext:node:fs');
   });
 });
 
@@ -46,20 +46,20 @@ describe('ext:builtin — TypeScript built-ins', () => {
   it('names the symbol from the reference, the target carrying none', () => {
     // A built-in is declared across several lib files, so the Resolver deliberately
     // reports no name of its own; the reference name is the symbol.
-    expect(externalIdentityOf(target('typescript-lib'), 'Promise').id).toBe(
+    expect(externalIdentityOf(target('language-builtin'), 'Promise').id).toBe(
       'ext:builtin:Promise',
     );
   });
 
   it('keeps distinct built-ins distinct', () => {
-    expect(externalIdentityOf(target('typescript-lib'), 'Map').id).not.toBe(
-      externalIdentityOf(target('typescript-lib'), 'Record').id,
+    expect(externalIdentityOf(target('language-builtin'), 'Map').id).not.toBe(
+      externalIdentityOf(target('language-builtin'), 'Record').id,
     );
   });
 
   it('falls back to the bare kind rather than fabricating a name', () => {
-    expect(externalIdentityOf(target('typescript-lib'), null).id).toBe('ext:builtin');
-    expect(externalIdentityOf(target('typescript-lib'), '   ').id).toBe('ext:builtin');
+    expect(externalIdentityOf(target('language-builtin'), null).id).toBe('ext:builtin');
+    expect(externalIdentityOf(target('language-builtin'), '   ').id).toBe('ext:builtin');
   });
 });
 
@@ -80,8 +80,8 @@ describe('identity shape', () => {
   it('always begins with the ext: prefix', () => {
     for (const identity of [
       externalIdentityOf(target('package', 'x'), null),
-      externalIdentityOf(target('node-builtin', 'node:fs'), null),
-      externalIdentityOf(target('typescript-lib'), 'Promise'),
+      externalIdentityOf(target('standard-library', 'node:fs'), null),
+      externalIdentityOf(target('language-builtin'), 'Promise'),
       externalIdentityOf(target('outside-analysis'), null),
     ]) {
       expect(identity.id.startsWith('ext:')).toBe(true);
@@ -91,8 +91,8 @@ describe('identity shape', () => {
   it('never contains the edge-identity separator', () => {
     for (const identity of [
       externalIdentityOf(target('package', '@scope/pkg'), null),
-      externalIdentityOf(target('node-builtin', 'node:fs/promises'), null),
-      externalIdentityOf(target('typescript-lib'), 'ReadonlyMap'),
+      externalIdentityOf(target('standard-library', 'node:fs/promises'), null),
+      externalIdentityOf(target('language-builtin'), 'ReadonlyMap'),
     ]) {
       expect(identity.id).not.toContain('|');
     }

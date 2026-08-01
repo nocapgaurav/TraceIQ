@@ -135,13 +135,17 @@ describe('symbol context', () => {
     expect(capabilities.countOf('explorer.browseSymbol')).toBe(1);
   });
 
-  it('costs two capability calls', () => {
+  it('costs four capability calls, two of them the reads every kind now makes', () => {
     const context = builder.build({ kind: 'symbol', id: id(RUN.id) });
 
-    expect(context.statistics.totalCapabilityCalls).toBe(2);
+    expect(context.statistics.totalCapabilityCalls).toBe(4);
     expect(context.statistics.capabilityCalls).toEqual({
       'explorer.browseSymbol': 1,
       'explorer.dependencies': 1,
+      // Carried on every context so an answer can say which region a symbol lives in and how deeply
+      // that region was read. One lookup, not a traversal.
+      'queries.capabilities': 1,
+      'queries.technologies': 1,
     });
   });
 
@@ -484,7 +488,7 @@ describe('repository context', () => {
     expect(codes).toContain('repository-health-computed-independently');
   });
 
-  it('costs five capability calls, one each', () => {
+  it('costs seven capability calls, one each', () => {
     const context = builder.build({ kind: 'repository' });
 
     expect(context.statistics.capabilityCalls).toEqual({
@@ -493,6 +497,8 @@ describe('repository context', () => {
       'explorer.hotspots': 1,
       'explorer.overview': 1,
       'health.analyze': 1,
+      'queries.capabilities': 1,
+      'queries.technologies': 1,
     });
   });
 
@@ -575,7 +581,7 @@ describe('boundaries', () => {
       'explorer.overview', 'explorer.architecture', 'explorer.hotspots', 'explorer.cycles',
       'explorer.browsePackages', 'explorer.browsePackage', 'explorer.browseFile', 'explorer.browseSymbol',
       'explorer.dependencies', 'explorer.search', 'explain.explain', 'impact.analyze', 'health.analyze',
-      'queries.explainRoute', 'queries.findRoutes',
+      'queries.explainRoute', 'queries.findRoutes', 'queries.capabilities', 'queries.technologies',
     ]);
 
     for (const call of capabilities.calls) {

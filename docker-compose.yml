@@ -76,6 +76,9 @@ services:
       TRACEIQ_DB: /data/graph.db
       TRACEIQ_PROVIDER: ${TRACEIQ_PROVIDER:-ollama}
       TRACEIQ_MODEL: ${TRACEIQ_MODEL:-}
+      # The context the model is actually run with, and the number the prompt is budgeted against.
+      # Sent to the daemon as num_ctx so the budget and the runtime cannot disagree. See .env.example.
+      TRACEIQ_MODEL_CONTEXT: ${TRACEIQ_MODEL_CONTEXT:-}
       TRACEIQ_OLLAMA_URL: http://ollama:11434
     volumes:
       # The graph. Persistent, so a rebuilt API image does not mean rescanning.

@@ -17,10 +17,11 @@ import type {
 import type {
   EnvironmentVariableAnnotation,
   FrameworkAnnotations,
+  ClientCallAnnotation,
   RoleAnnotation,
   RouteAnnotation,
 } from '@traceiq/framework';
-import type { ConfidenceLevel, NodeId, Role } from '@traceiq/types';
+import type { ConfidenceLevel, Ecosystem, NodeId, Role } from '@traceiq/types';
 
 /**
  * Synthetic inputs for the Graph Builder.
@@ -98,11 +99,19 @@ export function fileTarget(path: string): ResolutionTarget {
   return { kind: 'file', fileId: `file:${path}` as NodeId };
 }
 
+/**
+ * An external target.
+ *
+ * `ecosystem` defaults to `npm` because these fixtures describe the JavaScript path, and it is the
+ * ecosystem that decides the identity: a `package` becomes `ext:npm:…` and Node's library keeps its
+ * more specific `ext:node:…`. Pass `null` to exercise a language whose ecosystem is unknown.
+ */
 export function externalTarget(
-  origin: 'package' | 'node-builtin' | 'typescript-lib' | 'outside-analysis',
+  origin: 'package' | 'standard-library' | 'language-builtin' | 'outside-analysis',
   name: string | null = null,
+  ecosystem: Ecosystem | null = 'npm',
 ): ResolutionTarget {
-  return { kind: 'external', origin, name };
+  return { kind: 'external', origin, name, ecosystem };
 }
 
 export function relationship(input: {
@@ -252,6 +261,7 @@ export function annotations(input: {
   readonly roles?: readonly RoleAnnotation[];
   readonly routes?: readonly RouteAnnotation[];
   readonly environmentVariables?: readonly EnvironmentVariableAnnotation[];
+  readonly clientCalls?: readonly ClientCallAnnotation[];
   readonly framework?: 'express' | null;
 }): FrameworkAnnotations {
   return {
@@ -259,5 +269,6 @@ export function annotations(input: {
     roles: input.roles ?? [],
     routes: input.routes ?? [],
     environmentVariables: input.environmentVariables ?? [],
+    clientCalls: input.clientCalls ?? [],
   };
 }

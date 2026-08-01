@@ -65,6 +65,7 @@ export function useChat(): UseChat {
         grounding: null,
         answer: null,
         status: 'streaming',
+        phase: 'acquiring-context',
         error: null,
       };
 
@@ -86,6 +87,8 @@ export function useChat(): UseChat {
         )) {
           if (event.type === 'open') {
             setModel(event.model);
+          } else if (event.type === 'status') {
+            updateTurn(target.id, turnId, { phase: event.phase });
           } else if (event.type === 'grounding') {
             // Arrives before any prose, so the sources are on screen before the answer is.
             updateTurn(target.id, turnId, { grounding: event.grounding });
@@ -97,11 +100,13 @@ export function useChat(): UseChat {
               text: event.answer.text,
               grounding: event.answer.grounding,
               status: 'complete',
+              phase: null,
             });
           } else {
             // A terminal error frame. Whatever had already arrived stays on screen.
             updateTurn(target.id, turnId, {
               status: 'failed',
+              phase: null,
               error: { code: event.code, detail: event.detail, hint: event.hint },
               ...(event.partial === null ? {} : { text: event.partial }),
             });
@@ -115,11 +120,29 @@ export function useChat(): UseChat {
           ?.turns.find((entry) => entry.id === turnId);
 
         if (settled?.status === 'streaming') {
-          updateTurn(target.id, turnId, { status: abort.signal.aborted ? 'cancelled' : 'complete' });
+          // A stream that ended without a terminal frame. The server now always sends one, so reaching
+          // here means the connection itself was lost — which is a failure to report rather than a
+          // completion to imply. Only a deliberate cancellation is not a failure.
+          updateTurn(
+            target.id,
+            turnId,
+            abort.signal.aborted
+              ? { status: 'cancelled', phase: null }
+              : {
+                  status: 'failed',
+                  phase: null,
+                  error: {
+                    code: 'connection-lost',
+                    detail: 'the connection closed before the answer finished',
+                    hint: 'this is usually a proxy or network timeout rather than anything you did — ask again',
+                  },
+                },
+          );
         }
       } catch (cause) {
         updateTurn(target.id, turnId, {
           status: 'failed',
+          phase: null,
           error:
             cause instanceof ApiError
               ? { code: cause.code, detail: cause.detail, hint: cause.hint }

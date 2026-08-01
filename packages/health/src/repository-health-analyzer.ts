@@ -44,11 +44,27 @@ import {
 export class RepositoryHealthAnalyzer {
   readonly #graph: HealthGraph;
 
+  /**
+   * The report, computed at most once.
+   *
+   * An analyser holds one immutable revision, so a second `analyze()` can only produce what the first
+   * did — and it cost 631 ms of it on `facebook/react`, on every question, for a report that had not
+   * changed. Construct a new analyser to read a new revision, which is what the graph holder already
+   * does when a scan replaces the graph.
+   */
+  #report: RepositoryHealthReport | null = null;
+
   constructor(graph: HealthGraph) {
     this.#graph = graph;
   }
 
   analyze(): RepositoryHealthReport {
+    this.#report ??= this.#compute();
+
+    return this.#report;
+  }
+
+  #compute(): RepositoryHealthReport {
     const index = buildGraphIndex(this.#graph);
     const derived = deriveFrom(index);
 

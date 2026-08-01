@@ -1,4 +1,5 @@
 import type { GraphNode } from '@traceiq/graph-api';
+import { meetsDepth } from '@traceiq/graph-api';
 import type { NodeId } from '@traceiq/types';
 
 import { dependentsClosure, type RouteReach } from './dependents-closure.js';
@@ -31,11 +32,41 @@ import {
  * **No storage, no compiler, no parser.** The constructor takes `ImpactQueries`, which names
  * seven questions and no connection, statement or path.
  */
+const FILE_PREFIX = 'file:';
+
 export class ImpactAnalyzer {
   readonly #queries: ImpactQueries;
 
   constructor(queries: ImpactQueries) {
     this.#queries = queries;
+  }
+
+  /**
+   * Whether the region holding this file reached no deeper than `universal`.
+   *
+   * The region is the deepest whose path is a prefix of the file's, matching how the
+   * scanner assigned files to regions in the first place. A node with no file — an
+   * external — is treated as analysed, because it is reached only from code that was.
+   */
+  #regionLacksSemanticAnalysis(fileId: NodeId | null): boolean {
+    if (fileId === null) {
+      return false;
+    }
+
+    const filePath = fileId.startsWith(FILE_PREFIX) ? fileId.slice(FILE_PREFIX.length) : fileId;
+    const regions = this.#queries.capabilities().regions;
+
+    let deepest: (typeof regions)[number] | undefined;
+
+    for (const region of regions) {
+      if (region.path === '' || filePath.startsWith(`${region.path}/`)) {
+        if (deepest === undefined || region.path.length > deepest.path.length) {
+          deepest = region;
+        }
+      }
+    }
+
+    return deepest !== undefined && !meetsDepth(deepest.depth, 'semantic');
   }
 
   /**
@@ -107,6 +138,7 @@ export class ImpactAnalyzer {
         fileNodes: closure.affected.filter((entry) => entry.node.kind === 'File').length,
         externalCount: externalDependencies.length,
         uncomposedRoutes: routesAffected.filter((entry) => !entry.route.composition.composed).length,
+        unanalysedRegion: this.#regionLacksSemanticAnalysis(target.node.fileId),
       }),
       statistics: {
         nodesVisited: closure.members.size,
@@ -232,6 +264,8 @@ interface LimitationFacts {
   readonly fileNodes: number;
   readonly externalCount: number;
   readonly uncomposedRoutes: number;
+  /** True when the target's region reached no deeper than `universal`. */
+  readonly unanalysedRegion: boolean;
 }
 
 /**
@@ -243,6 +277,9 @@ interface LimitationFacts {
  */
 function limitationsFor(facts: LimitationFacts): readonly Limitation[] {
   const affected: Readonly<Record<LimitationCode, number | null>> = {
+    // Reported first among the always-on limitations would still bury it, so it is
+    // reported only when it applies — and when it applies, it is the one that matters.
+    'region-has-no-semantic-analysis': facts.unanalysedRegion ? 1 : 0,
     'call-coverage-partial': null,
     'calls-are-inferred': facts.inferredCalls,
     'no-interface-or-dynamic-dispatch': null,

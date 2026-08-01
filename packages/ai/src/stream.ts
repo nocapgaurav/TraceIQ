@@ -13,15 +13,48 @@ import type { Answer } from './answer.js';
  * milestone — translates a throw into a terminal frame. That is a wire concern, not this one.
  */
 export type AnswerEvent =
+  | { readonly type: 'status'; readonly phase: AnswerPhase }
   | { readonly type: 'grounding'; readonly grounding: GroundingSummary }
   | { readonly type: 'delta'; readonly text: string }
   | { readonly type: 'complete'; readonly answer: Answer };
+
+/**
+ * Which stage answering has reached.
+ *
+ * **Emitted because the silence was measured and it is long.** On the reference stack the whole gap
+ * between the last preparatory frame and the first token was 89 seconds, all of it prompt evaluation
+ * at 45.75 tokens per second, and nothing at all was on the wire for any of it. A user saw one
+ * spinner reading "Reading the repository…" for a minute and a half and could not tell a working
+ * answer from a dead one — and neither could any proxy in between, which is the other half of why
+ * this exists.
+ *
+ * The vocabulary is closed and matches the pipeline's own stages, so a consumer renders a phase
+ * without parsing prose and a new stage cannot appear without a deliberate change here.
+ *
+ * `re-projecting` is not a stage but a retry: the provider rejected a prompt this layer had estimated
+ * as fitting, and the budget is stepping down a tier. Saying so beats a second `projecting` that looks
+ * like the first one repeating.
+ */
+export const ANSWER_PHASES = [
+  'acquiring-context',
+  'projecting',
+  're-projecting',
+  'awaiting-model',
+  'generating',
+  'verifying',
+] as const;
+
+export type AnswerPhase = (typeof ANSWER_PHASES)[number];
 
 /** The projection, described rather than carried: a consumer wants the shape, not thousands of facts. */
 export interface GroundingSummary {
   readonly kind: string;
   readonly subject: string | null;
   readonly factCount: number;
+  /** How many of those facts are the stable, question-independent core. */
+  readonly coreCount: number;
+  /** What the question was taken to be about. `overview` when nothing question-specific was asked for. */
+  readonly intent: string;
   readonly omissions: readonly Omission[];
   readonly tier: string;
   readonly tokens: number;

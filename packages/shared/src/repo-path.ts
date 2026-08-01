@@ -31,10 +31,6 @@ export function normalizeRepoPath(rawPath: string): string {
 
   const withPosixSeparators = trimmed.replaceAll('\\', '/');
 
-  if (withPosixSeparators.includes('#')) {
-    throw new InvalidRepoPathError(rawPath, '"#" is reserved as an identifier delimiter');
-  }
-
   if (withPosixSeparators.startsWith('/') || WINDOWS_DRIVE_PREFIX.test(withPosixSeparators)) {
     throw new InvalidRepoPathError(
       rawPath,
@@ -54,5 +50,14 @@ export function normalizeRepoPath(rawPath: string): string {
     throw new InvalidRepoPathError(rawPath, 'the path resolves to the repository root');
   }
 
-  return segments.join('/');
+  // `#` is the delimiter between a path and a container chain in `sym:<path>#<chain>`, so a path
+  // containing one would make an identifier ambiguous. It is **encoded rather than rejected**, and
+  // the difference is a whole repository: Next.js ships
+  // `test/e2e/app-dir/resource-url-encoding/app/client#component.tsx`, and rejecting it threw out
+  // of the *file* node — past the tolerant build, which retries without an analyser and cannot
+  // retry without a file — so all 22,554 sources failed to scan over one legal file name.
+  //
+  // Percent-encoding is reversible and safe for every existing parser: those split on the first
+  // literal `#`, and an encoded one contains none.
+  return segments.join('/').replaceAll('#', '%23');
 }

@@ -1,5 +1,5 @@
 import type { RepositoryIRMetadata, SourceRange } from '@traceiq/ir';
-import type { ConfidenceLevel, NodeId, RelationshipType } from '@traceiq/types';
+import type { ConfidenceLevel, Ecosystem, NodeId, RelationshipType } from '@traceiq/types';
 
 /**
  * The Resolver's output contract.
@@ -30,11 +30,23 @@ export const RESOLVED_RELATIONSHIP_TYPES: readonly ResolvedRelationshipType[] = 
   'REFERENCES_TYPE',
 ];
 
-/** Why a target lies outside the analysed source set. */
+/**
+ * Why a target lies outside the analysed source set.
+ *
+ * **Named for what is true of every language, not for what was true of the first one.** These read
+ * `node-builtin` and `typescript-lib` until a second and third analyser needed them: Python's `os`,
+ * Java's `java.util` and Go's `net/http` are all the same kind of thing as Node's `fs`, and none of
+ * them is a Node builtin. A vocabulary that spells one language's name cannot describe another's, so
+ * every future analyser would have had to add a value here — which is the cost this milestone exists
+ * to remove.
+ */
 export const EXTERNAL_ORIGINS = [
+  /** A package from a dependency ecosystem. `ecosystem` on the target says which. */
   'package',
-  'node-builtin',
-  'typescript-lib',
+  /** A module the language's own standard library provides: `fs`, `os`, `java.util`, `net/http`. */
+  'standard-library',
+  /** A symbol the language itself provides: `Promise`, `String`, `error`. */
+  'language-builtin',
   'outside-analysis',
 ] as const;
 
@@ -54,10 +66,19 @@ export type ResolutionTarget =
       readonly kind: 'external';
       readonly origin: ExternalOrigin;
       /**
-       * The package name. `null` for a TypeScript built-in, which is declared
-       * across several lib files and so is identified by `origin` alone.
+       * The package or module name. `null` for a language built-in, which may be declared across
+       * several files and so is identified by `origin` alone.
        */
       readonly name: string | null;
+      /**
+       * Which ecosystem a `package` came from. `null` for every other origin.
+       *
+       * **This is what lets a non-JavaScript import become an external node at all.** Without it the
+       * graph had one word for "a package" — `npm` — so `import fastapi` and
+       * `import org.apache.commons.lang3` had nowhere to go and were dropped. A reader could see the
+       * dependency a manifest *declared* and never the one a file actually *used*.
+       */
+      readonly ecosystem: Ecosystem | null;
     };
 
 export const RESOLVERS = [
@@ -117,6 +138,32 @@ export const UNRESOLVED_REASONS = [
    * parameters. Kept distinct so it is not mistaken for a resolution failure.
    */
   'type-parameter',
+  /**
+   * The type checker threw while being asked about this reference.
+   *
+   * Not the same as `no-symbol`, and the distinction is the point: `no-symbol` is
+   * the checker answering "nothing here", while this is the checker failing to
+   * answer at all. Conflating them would report a compiler fault as a property of
+   * the source.
+   *
+   * Measured, not anticipated: resolving axios's re-exports crashes TypeScript's
+   * own `getImmediateAliasedSymbol` on an alias it cannot follow, and that single
+   * site used to cost the repository all 1,756 of its declarations.
+   */
+  'checker-failed',
+  /**
+   * The reference names a value that is not, and cannot be, a declaration.
+   *
+   * A sibling of `type-parameter`, and there for the same reason: resolution did not fail, there is
+   * simply nothing addressable at the other end. `module.exports = { printWidth: 80 }` publishes a
+   * name whose value is the number 80 — a real export, with no declaration behind it by
+   * construction.
+   *
+   * Measured, not anticipated. Recording these as `no-symbol` put **410** of React's config-file
+   * literals into the same bucket as genuine checker failures, which is precisely the confusion
+   * `checker-failed` was added to prevent in the other direction.
+   */
+  'value-is-not-a-declaration',
 ] as const;
 
 export type UnresolvedReason = (typeof UNRESOLVED_REASONS)[number];

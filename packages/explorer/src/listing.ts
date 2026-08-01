@@ -25,6 +25,41 @@ export function byId(nodes: readonly GraphNode[]): readonly GraphNode[] {
 }
 
 /**
+ * External identity kinds that are not an ecosystem dependency.
+ *
+ * A language's own builtins, a language's own standard library, and the sentinel for a reference whose
+ * target could not be named. Everything else is something a manifest could declare — npm, pip, Maven,
+ * Gradle, Go modules, Cargo, NuGet, Composer, Bundler, and any ecosystem added later.
+ */
+const NON_DEPENDENCY_EXTERNAL_KINDS: ReadonlySet<string> = new Set([
+  'builtin',
+  'node',
+  'stdlib',
+  'outside-analysis',
+]);
+
+/**
+ * External nodes with the repository's real dependencies first.
+ *
+ * **The cap made identifier ordering actively misleading here, which is why this is the one node list
+ * with an ordering of its own.** Measured on `facebook/react`: 740 external nodes, of which 395 are
+ * `ext:builtin:*` and 11 are `ext:node:*`. Alphabetically, `ext:builtin:` precedes `ext:npm:` — so the
+ * 100 entries that survived `RESULT_LIMIT` were `AbortController`, `AbortSignal`, `AnalyserNode`,
+ * `Animation`, … and **not one** of React's 333 npm packages appeared in the architecture view, in the
+ * context assembled from it, or in any answer built on that context.
+ *
+ * A cap that keeps a hundred true things and drops the only useful ones is not a cap, it is a filter
+ * nobody chose. Ordering by whether a node is a dependency puts the answer inside the cap; nothing is
+ * excluded, `total` is unchanged, and ties still break on the identifier so two scans agree.
+ */
+export function byDependencyFirst(nodes: readonly GraphNode[]): readonly GraphNode[] {
+  const rank = (node: GraphNode): number =>
+    node.externalKind !== null && NON_DEPENDENCY_EXTERNAL_KINDS.has(node.externalKind) ? 1 : 0;
+
+  return [...nodes].sort((left, right) => rank(left) - rank(right) || left.id.localeCompare(right.id));
+}
+
+/**
  * Everything reachable from a node, with each one's shortest distance.
  *
  * Breadth-first with a visited set, so a cycle terminates and every node is recorded at its shortest

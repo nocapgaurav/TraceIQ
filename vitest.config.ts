@@ -35,6 +35,12 @@ export default defineConfig({
       '@traceiq/explorer': packageSource('explorer'),
       '@traceiq/navigation': packageSource('navigation'),
       '@traceiq/pipeline': packageSource('pipeline'),
+      '@traceiq/bench': packageSource('bench'),
+      '@traceiq/analyzer': packageSource('analyzer'),
+      '@traceiq/python': packageSource('python'),
+      '@traceiq/tree-sitter': packageSource('tree-sitter'),
+      '@traceiq/java': packageSource('java'),
+      '@traceiq/go': packageSource('go'),
       '@traceiq/context': packageSource('context'),
       // Mirrors the package's own `exports` map: the fakes and the provider contract battery
       // ship as a separate entry point so they cannot reach production code.

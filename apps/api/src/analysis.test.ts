@@ -44,7 +44,7 @@ class FixtureCloner implements GitCloner {
       "import { Widget } from './service';\nexport function make(): string {\n  return new Widget().build('a');\n}\n",
     );
 
-    return { ok: true, failure: null, stderr: '' };
+    return { ok: true, failure: null, stderr: '', bytes: 1024 };
   }
 }
 
@@ -100,11 +100,11 @@ beforeAll(async () => {
     analyses: new AnalysisRegistry({
       analyzer: new RepositoryAnalyzer({ cloner: new FixtureCloner(), probe: OFFLINE_PROBE }),
       // The app supplies this itself in production; a test that injects a registry must supply it too,
-      // and it is exactly what makes the read endpoints serve the new graph.
+      // and it is exactly what makes the read endpoints serve the new graph. An analysis now writes a
+      // staged database rather than the live one, so adopting it is what publishes the result — and
+      // discarding it on failure is what stops a half-written graph replacing a working one.
       onSettled: (job) => {
-        if (job.status === 'succeeded') {
-          server.app.holder.reopen();
-        }
+        server.app.holder.settle(job.id, job.status === 'succeeded');
       },
     }),
   });
@@ -158,31 +158,83 @@ describe('POST /analysis', () => {
     const job = await settle((started.body.data?.job as Record<string, string>).id);
 
     expect(job.status).toBe('succeeded');
-    expect((job.result as Record<string, number>).files).toBe(2);
+    // Four: the two sources plus package.json and tsconfig.json, which universal
+    // discovery records as repository files.
+    expect((job.result as Record<string, number>).files).toBe(4);
 
     // The read side now answers about the repository that was just analysed — with no reload, no
     // restart and no second request to make it happen.
     const overview = await call('GET', '/overview');
 
     expect(overview.status).toBe(200);
-    expect((overview.body.data?.repository as Record<string, number>).files).toBe(2);
+    expect((overview.body.data?.repository as Record<string, number>).files).toBe(4);
 
     const version = await call('GET', '/version');
 
     expect((version.body.data as Record<string, boolean>).scanned).toBe(true);
   });
 
-  it('refuses a second analysis while one is running, handing back the running job', async () => {
+  it('queues a second analysis rather than refusing it, and says it is waiting', async () => {
     const first = await call('POST', '/analysis', { url: 'https://github.com/example/cloned-fixture' });
     const second = await call('POST', '/analysis', { url: 'https://github.com/example/other' });
 
     const firstId = (first.body.data?.job as Record<string, string>).id;
+    const secondJob = second.body.data?.job as Record<string, string>;
 
-    if (second.body.data?.accepted === false) {
-      expect((second.body.data.job as Record<string, string>).id).toBe(firstId);
-    }
+    // A distinct job with a distinct id, rather than the running one handed back. A user with three
+    // repositories used to have to watch and resubmit; now the work is accepted and waits its turn.
+    expect(secondJob.id).not.toBe(firstId);
+    expect(second.body.data?.accepted).toBe(false);
+    expect(secondJob.status).toBe('queued');
 
     await settle(firstId);
+    await settle(secondJob.id);
+  });
+
+  it('reports queue wait, run time and the worker that ran it', async () => {
+    const started = await call('POST', '/analysis', { url: 'https://github.com/example/cloned-fixture' });
+    const job = await settle((started.body.data?.job as Record<string, string>).id);
+    const telemetry = job.telemetry as Record<string, unknown>;
+
+    // Elapsed time is not progress and never was; these say what the work cost and where it waited,
+    // which is what turns "TraceIQ is slow" into "three repositories are ahead of yours".
+    expect(typeof telemetry.queueWaitMs).toBe('number');
+    expect(typeof telemetry.runMs).toBe('number');
+    expect(telemetry.attempts).toBe(1);
+  });
+
+  it('cancels a queued analysis without ever starting it', async () => {
+    const first = await call('POST', '/analysis', { url: 'https://github.com/example/cloned-fixture' });
+    const second = await call('POST', '/analysis', { url: 'https://github.com/example/other' });
+    const secondId = (second.body.data?.job as Record<string, string>).id;
+
+    const stopped = await call('POST', `/analysis/${secondId}/cancel`);
+
+    expect(stopped.status).toBe(201);
+    expect((stopped.body.data?.job as Record<string, string>).status).toBe('cancelled');
+
+    // Cancelling is the user's own action, so it is not an error and leaves no failure to investigate.
+    expect((stopped.body.data?.job as Record<string, unknown>).error).toBeNull();
+
+    await settle((first.body.data?.job as Record<string, string>).id);
+  });
+
+  it('retries a settled analysis as a new job, keeping the original as evidence', async () => {
+    const started = await call('POST', '/analysis', { url: 'https://github.com/example/cloned-fixture' });
+    const original = await settle((started.body.data?.job as Record<string, string>).id);
+
+    const again = await call('POST', `/analysis/${original.id as string}/retry`);
+    const retried = again.body.data?.job as Record<string, string>;
+
+    expect(retried.id).not.toBe(original.id);
+
+    await settle(retried.id);
+
+    // The first attempt is untouched: overwriting it would destroy the evidence of why a retry was
+    // wanted in the first place.
+    const first = await call('GET', `/analysis/${original.id as string}`);
+
+    expect((first.body.data as Record<string, string>).id).toBe(original.id);
   });
 });
 

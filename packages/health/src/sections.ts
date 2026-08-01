@@ -1,6 +1,6 @@
 import { NODE_KINDS, type GraphEdge, type GraphNode } from '@traceiq/graph-api';
 import { parseRouteId } from '@traceiq/query';
-import { RELATIONSHIP_TYPES, ROLES } from '@traceiq/types';
+import { RELATIONSHIP_TYPES, ROLES, isEcosystem } from '@traceiq/types';
 import type { NodeId, RelationshipType } from '@traceiq/types';
 
 import type { Derived } from './derived.js';
@@ -57,7 +57,12 @@ export function summaryOf(index: GraphIndex): RepositorySummary {
     functions: nodesByKind.Function,
     routes: nodesByKind.Route,
     environmentVariables: nodesByKind.EnvironmentVariable,
-    externalPackages: externalsByKind['npm'] ?? 0,
+    // Summed across every ecosystem. `externalsByKind['npm']` reported zero for a Python, Java or Go
+    // repository — the same npm-shaped assumption that once kept those languages out of the graph.
+    // `externalsByKind` still carries the per-ecosystem breakdown for a consumer that wants it.
+    externalPackages: externals.filter(
+      (external) => external.externalKind !== null && isEcosystem(external.externalKind),
+    ).length,
     nodesByKind,
     externalsByKind,
     graph: {

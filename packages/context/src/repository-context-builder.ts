@@ -74,6 +74,11 @@ export class RepositoryContextBuilder {
 
     return {
       ...context,
+      // Added once, centrally, so every context kind carries it and no kind-builder can forget. A
+      // question about a Python symbol needs its region's depth exactly as much as a question about
+      // the repository does.
+      capabilities: counted.queries.capabilities(),
+      technologies: counted.queries.technologies(),
       statistics: {
         capabilityCalls: counted.snapshot(),
         totalCapabilityCalls: counted.total(),
@@ -91,7 +96,7 @@ export class RepositoryContextBuilder {
   #assemble(
     capabilities: ContextCapabilities,
     request: ContextRequest,
-  ): Omit<RepositoryContext, 'statistics'> {
+  ): Omit<RepositoryContext, 'statistics' | 'capabilities' | 'technologies'> {
     switch (request.kind) {
       case 'symbol':
         return symbolContext(capabilities, request.id);
@@ -132,7 +137,7 @@ export class RepositoryContextBuilder {
 function symbolContext(
   capabilities: ContextCapabilities,
   id: NodeId,
-): Omit<RepositoryContext, 'statistics'> {
+): Omit<RepositoryContext, 'statistics' | 'capabilities' | 'technologies'> {
   const view = capabilities.explorer.browseSymbol(id);
 
   if (view === null) {
@@ -205,7 +210,7 @@ function symbolContext(
 function impactContext(
   capabilities: ContextCapabilities,
   id: NodeId,
-): Omit<RepositoryContext, 'statistics'> {
+): Omit<RepositoryContext, 'statistics' | 'capabilities' | 'technologies'> {
   const analysis = capabilities.impact.analyze(id);
 
   if (analysis === null) {
@@ -275,7 +280,7 @@ function impactContext(
 function fileContext(
   capabilities: ContextCapabilities,
   path: string,
-): Omit<RepositoryContext, 'statistics'> {
+): Omit<RepositoryContext, 'statistics' | 'capabilities' | 'technologies'> {
   const id = (path.startsWith('file:') ? path : `file:${path}`) as NodeId;
   const view = capabilities.explorer.browseFile(id);
 
@@ -341,7 +346,7 @@ function fileContext(
 function packageContext(
   capabilities: ContextCapabilities,
   name: string,
-): Omit<RepositoryContext, 'statistics'> {
+): Omit<RepositoryContext, 'statistics' | 'capabilities' | 'technologies'> {
   const view = capabilities.explorer.browsePackage(name);
 
   if (view === null) {
@@ -398,7 +403,7 @@ function routeContext(
   capabilities: ContextCapabilities,
   method: string,
   path: string,
-): Omit<RepositoryContext, 'statistics'> {
+): Omit<RepositoryContext, 'statistics' | 'capabilities' | 'technologies'> {
   const routeId = `route:${method}:${path}` as NodeId;
   const explanation = capabilities.queries.explainRoute(routeId);
 
@@ -492,7 +497,7 @@ function routeContext(
  * kind — reported as `repository-health-computed-independently` rather than hidden, and harmless because
  * the graph is one immutable revision so both agree.
  */
-function repositoryContext(capabilities: ContextCapabilities): Omit<RepositoryContext, 'statistics'> {
+function repositoryContext(capabilities: ContextCapabilities): Omit<RepositoryContext, 'statistics' | 'capabilities' | 'technologies'> {
   const overview = capabilities.explorer.overview();
   const architecture = capabilities.explorer.architecture();
   const hotspots = capabilities.explorer.hotspots();
@@ -548,7 +553,7 @@ function repositoryContext(capabilities: ContextCapabilities): Omit<RepositoryCo
 function searchContext(
   capabilities: ContextCapabilities,
   query: Parameters<ContextCapabilities['explorer']['search']>[0],
-): Omit<RepositoryContext, 'statistics'> {
+): Omit<RepositoryContext, 'statistics' | 'capabilities' | 'technologies'> {
   const results = capabilities.explorer.search(query);
 
   const related = relatedNodes(

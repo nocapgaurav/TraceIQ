@@ -1,3 +1,5 @@
+import type { AnalysisDepth } from '@traceiq/graph-api';
+
 import type { GitHubRepository } from './github-url.js';
 
 /**
@@ -42,16 +44,56 @@ export interface AnalysisStage {
   readonly status: StageStatus;
   /** What this stage produced, once it has. Never a guess about what it might produce. */
   readonly detail: string | null;
+  /**
+   * How long this stage has been running, or took.
+   *
+   * Added because "Scanning source and building the repository graph" is a single stage that can last
+   * four minutes on a large repository, and a stage list with no clock on it is indistinguishable from
+   * a stalled one. Still no percentage: the pipeline cannot say how far through it is, and elapsed
+   * time is a fact rather than the guess a progress bar would have to make.
+   */
+  readonly elapsedMs: number | null;
 }
 
 /**
- * `queued` is reserved, not dead.
+ * `queued` stopped being reserved.
  *
- * With a single slot the work starts the moment it is accepted, so a job goes straight to `running`.
- * The status exists so that adding a real queue later is a change inside the registry rather than a
- * change to this contract and every client reading it.
+ * It was documented as a status that could not occur, because a single slot meant work began the
+ * moment it was accepted. With a bounded worker pool a submission genuinely waits, and `queueWaitMs`
+ * says for how long — which is the difference between "TraceIQ is slow" and "three repositories are
+ * ahead of yours".
+ *
+ * `cancelled` is distinct from `failed` on purpose. A cancelled job produced no graph and neither did
+ * a failed one, but only one of them is worth investigating, and a UI that showed a user's own Stop
+ * as an error would be lying to them about their own action.
  */
-export type AnalysisStatus = 'queued' | 'running' | 'succeeded' | 'failed';
+export type AnalysisStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+/**
+ * What a job cost and where it ran.
+ *
+ * **Kept apart from the job's result because it describes the execution rather than the repository.**
+ * Every field is measured rather than estimated: `cpuMs` and `peakRssBytes` come from the worker
+ * process's own accounting, so they are that analysis's cost and not the API's. A field is `null` where
+ * the number was genuinely not available — an in-process execution has no worker to report memory, and
+ * saying zero would be a measurement that never happened.
+ */
+export interface JobTelemetry {
+  /** Milliseconds between being accepted and being started. Zero when a worker was free. */
+  readonly queueWaitMs: number;
+  /** Milliseconds spent running, once started. */
+  readonly runMs: number;
+  /** Which worker ran it, for correlating with logs. `null` while queued or when run in process. */
+  readonly worker: string | null;
+  /** Worker CPU time, as the worker measured it. */
+  readonly cpuMs: number | null;
+  /** Worker peak resident memory, as the worker measured it. */
+  readonly peakRssBytes: number | null;
+  /** Bytes cloned, once the clone stage has finished. */
+  readonly repositoryBytes: number | null;
+  /** How many times this job has been started, including the current attempt. */
+  readonly attempts: number;
+}
 
 /**
  * Why an analysis failed, as a closed vocabulary.
@@ -65,7 +107,15 @@ export const ANALYSIS_ERROR_CODES = [
   'repository-private',
   'clone-failed',
   'repository-too-large',
-  'unsupported-repository',
+  /**
+   * The repository holds no files at all.
+   *
+   * Replaces `unsupported-repository`, which meant "not TypeScript". That is no longer a
+   * failure: a repository in any language now produces structure, languages, manifests
+   * and declared dependencies, and how deeply it was analysed is reported as a capability
+   * rather than as an error.
+   */
+  'empty-repository',
   'pipeline-failed',
   'analysis-timeout',
   'network-failed',
@@ -94,6 +144,21 @@ export interface AnalysisResult {
   readonly callEdges: number;
   readonly unresolvedCalls: number;
   readonly unresolvedReferences: number;
+  /**
+   * What the repository is made of, and how deeply it was read.
+   *
+   * **Carried because the counts above are meaningless without it.** A Python service reports zero
+   * routes and zero external packages, and a reader shown that with no language context reasonably
+   * concludes the analysis found nothing — when what happened is that it found a different set of
+   * things. `ScanSummary` has held all four of these since discovery became universal; this surface
+   * simply dropped them on the floor.
+   */
+  readonly languages: readonly { readonly language: string; readonly files: number }[];
+  readonly regions: number;
+  readonly depth: AnalysisDepth;
+  readonly isPolyglot: boolean;
+  /** Analysers that failed. Empty for a clean analysis; non-empty means the graph is still usable. */
+  readonly analyzerFailures: readonly { readonly analyzer: string; readonly failure: string }[];
 }
 
 export interface AnalysisJob {
@@ -113,4 +178,6 @@ export interface AnalysisJob {
   readonly elapsedMs: number;
   /** Set when the workspace could not be removed. A completed analysis is not failed by a leak. */
   readonly workspaceWarning: string | null;
+  /** What this job cost and where it ran. See `JobTelemetry`. */
+  readonly telemetry: JobTelemetry;
 }

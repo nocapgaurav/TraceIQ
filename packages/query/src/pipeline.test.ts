@@ -98,6 +98,11 @@ beforeAll(async () => {
     lockfile: null,
     entryPoints: [],
     ignoredPaths: [],
+    workspacePackages: [],
+      files: [],
+      languages: [],
+      manifests: [],
+      regions: [],
   };
 
   const context = new ProjectHost().load(inventory);

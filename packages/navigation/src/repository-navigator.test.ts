@@ -1,3 +1,5 @@
+import { NODE_KINDS } from '@traceiq/graph-api';
+import { RELATIONSHIP_TYPES } from '@traceiq/types';
 import type { NodeId } from '@traceiq/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -492,9 +494,9 @@ describe('reuse', () => {
   it('builds only one whole-graph index, inside Repository Explorer', () => {
     navigator.architecture();
 
-    // Sixteen node kinds and thirteen relationship types, read once each — not twice.
-    expect(graph.calls.getNodes).toBe(16);
-    expect(graph.calls.getEdges).toBe(13);
+    // Every node kind and every relationship type, read once each — not twice.
+    expect(graph.calls.getNodes).toBe(NODE_KINDS.length);
+    expect(graph.calls.getEdges).toBe(RELATIONSHIP_TYPES.length);
   });
 
   it('reports how much of an operation came from reuse', () => {

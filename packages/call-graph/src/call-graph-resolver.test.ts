@@ -243,12 +243,20 @@ describe('what deliberately does not bind', () => {
     expect(fixture.unresolved('unbound')).toMatchObject({ reason: 'root-not-bound' });
   });
 
-  it('separates a call that leaves the repository from one it failed to bind', () => {
+  it('records a call that leaves the repository as an edge onto the dependency', () => {
     // `nodePath.join` resolves to a Node builtin. There is correctly no repository
-    // declaration to point at, so reporting it as unbound would blame the analysis.
-    const external = fixture.unresolved('nodePath.join');
+    // declaration to point at, but there *is* a boundary to name — and naming it is the
+    // difference between "which of my declarations use node:path" being answerable and not.
+    // It stays out of `unresolved`, because nothing here failed.
+    expect(fixture.unresolved('nodePath.join')).toBeUndefined();
 
-    expect(external?.reason).toBe('root-is-external');
+    const external = fixture.externalCall('nodePath.join');
+
+    expect(external?.name).toBe('node:path');
+    expect(external?.origin).toBe('standard-library');
+    // INFERRED, not RESOLVED: the import statement proves where the name came from, and no
+    // checker confirmed that the callee exists.
+    expect(external?.confidence).toBe('INFERRED');
     expect(external?.provenance.evidence).toMatch(/leaves the repository/);
   });
 
@@ -338,9 +346,14 @@ describe('graph consistency', () => {
   });
 
   it('binds every call site to exactly one outcome', () => {
-    expect(fixture.callGraph.calls.length + fixture.callGraph.unresolved.length).toBe(
-      fixture.ir.callSites.length,
-    );
+    // Three outcomes, not two: a call reaches a declaration, reaches a dependency, or reaches
+    // neither. The third was folded into `unresolved` until external calls became nameable
+    // without a type checker.
+    expect(
+      fixture.callGraph.calls.length +
+        fixture.callGraph.externalCalls.length +
+        fixture.callGraph.unresolved.length,
+    ).toBe(fixture.ir.callSites.length);
   });
 });
 

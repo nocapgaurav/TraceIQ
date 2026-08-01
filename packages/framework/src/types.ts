@@ -99,11 +99,51 @@ export interface EnvironmentVariableAnnotation {
 }
 
 export interface FrameworkAnnotations {
-  /** `express` when Express was detected, and `null` otherwise. */
-  readonly framework: 'express' | null;
+  /**
+   * The framework an analyser recognised, in that framework's own name, or `null`.
+   *
+   * **A free name rather than a closed set, and deliberately so.** This read `'express' | null` while
+   * Express was the only extractor, which meant Spring, Flask, FastAPI, Gin and every framework after
+   * them would each have had to widen a shared type — the cost this milestone exists to remove.
+   * Frameworks proliferate faster than ecosystems do, so the vocabulary belongs to whichever analyser
+   * recognised one.
+   *
+   * It is a label for a reader, never a key anything branches on: a consumer that changed behaviour
+   * per framework would be putting framework knowledge outside the extractor that has the evidence.
+   */
+  readonly framework: string | null;
   readonly roles: readonly RoleAnnotation[];
   readonly routes: readonly RouteAnnotation[];
   readonly environmentVariables: readonly EnvironmentVariableAnnotation[];
+  /**
+   * HTTP requests this code *makes*, as opposed to the routes it serves.
+   *
+   * **This is the connective tissue of a polyglot repository.** A React application calling
+   * `fetch('/api/users')` and a Flask service registering `@app.route('/api/users')` are one system
+   * with a seam in the middle, and until both halves were recorded a repository read as a set of
+   * language islands that happened to share a checkout. Routes were already extracted for every
+   * language; this is the other end of the arrow.
+   */
+  readonly clientCalls: readonly ClientCallAnnotation[];
+}
+
+/**
+ * One outbound HTTP request whose path the source states literally.
+ *
+ * Only a literal path is recorded. `fetch(url)` and `fetch(`${base}/users`)` name no endpoint a
+ * reader could follow, and guessing at a template's shape would fabricate the very connection this
+ * exists to establish honestly.
+ */
+export interface ClientCallAnnotation {
+  /** The HTTP method when the call states one, else `null` — `fetch` defaults to GET but does not say so. */
+  readonly method: HttpMethod | null;
+  /** The path exactly as written, origin and query still attached. Normalisation happens at matching. */
+  readonly path: string;
+  /** The declaration the call sits in, or `null` at module level. */
+  readonly calledFromDeclarationId: NodeId | null;
+  readonly confidence: ConfidenceLevel;
+  readonly provenance: AnnotationProvenance;
+  readonly location: SourceRange;
 }
 
 export const NO_ANNOTATIONS: FrameworkAnnotations = {
@@ -111,4 +151,5 @@ export const NO_ANNOTATIONS: FrameworkAnnotations = {
   roles: [],
   routes: [],
   environmentVariables: [],
+  clientCalls: [],
 };

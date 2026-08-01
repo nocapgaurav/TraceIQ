@@ -2,7 +2,7 @@
 
 import { ArrowRight } from 'lucide-react';
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { Band, stagger } from '@/components/marketing/landing-section';
 import { AnalysisDialog } from '@/components/domain/analysis/analysis-dialog';
@@ -121,7 +121,27 @@ function HeroBackdrop() {
 function GraphStatus() {
   const version = useVersion();
 
-  if (version.isPending || version.isError) {
+  /*
+   * Whether the first client render has happened.
+   *
+   * `/version` is fetched from the browser, so the server has no answer and always renders the
+   * placeholder below. Hydration compares the client's *first* render against that HTML — and the
+   * fetch is a race against it. On a slow device, or with the API on localhost answering in a
+   * millisecond, the answer can land before React commits, and the first client render then produces
+   * the loaded paragraph where the server wrote an empty div. Different element, different height:
+   * React discards the tree and re-renders it.
+   *
+   * Set in an effect, which runs after that first commit, so the first client render is the
+   * placeholder whatever the fetch has already returned. Nothing else changes: the placeholder was
+   * already the loading state, so the visible behaviour is what it was.
+   */
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
+
+  if (!hydrated || version.isPending || version.isError) {
     return <div className="h-6" aria-hidden />;
   }
 

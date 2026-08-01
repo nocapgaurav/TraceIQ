@@ -103,6 +103,9 @@ describe('Repository Overview', () => {
       'Purpose',
       'Architecture style',
       'Languages',
+      // Analysis depth, per region. Without it a reader had no way to tell an empty panel meaning
+      // "analysed, none found" from one meaning "never analysed".
+      'Analysis depth',
       'Frameworks',
       'Main packages',
       'Entry points',
@@ -121,7 +124,7 @@ describe('Repository Overview', () => {
     // controllers. Frameworks *is* filled, because the fixture reads one environment variable — which is
     // an outcome of framework extraction, so reporting it is not a guess.
     expect(unfilled.map((term) => term.textContent)).toEqual(['Purpose', 'Entry points']);
-    expect(rows[3]?.textContent).toContain('environment configuration (1 variable read)');
+    expect(rows[4]?.textContent).toContain('environment configuration (1 variable read)');
   });
 
   it('fills the fields it can, from the payload', async () => {

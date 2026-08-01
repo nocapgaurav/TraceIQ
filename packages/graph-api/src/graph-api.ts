@@ -6,6 +6,7 @@ import type {
   GraphRole,
   GraphUnresolvedReference,
   NodeKind,
+  RepositoryCapabilities,
 } from './types.js';
 
 /**
@@ -61,6 +62,16 @@ export interface RepositoryGraphApi {
    * the evidence behind it.
    */
   getRoles(nodeId: NodeId): readonly GraphRole[];
+
+  /**
+   * What this graph can and cannot answer, by technology region.
+   *
+   * The one operation that is not a lookup into the graph, and it is here because every
+   * other operation is meaningless without it: `getEdges('CALLS')` returning nothing means
+   * "no calls" for a TypeScript region and "calls were never analysed" for a Python one.
+   * A consumer that cannot tell those apart will mislead its reader.
+   */
+  getCapabilities(): RepositoryCapabilities;
 
   /**
    * Every reference that could not be resolved, ordered by identifier.

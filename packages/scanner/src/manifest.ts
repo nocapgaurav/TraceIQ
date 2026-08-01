@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises';
 
+import { readManifestWorkspaceGlobs, type WorkspaceGlobs } from './workspace-globs.js';
+
 /** A declared entry point target, before it is checked against discovered files. */
 export interface ManifestEntryField {
   /** The declaring field, e.g. `main`, `bin.cli`, `exports["."].import`. */
@@ -17,6 +19,14 @@ export interface PackageManifest {
   /** Every declared dependency name across all four sections, sorted. */
   readonly dependencyNames: readonly string[];
   readonly entryFields: readonly ManifestEntryField[];
+  /**
+   * The globs declared in `workspaces`, empty when the field is absent.
+   *
+   * Read here rather than by the workspace discovery, so that package.json is parsed
+   * in exactly one place and a caller never has to hold the raw JSON to ask a second
+   * question of it.
+   */
+  readonly workspaceGlobs: WorkspaceGlobs;
 }
 
 export class MalformedManifestError extends Error {
@@ -73,6 +83,7 @@ export async function readPackageManifest(absolutePath: string): Promise<Package
     name: readName(parsed),
     dependencyNames: readDependencyNames(parsed),
     entryFields: readEntryFields(parsed),
+    workspaceGlobs: readManifestWorkspaceGlobs(parsed),
   };
 }
 

@@ -22,10 +22,28 @@ import type { ResolvedDeclaration, ResolvedRepository } from './types.js';
  * Nothing here organises facts. Each resolver states what one reference points at,
  * with provenance that explains itself; assembling those into a graph belongs to
  * the Graph Builder.
+ *
+ * **`index` is what makes bounded compilation lossless.** The IR being resolved covers one unit's
+ * files, but a reference in it may reach a declaration another unit owns — a monorepo importing
+ * `@traceiq/ir` is the ordinary case. Given only this unit's IR, that target sits outside the
+ * indexed set and is classified as an external: measured on TraceIQ, opaque IMPORTS went from 19 to
+ * **1,581** and cross-package call edges collapsed. Passing an index built from every unit's IR
+ * restores it exactly, because a declaration index is plain data keyed by source position and needs
+ * no compiler to build.
  */
 export class Resolver {
-  resolve(input: { readonly ir: RepositoryIR; readonly context: ProjectContext }): ResolvedRepository {
-    const index = DeclarationIndex.fromIr(input.ir);
+  resolve(input: {
+    readonly ir: RepositoryIR;
+    readonly context: ProjectContext;
+    /**
+     * The declaration index to resolve against. Defaults to one built from `ir` alone.
+     *
+     * Supplied when this IR is one unit of several, so a reference reaching another unit's
+     * declaration finds it rather than falling out of the analysed set.
+     */
+    readonly index?: DeclarationIndex;
+  }): ResolvedRepository {
+    const index = input.index ?? DeclarationIndex.fromIr(input.ir);
     const collector = new ResolutionCollector();
     const declarations: ResolvedDeclaration[] = [];
 

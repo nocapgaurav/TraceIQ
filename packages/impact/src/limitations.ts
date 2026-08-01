@@ -13,11 +13,11 @@ import type { LimitationCode } from './types.js';
  */
 export const LIMITATION_DETAIL: Readonly<Record<LimitationCode, string>> = {
   'call-coverage-partial':
-    'the call graph binds names rather than symbols, so a callee containing another call — new Service().run() — produces no edge; the closure may be narrower than the code',
+    'a call the type checker could not resolve falls to a name lookup, and one neither could bind produces no edge at all; the closure may therefore be narrower than the code',
   'calls-are-inferred':
-    'every CALLS edge is INFERRED, the call graph having no type checker, so a local of the same name could shadow the declaration matched',
+    'some CALLS edges here are INFERRED — bound by name rather than by the type checker — so a local of the same name could shadow the declaration matched',
   'no-interface-or-dynamic-dispatch':
-    'an interface method call, a call through a variable and a call on a runtime-chosen receiver produce no edge at all, so nothing reached only that way can appear in this result even as UNKNOWN',
+    'a call through an interface binds to the interface method, never to the implementations, and a call on a runtime-chosen receiver produces no edge at all; changing an implementation reached only that way will not appear in this result',
   'unresolved-relationships-in-closure':
     'relationships inside the closure could not be resolved, so the affected set may be wider than the edges show',
   'closure-may-miss-hidden-dependents':
@@ -31,7 +31,9 @@ export const LIMITATION_DETAIL: Readonly<Record<LimitationCode, string>> = {
   'containment-not-followed':
     'DECLARES is not traversed, so changing a member does not report its class as affected; containment is not a dependency on the member',
   'external-dependencies-are-file-scoped':
-    'IMPORTS is recorded at a file, never at a declaration, so these externals belong to files inside the closure and are not necessarily used by the affected declarations',
+    'IMPORTS is recorded at a file, never at a declaration, so these externals belong to files inside the closure and are not necessarily used by the affected declarations; a CALLS edge onto an external is declaration-scoped and does not carry this caveat',
+  'region-has-no-semantic-analysis':
+    'no semantic analyser covers this part of the repository, so its calls, imports and types were never read; an empty result here means "not analysed", not "nothing depends on it"',
   'route-prefixes-not-composed':
     'no mount information is recorded in the graph, so a route path is local to its router and may sit under a prefix',
 };

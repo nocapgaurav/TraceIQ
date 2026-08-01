@@ -56,17 +56,45 @@ export const ENDPOINT_RULES: Readonly<Partial<Record<RelationshipType, EndpointR
     targets: ['Class', 'Interface', 'TypeAlias', 'Function', 'Variable', 'External'],
   },
   IMPLEMENTS: {
-    sources: ['Class'],
+    // `Enum` because a Java enum may implement interfaces, which is both legal and common —
+    // `enum ComparableComparator implements Comparator` in Apache Commons Lang is one of many. The row
+    // read `['Class']` while TypeScript was the only producer, and TypeScript enums cannot implement.
+    sources: ['Class', 'Enum'],
     targets: ['Interface', 'TypeAlias', 'Function', 'Variable', 'External'],
   },
   CALLS: {
     // A call at module level is attributed to its file, so a file may be a caller.
     sources: ['File', ...DECLARATIONS],
-    targets: DECLARATIONS,
+    // `External` for the same reason IMPORTS and REFERENCES_TYPE admit it: a call can
+    // leave the repository. It was absent while the call graph bound names only, which
+    // gave it no way to tell a package's function from an unbound local; the type checker
+    // resolves the callee's declaration and therefore knows which file it came from.
+    targets: [...DECLARATIONS, 'External'],
+  },
+  /**
+   * A manifest declaring a dependency. The only relationship a repository with no
+   * language analyser produces, and the reason the frozen vocabulary needed no addition.
+   */
+  DEPENDS_ON: {
+    sources: ['Manifest'],
+    targets: ['Dependency'],
   },
   HANDLED_BY: {
     sources: ['Route'],
     targets: DECLARATIONS,
+  },
+  /**
+   * A request this repository makes, reaching a route this repository serves.
+   *
+   * Reserved and unproduced since the contract was written; "execution continues to" is exactly
+   * what an outbound call to a locally-served endpoint does. It is the only relationship that
+   * crosses a language boundary — a React component's `fetch` reaching a Flask route — which is why
+   * the source side admits `File`: a module-level request has no declaration, and dropping it would
+   * lose the seam in precisely the repositories that have one.
+   */
+  CONTINUES_TO: {
+    sources: ['File', ...DECLARATIONS],
+    targets: ['Route'],
   },
   READS: {
     // A read sits in a declaration, or at module level — which is the file.
@@ -82,6 +110,13 @@ export const ENDPOINT_RULES: Readonly<Partial<Record<RelationshipType, EndpointR
       'Enum',
       'EnumMember',
       'Namespace',
+      // `Function` and `Variable` for the same reason EXTENDS and IMPLEMENTS admit them, and this
+      // row was simply the one that had not met the case yet. TypeScript keeps a type space and a
+      // value space, and an identifier is a symbol path with no room to say which — so `type BENCH`
+      // beside `const BENCH: BENCH` is one node wearing both meanings, and the annotation resolves
+      // to it. zod declares exactly that, and rejecting the edge failed the whole scan.
+      'Function',
+      'Variable',
       'External',
     ],
   },

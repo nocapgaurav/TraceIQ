@@ -68,10 +68,15 @@ describe('RepositoryScanner: source discovery', () => {
     expect(inventory.sourceFiles).toEqual(['a.ts', 'b.tsx', 'c.mts', 'd.cts', 'e.d.ts']);
   });
 
-  it('does not discover non-TypeScript files', async () => {
+  it('offers the compiler its TypeScript and JavaScript, and nothing else', async () => {
+    // `sourceFiles` is what the compiler-backed analyser will read, not the repository's file
+    // list — `files` is that, and it holds the CSS, the Markdown and the JSON as well.
     const fixture = await repository({
       'src/index.ts': '',
       'src/legacy.js': '',
+      'src/component.jsx': '',
+      'src/module.mjs': '',
+      'src/script.cjs': '',
       'src/styles.css': '',
       'README.md': '',
       'data.json': '',
@@ -79,7 +84,14 @@ describe('RepositoryScanner: source discovery', () => {
 
     const inventory = await scanner.scan(fixture.rootPath);
 
-    expect(inventory.sourceFiles).toEqual(['src/index.ts']);
+    expect(inventory.sourceFiles).toEqual([
+      'src/component.jsx',
+      'src/index.ts',
+      'src/legacy.js',
+      'src/module.mjs',
+      'src/script.cjs',
+    ]);
+    expect(inventory.files.map((file) => file.path)).toContain('src/styles.css');
   });
 
   it('reports repository-relative POSIX paths', async () => {

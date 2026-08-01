@@ -19,7 +19,22 @@ export interface EventSink {
   readonly open: boolean;
   /** Whether any frame has been written. Once true, the status can no longer change. */
   readonly started: boolean;
+  /** Stops the keep-alive timer. Idempotent, and called automatically when the client disconnects. */
+  close(): void;
 }
+
+/**
+ * How often a silent stream writes a comment frame.
+ *
+ * **Chosen against the tightest hop in a realistic chain, not against this deployment.** Next's
+ * built-in proxy defaults to a 30-second inactivity timeout (`proxyTimeout` in
+ * `router-utils/proxy-request`), nginx's `proxy_read_timeout` is 60 seconds, and managed edges sit
+ * around 60–100. Ten seconds is under a third of the tightest of those, so two heartbeats can be lost
+ * to scheduling and the connection still survives.
+ *
+ * The cost is one 15-byte write per ten seconds of silence. The alternative costs an answer.
+ */
+export const HEARTBEAT_MS = 10_000;
 
 /**
  * Prepares a stream on a response, **opening it on the first frame**.
@@ -33,12 +48,50 @@ export interface EventSink {
  * Buffering is disabled explicitly: a proxy that batched this would defeat the point, and
  * `X-Accel-Buffering` is the one hint nginx honours.
  */
-export function openEventStream(response: Response): EventSink {
+export function openEventStream(response: Response, heartbeatMs: number = HEARTBEAT_MS): EventSink {
   let open = true;
   let started = false;
+  let timer: NodeJS.Timeout | undefined;
+
+  /**
+   * The keep-alive, rearmed after every write.
+   *
+   * **A comment frame, not an event.** `:` opens a comment in the SSE grammar; every conformant parser
+   * discards the line, including this repository's own `parseFrame`, which finds no `event:` in the
+   * block and returns `null`. So the bytes reset every inactivity timer between here and the browser
+   * while adding nothing a consumer has to know about.
+   *
+   * Rearming on each write rather than ticking unconditionally means a stream producing tokens never
+   * pays for this at all — the timer only ever fires during genuine silence.
+   */
+  const rearm = (): void => {
+    clearTimeout(timer);
+
+    if (!open || heartbeatMs <= 0) {
+      return;
+    }
+
+    timer = setTimeout(() => {
+      if (!open || !started) {
+        return;
+      }
+
+      response.write(': keep-alive\n\n');
+      rearm();
+    }, heartbeatMs);
+
+    // A pending heartbeat must not be the reason a process stays alive.
+    timer.unref?.();
+  };
+
+  const stop = (): void => {
+    clearTimeout(timer);
+    timer = undefined;
+  };
 
   response.on('close', () => {
     open = false;
+    stop();
   });
 
   const start = (): void => {
@@ -64,12 +117,17 @@ export function openEventStream(response: Response): EventSink {
       return started;
     },
 
+    close(): void {
+      stop();
+    },
+
     send(event: string, data: unknown): boolean {
       if (!open) {
         return false;
       }
 
       start();
+      rearm();
 
       // One `data:` line per line of payload, as the format requires. JSON never contains a raw newline,
       // so a single line is always enough — but splitting anyway costs nothing and cannot be wrong.

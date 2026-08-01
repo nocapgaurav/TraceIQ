@@ -26,6 +26,7 @@ export {
   type SuccessBody,
 } from './respond.js';
 export { startServer, type StartedServer } from './server.js';
+export { WorkerAnalysisExecutor, type WorkerExecutorOptions } from './worker-executor.js';
 
 // The chat endpoints contain zero AI logic: they validate a body, call RepositoryAnswerer and project its
 // result onto the wire. The model arrives by constructor injection from the composition root — there is no

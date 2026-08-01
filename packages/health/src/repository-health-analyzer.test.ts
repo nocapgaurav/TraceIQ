@@ -1,3 +1,5 @@
+import { NODE_KINDS } from '@traceiq/graph-api';
+import { RELATIONSHIP_TYPES } from '@traceiq/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { FakeGraph, edge, node, role, unresolved } from './fake-graph.test-helper.js';
@@ -443,7 +445,7 @@ describe('metrics', () => {
 
 describe('one pass over the graph', () => {
   it('reads each node kind once and each relationship type once', () => {
-    expect(graph.calls.getNodes).toBe(16);
+    expect(graph.calls.getNodes).toBe(19);
     expect(graph.calls.getEdges).toBe(13);
   });
 
@@ -461,7 +463,9 @@ describe('one pass over the graph', () => {
       edgesScanned: 22,
       unresolvedScanned: 3,
     });
-    expect(report.statistics.graphApiCalls).toBe(16 + 13 + 1 + report.summary.declarations);
+    expect(report.statistics.graphApiCalls).toBe(
+      NODE_KINDS.length + RELATIONSHIP_TYPES.length + 1 + report.summary.declarations,
+    );
   });
 
   it('names the largest traversal and the largest finding category', () => {
@@ -632,7 +636,9 @@ describe('stress', () => {
     expect(result.callGraphHealth.clusters.count).toBe(files);
     expect(result.callGraphHealth.maxCallDepth).toBe(perFile - 1);
     // Still one pass: node kinds, relationship types, roles per declaration, unresolved once.
-    expect(result.statistics.graphApiCalls).toBe(16 + 13 + 1 + files * perFile);
+    expect(result.statistics.graphApiCalls).toBe(
+      NODE_KINDS.length + RELATIONSHIP_TYPES.length + 1 + files * perFile,
+    );
   });
 
   it('analyses a deep call chain without overflowing the stack', () => {

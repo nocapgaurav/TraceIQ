@@ -7,7 +7,9 @@ import {
 } from './ignore.js';
 
 describe('ignored directory names', () => {
-  it('are exactly the seven the milestone specifies', () => {
+  it('are exactly the eight now ignored', () => {
+    // `.traceiq` joined when discovery became universal: a scan that recorded every file
+    // would otherwise find the graph database a previous scan had written.
     expect([...IGNORED_DIRECTORY_NAMES]).toEqual([
       'node_modules',
       '.git',
@@ -16,6 +18,7 @@ describe('ignored directory names', () => {
       'coverage',
       '.next',
       'out',
+      '.traceiq',
     ]);
   });
 

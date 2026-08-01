@@ -34,7 +34,9 @@ export function searchOf(context: ExplorerContext, query: SearchQuery): SearchRe
             // those filters excludes every declaration.
             query.route === undefined &&
             query.environmentVariable === undefined &&
-            query.externalPackage === undefined,
+            query.externalPackage === undefined &&
+            query.dependency === undefined &&
+            query.manifest === undefined,
         ),
       );
 
@@ -49,7 +51,9 @@ export function searchOf(context: ExplorerContext, query: SearchQuery): SearchRe
             query.role === undefined &&
             query.route === undefined &&
             query.environmentVariable === undefined &&
-            query.externalPackage === undefined,
+            query.externalPackage === undefined &&
+            query.dependency === undefined &&
+            query.manifest === undefined,
         ),
       );
 
@@ -64,7 +68,9 @@ export function searchOf(context: ExplorerContext, query: SearchQuery): SearchRe
             query.path === undefined &&
             query.role === undefined &&
             query.environmentVariable === undefined &&
-            query.externalPackage === undefined,
+            query.externalPackage === undefined &&
+            query.dependency === undefined &&
+            query.manifest === undefined,
         ),
       );
 
@@ -79,7 +85,9 @@ export function searchOf(context: ExplorerContext, query: SearchQuery): SearchRe
             query.path === undefined &&
             query.role === undefined &&
             query.route === undefined &&
-            query.externalPackage === undefined,
+            query.externalPackage === undefined &&
+            query.dependency === undefined &&
+            query.manifest === undefined,
         ),
       );
 
@@ -94,7 +102,70 @@ export function searchOf(context: ExplorerContext, query: SearchQuery): SearchRe
             query.path === undefined &&
             query.role === undefined &&
             query.route === undefined &&
-            query.environmentVariable === undefined,
+            query.environmentVariable === undefined &&
+            query.dependency === undefined &&
+            query.manifest === undefined,
+        ),
+      );
+
+  // Dependencies and manifests exist for every repository, whether or not anything analysed it, so
+  // these two are the only search results a `universal` region can produce. Leaving them out made
+  // search answer "nothing matched" for a Python or Java repository whose graph held the name asked
+  // for — the exact shape of sparseness this must not have.
+  const dependencies = empty
+    ? []
+    : byId(
+        (index.nodesByKind.get('Dependency') ?? []).filter(
+          (node) =>
+            matches(node.name, query.dependency, match) &&
+            matchesText(node, query.text, match) &&
+            (query.kind === undefined || query.kind === 'Dependency') &&
+            query.path === undefined &&
+            query.role === undefined &&
+            query.route === undefined &&
+            query.environmentVariable === undefined &&
+            query.externalPackage === undefined &&
+            query.manifest === undefined,
+        ),
+      );
+
+  const manifests = empty
+    ? []
+    : byId(
+        (index.nodesByKind.get('Manifest') ?? []).filter(
+          (node) =>
+            // A manifest is addressed by its path, which is also what `path` filters on: both work,
+            // and `name` here is the filename the graph recorded.
+            matchesPath(node, query.manifest, match) &&
+            matchesPath(node, query.path, match) &&
+            matchesText(node, query.text, match) &&
+            (query.kind === undefined || query.kind === 'Manifest') &&
+            query.role === undefined &&
+            query.route === undefined &&
+            query.environmentVariable === undefined &&
+            query.externalPackage === undefined &&
+            query.dependency === undefined,
+        ),
+      );
+
+  // A technology is a fact about the software, like a declaration, so it is searchable like one.
+  // Leaving it out would mean a reader who can *see* "Next.js" on the Overview cannot find it by
+  // typing it — the exact special-casing this search exists to avoid.
+  const technologies = empty
+    ? []
+    : byId(
+        (index.nodesByKind.get('Technology') ?? []).filter(
+          (node) =>
+            matches(node.name, query.technology, match) &&
+            matchesText(node, query.text, match) &&
+            (query.kind === undefined || query.kind === 'Technology') &&
+            query.path === undefined &&
+            query.role === undefined &&
+            query.route === undefined &&
+            query.environmentVariable === undefined &&
+            query.externalPackage === undefined &&
+            query.dependency === undefined &&
+            query.manifest === undefined,
         ),
       );
 
@@ -106,8 +177,18 @@ export function searchOf(context: ExplorerContext, query: SearchQuery): SearchRe
     routes: listing(routes),
     environmentVariables: listing(environmentVariables),
     externalPackages: listing(externalPackages),
+    dependencies: listing(dependencies),
+    manifests: listing(manifests),
+    technologies: listing(technologies),
     total:
-      declarations.length + files.length + routes.length + environmentVariables.length + externalPackages.length,
+      declarations.length +
+      files.length +
+      routes.length +
+      environmentVariables.length +
+      externalPackages.length +
+      dependencies.length +
+      manifests.length +
+      technologies.length,
   };
 }
 
@@ -119,7 +200,9 @@ function isEmpty(query: SearchQuery): boolean {
     query.role === undefined &&
     query.route === undefined &&
     query.environmentVariable === undefined &&
-    query.externalPackage === undefined
+    query.externalPackage === undefined &&
+    query.dependency === undefined &&
+    query.manifest === undefined
   );
 }
 

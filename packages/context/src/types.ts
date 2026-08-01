@@ -13,7 +13,7 @@ import type {
   SearchResults,
   SymbolView,
 } from '@traceiq/explorer';
-import type { GraphEdge, GraphNode, GraphProvenance } from '@traceiq/graph-api';
+import type { GraphEdge, GraphNode, GraphProvenance, RepositoryCapabilities } from '@traceiq/graph-api';
 import type { RepositoryHealthReport } from '@traceiq/health';
 import type { ImpactAnalysisResult } from '@traceiq/impact';
 import type { RouteExplanation, RouteResult } from '@traceiq/query';
@@ -248,6 +248,24 @@ export interface ContextStatistics {
 export interface RepositoryContext {
   readonly kind: ContextKind;
   readonly primary: ContextPrimary;
+  /**
+   * What the graph can and cannot answer, by region. Present for every kind.
+   *
+   * Carried here because every consumer needs it and none should have to ask for it separately. It is
+   * what lets an answer distinguish an absence that was measured from one that was never looked at —
+   * and, for a polyglot repository, what the repository is even made of. Ask TraceIQ had none of this
+   * and so could not answer "what languages is this written in" about any repository at all.
+   */
+  readonly capabilities: RepositoryCapabilities;
+  /**
+   * The frameworks, runtimes and infrastructure the repository is built from, with the evidence.
+   *
+   * Beside `capabilities` and present for every kind, for the same reason: it is what the
+   * repository *is*, and an answer that cannot say "this is a Next.js application talking to a
+   * Flask service" is describing a pile of files. Every entry carries the files that prove it, so a
+   * generated answer citing one can be checked.
+   */
+  readonly technologies: readonly ContextTechnology[];
   readonly related: readonly RelatedNode[];
   readonly references: ContextReferences;
   readonly dependencies: ContextDependencies;
@@ -258,6 +276,19 @@ export interface RepositoryContext {
   readonly provenance: ContextProvenance;
   readonly statistics: ContextStatistics;
 }
+
+/** One technology, as the context carries it. Mirrors the Overview's summary. */
+export interface ContextTechnology {
+  readonly id: string;
+  readonly name: string;
+  readonly category: string;
+  /** The region it was found in; `''` is the repository root. */
+  readonly regionPath: string;
+  readonly confidence: string;
+  readonly evidence: string;
+}
+
+export type { RepositoryCapabilities };
 
 export type {
   ArchitectureView,

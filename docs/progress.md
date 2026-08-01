@@ -3,6 +3,1516 @@
 Milestones are referred to by name rather than number, since the engineering
 contract does not restate the roadmap.
 
+## Analysis Out of Process — the API stops stopping
+
+**Status:** the execution change is complete and measured; the large-repository and multi-repository
+parts of the milestone are not, and are listed under "Not done". `pnpm build`, `pnpm typecheck:tests`,
+`pnpm typecheck:web`, `pnpm build:web` clean; **2,431 backend + 375 web** tests passing.
+
+### Both premises were checked, and one of them was false
+
+**Analysis blocks the event loop.** `GET /ping` sampled every 250 ms throughout a React analysis:
+
+| | idle | during analysis, in process |
+|---|---|---|
+| median | 5.0 ms | 4.9 ms |
+| p90 | 7.1 ms | 11.9 ms |
+| max | 14.9 ms | **30,000 ms** (the client's own timeout) |
+| samples over 5 s | 0 | **7** |
+
+**Inference does not.** The milestone asked for an inference worker on the premise that "the API event
+loop must never spend minutes waiting for inference". Sampled the same way through a full generation —
+prompt evaluation and all — the API's median was **8.9 ms, p90 18 ms, max 134 ms, nothing over a
+second**. `OllamaModel.generate` awaits a streaming `fetch`: it is a socket read, and an awaiting
+socket costs an event loop nothing. An inference worker would have added a process hop, a second
+streaming transport and a new failure mode to fix a problem that does not exist, so it was not built.
+
+### What moved
+
+An analysis now runs in a forked child process. A process rather than a worker thread for three
+reasons, the first decisive: a graph build peaked at **2,046 MB** on React, and a thread shares the
+parent's heap — an analysis that exceeds the limit would take the API with it. A child can also be
+given its own `--max-old-space-size`, and can be killed, which is the only way to stop synchronous
+compiler work.
+
+Measured the same way, with the worker genuinely active:
+
+| | in process | in a worker |
+|---|---|---|
+| median | 4.9 ms | **2.9 ms** |
+| p90 | 11.9 ms | **5.4 ms** |
+| max | **30,000 ms** | **2,060 ms** |
+| samples over 5 s | 7 | **0** |
+| requests served | 192 in 240 s | **520 in 150 s** |
+| React analysis wall-clock | ~4 min | **92 s** |
+
+The analysis also got faster, which was not the goal: it no longer shares a heap or a thread with a
+server.
+
+### The banner lied, and the telemetry caught it
+
+The composition root passed an executor, `startServer` did not forward it to `createApp`, and the
+startup line printed "analysis: 1 worker, out of process" while every analysis ran inline. Nothing
+failed. It was caught because `telemetry.worker`, `cpuMs` and `peakRssBytes` — figures only a worker
+can produce — came back `null` on a job that claimed to have used one.
+
+The first version of `/healthz` reported `inProcess: false` as a **constant**, written the same
+afternoon. It now reports what the wiring actually is. A health endpoint that repeats an intention is
+worse than none, because it launders a guess into a fact.
+
+### Queueing, cancellation and retries
+
+The registry refused a second submission because "a scan replaces the entire database, so two
+concurrent analyses would race for one file". That was true of the *destination*, not the work. An
+analysis is now handed a **staged database of its own** and the API adopts it by rename — atomic on
+one filesystem — only if it succeeded. So two analyses cannot collide, and a second fault nobody had
+named is gone too: an analysis that failed halfway had already overwritten a graph that was working.
+
+Submissions queue instead of being refused, drawn by a bounded pool. Bounded because an analysis peaks
+at 2 GB, so concurrency is a memory decision before it is a throughput one. Waiting is reported
+(`telemetry.queueWaitMs`) rather than hidden. `cancelled` is a status distinct from `failed`, because
+a UI that showed a user's own Stop as an error would be lying about their own action. Retries apply to
+a closed list of three failures that are about the run rather than the repository.
+
+Validated live: three repositories submitted at once — one `running`, two `queued` with real waits;
+the third cancelled while waiting, settling as `cancelled` with `error: null`; `GET /overview`
+answering in **2 ms** throughout.
+
+### Not done
+
+**The large-repository sweep did not happen.** Next.js, VS Code, Kubernetes, Angular and TensorFlow
+were not analysed, and the eleven-repository end-to-end matrix was not run. What is validated is
+React, Flask, Gin and spring-petclinic.
+
+**Multi-repository serving does not exist.** The API still serves one graph. Analyses are concurrent
+and isolated, but the read side has no repository parameter, so "chat about React while Flask
+analyses" is only true until the second one is adopted. That is the next architectural step and it
+touches every endpoint and the whole frontend.
+
+**Adoption still blocks, for about two seconds.** Reopening a 339 MB graph and warming its
+whole-repository results is synchronous CPU in the API. Splitting the warm into one capability per
+event-loop turn cut the worst case from tens of seconds to 2.06 s, but `overview()` alone is 2.3 s and
+cannot be subdivided from here. Every stall in the "after" column above is this.
+
+**Nothing was persisted.** Job state is still in memory and does not survive a restart, and no
+projection, prefix or summary cache was added.
+
+## Context, Cache and Question-Awareness — the last AI infrastructure milestone
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web`
+clean; **2,428 backend + 375 web** tests passing. Measured on `facebook/react` (7,280 files, 39,040
+nodes) through the deployed stack.
+
+The previous milestone ended by naming context acquisition as the bottleneck at three orders of
+magnitude above projection. That turned out to be two separate problems wearing one number, and only
+one of them was the one that had been reported.
+
+### The reported figure was contended, and the real one was hiding behind it
+
+"21–27 seconds cold" had been measured while a 7B model was saturating every core of the same
+machine. Re-measured in isolation, stage by stage on React:
+
+| stage | cold | heap |
+|---|---|---|
+| open the graph | 5 ms | — |
+| `explorer.overview()` | **2,287 ms** | +319 MB |
+| `explorer.hotspots()` | 502 ms | +4 MB |
+| `explorer.cycles()` | 434 ms | — |
+| `health.analyze()` | 631 ms | +34 MB |
+| `context.build(repository)` — first | 3,990 ms | |
+| `context.build(repository)` — **repeat** | **1,543 ms** | |
+| `project()` | 3 ms | |
+
+Two findings, and the second is the one that mattered. Cold acquisition is ~4 s, not 21 — the rest
+was CPU contention with inference, which is a scheduling fact about a single-machine deployment
+rather than a property of the code. And **every repeat cost 1,543 ms of recomputation**: the
+`CachingGraph` memoises graph *reads*, so a second capability reading the same node is free, but the
+*aggregation* over those reads ran again for every question asked.
+
+### The smallest change was the one the docstrings had already promised
+
+`RepositoryExplorer` says "an instance holds one immutable revision, so repeated calls return
+identical results". That is a licence to memoise, and `CachingGraph` makes the identical argument one
+layer down. The four argument-free whole-repository results — overview, architecture, cycles,
+hotspots — and the health report are now computed at most once per open graph. Parameterised results
+are deliberately untouched: caching an unbounded set of file and symbol views would be a memory leak
+wearing a performance improvement.
+
+| | before | after |
+|---|---|---|
+| repeat repository context | 1,543 ms | **0 ms** |
+| package context on a warm holder | 445 ms | **6 ms** |
+| second `GET /overview` | full recompute | **0.2 ms** |
+
+Cold is unchanged by memoisation, so it was **moved instead of shrunk**: opening a graph now schedules
+the whole-repository computation on the next event-loop turn. Somebody pays the four seconds; the
+choice is between a user with a question and a process that has just finished a scan. Live, the first
+`GET /overview` after a restart takes 5,982 ms and the next takes 1.1 ms.
+
+### One prompt prefix, five different questions
+
+The previous milestone observed that a repeat question reused 4,832 of 4,843 prompt tokens and
+answered in 19 seconds against 108. This milestone makes that **intentional** rather than lucky.
+
+A projection is now two passes. The **core** runs the extractors in declared order at reduced caps
+against three fifths of the budget, and reads nothing about the question — so the rendered bytes
+before the question are identical for every question about one repository at one tier. The
+**supplement** then re-runs the same extractors at full caps, led by whatever the question is about,
+and keeps what the core could not afford.
+
+Measured on React, five different questions: **one distinct stable prefix**. The provider's own log
+is the proof, and it is exact — `cached n_tokens` is what it did not have to evaluate again:
+
+| question | prompt | reused | evaluated | eval time | first token | answer |
+|---|---|---|---|---|---|---|
+| cold | 4,646 | — | 4,646 | — | 5.1 s | 25.0 s |
+| **repeat**, identical | 4,646 | 4,645 | **1** | 0.2 s | **0.5 s** | 11.8 s |
+| **similar**, same intent | 4,643 | 4,569 | **74** | 8.7 s | 9.3 s | 26.6 s |
+| **different**, technology | 5,019 | **2,909** | 2,110 | 89.7 s | 90.1 s | 140.1 s |
+| **different**, hotspots | 3,785 | **2,908** | 877 | 30.8 s | 31.5 s | 47.9 s |
+
+The two bottom rows are the ones that matter. They are entirely different questions producing
+entirely different supplements, and the provider reused **2,908 and 2,909 tokens** — the same prefix,
+to within the one token of rounding that separates two different tails. Without the split each would
+have re-evaluated its whole prompt: 5,019 instead of 2,110, and 3,785 instead of 877. That is 58% and
+77% of the prompt evaluation removed from a question the cache would previously have missed entirely.
+
+Every one of the five answers came back `grounded`, with 2 to 11 citations and **zero** unsupported
+terms; the two slow ones carried 8 and 3 heartbeats through the wait.
+
+The two-pass split needed one non-obvious correction. Deduplication had been marking every fact an
+extractor *offered*, so the core pass — which sees sixty technologies and can afford four — retired
+the other fifty-six as "already said", and the supplement found nothing left anywhere. A fact a
+budget could not afford has not been said; `seen` now records what was **emitted**.
+
+### The question decides what is worth reading, and being wrong about it is cheap
+
+`intentOf` classifies a question into `architecture`, `technology`, `hotspots`, `packages` or
+`overview` by whole-word keyword match. Deterministic, because everything below `generate` is
+reproducible and a sampling classifier would put a coin flip upstream of the evidence. Free, because
+prompt evaluation runs at ~50 tokens per second and a second model call to decide what the first
+should read would cost more than the saving.
+
+**Safe when wrong**, which is what lets it be six lines instead of a model: an intent *reorders* the
+supplement and never filters it, so every part remains reachable under every intent. A misclassified
+question gets a differently-ordered supplement, never a missing repository.
+
+### Compression, because a cap that keeps a hundred true things can still drop the useful ones
+
+Capping was the previous milestone's fix and it bought coverage at the cost of shape. Four parts are
+now summarised rather than truncated:
+
+- **Languages** — ten `written-in` facts became one line in size order:
+  `javascript (3964), markdown (1998), typescript (541), json (154), rust (120), …`
+- **Regions** — React has 129 and Next.js 688. Grouped by `(language, depth)`, every region is
+  accounted for in a count and the largest few are named:
+  `90 javascript regions (1932 of 3006 files are source) analysed to semantic depth — compiler,
+  compiler/packages/react-forgive, fixtures/art and 87 more`.
+- **Dependencies** — grouped by the namespace their publisher gave them, read from the separator the
+  ecosystem itself defines: `13 npm packages under @babel: @babel/code-frame, @babel/core, …`
+- **Roles** — one line per role naming six members, rather than one line per declaration.
+
+The result on React, at the same tier: **138 facts in 5,456 tokens** against 116 in 5,572 — and the
+newly-affordable parts include 33 dependency facts, 15 environment variables and 11 routes, none of
+which had ever reached a prompt before.
+
+Compression created one grounding hazard and it had to be closed in the same change. A dependency
+family renders every member's name and **no `ext:` identifier at all**, so the guard would have called
+a model's `ext:npm:@babel/core` an invention for a package the facts plainly listed. Facts now declare
+the identities they stand for without printing, and the last-segment form of every claimed name is
+admitted too — `@babel/core` as `core`. Widening a permitted set can only make the guard more
+permissive, never wrong, and the asymmetry is deliberate: an unflagged fabrication costs one sentence,
+a false accusation costs a correct answer its credibility.
+
+### Cost, end to end
+
+| | previous milestone | this one |
+|---|---|---|
+| facts / fact tokens | 116 / 5,572 | **138 / 5,456** |
+| prompt tokens | 4,844 | **4,646** |
+| context acquire, repeat | 1,543 ms | **0 ms** |
+| projection | 3–9 ms | 0.5–5 ms |
+| distinct prompt prefixes across 5 questions | 5 | **1** |
+
+### Not done
+
+The new bottleneck is not in this layer. Prompt evaluation at ~50 tokens per second still dominates
+every cold answer, and the API is single-threaded, so an in-process analysis blocks every other
+request — `GET /overview` was measured timing out at 60 s while a scan and an inference ran together.
+Both are deployment shape rather than AI-layer design.
+
+## Production Integration & AI Quality — making the product reflect the engine
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web`
+clean; **2,412 backend + 375 web** tests passing. Validated through the deployed stack, not through
+the test suite.
+
+The engine could already do multi-language analysis, technology detection, architecture extraction
+and bounded incremental compilation. Ask TraceIQ exposed almost none of it. This milestone changed no
+analyser and added no capability; every defect below was in the layer between the graph and the
+answer.
+
+### The diagnosis was wrong before it was measured
+
+The reported symptom was "proxy timeout", and the proposed fix was a longer proxy timeout. Both were
+wrong, and finding out cost one experiment each.
+
+**Next's proxy is not the binding constraint.** Its default is `proxyTimeout: 30000` applied as
+`proxyReq.setTimeout(30000, …)` — a socket *inactivity* timeout, not a total duration. A stream was
+watched idle for **1,788 seconds** through it without being cut. What the proxy default does do is
+sit below the real gap on any hop that enforces it, and every deployment adds hops this repository
+cannot configure: nginx's 60-second `proxy_read_timeout`, a managed edge's idle limit. So the fix is
+**heartbeat frames, with the timeout raised but kept finite** — an SSE comment every ten seconds
+resets every idle timer in the chain at once, and a finite ceiling stays useful as the only signal
+that distinguishes a slow API from a dead one. Ten seconds is under a third of the tightest timeout
+in a realistic chain, so two heartbeats can be lost and the connection still survives.
+
+**The real reason nothing arrived is that nothing was arriving.** Prompt evaluation on the reference
+stack runs at **45.75 tokens per second**. A 4,087-token prompt is 89 seconds before the first token,
+and the API put nothing on the wire for any of it.
+
+### The largest defect was a number that disagreed with itself
+
+`/api/show` reports the model's **trained** context length — 32,768 — and the projection was budgeted
+against it. The daemon, given no `num_ctx`, chooses its own, resizes it between requests, and
+discards the excess **from the front**. Measured live:
+
+| prompt sent | `prompt_eval_count` | asked for the first fact id of N |
+|---|---|---|
+| 1,163 tokens | 1,745 | `[f1]` of 60 — correct |
+| 6,043 tokens | 2,050 | `[f241]` of 300 |
+| 24,811 tokens | 2,050 | `[f1148]` of 1,200 |
+
+What is dropped from the front is the system prompt and the highest-priority facts — identity,
+composition, limitations, every rule about citing. The model was answering from the tail of a list it
+had been handed the wrong end of, and nothing anywhere reported it.
+
+`num_ctx` is now sent on every request, equal to the window the provider advertises upward, which is
+`min(trained, 16,384)`. The two numbers cannot disagree because they are one number. It is held
+constant for the life of the model as well: changing it makes the daemon reload the weights, measured
+at 106.8 seconds. Live proof from the daemon's own log: `n_ctx_slot = 16384 … task.n_tokens = 4846`,
+`truncated = 0`.
+
+### The projection spent its whole budget before reaching anything about the repository
+
+`facebook/react` derives 141 technology regions, each a `region-depth` line of roughly forty tokens.
+Composition alone asked for 5,600 of a 6,000-token budget, so the projection stopped there:
+
+```
+factCount: 66, tokens: 5450, omissions: [composition kept 59 of 141]
+```
+
+Not one package, architecture, hotspot or dependency fact was reached — **on any question**. "What
+are the main packages?" was not answered badly; it was unanswerable, because no package fact existed.
+
+Regions are now capped at twelve and ordered by source file count, and `packages`, `architecture`,
+`hotspots` and `dependencies` are extractors of their own. Same question, same repository, after:
+
+```
+factCount: 112, tokens: 5434, omissions: [regions 12/129, packages 18/100,
+                                          architecture 24/37, hotspots 10/120]
+```
+
+**73% more facts for 1% more tokens**, and the added ones are the ones the questions are about.
+
+**Ordering by a number the engine already computed is not a ranking model, and the alternative was
+worse.** React's 141 packages come back alphabetically; the first twelve are `.codesandbox/ci.json`,
+`.editorconfig`, `.eslintignore` and `.git-blame-ignore-revs` — single non-source files. A cap of
+eighteen off the front of that list answers "what are the main packages" with a dozen dotfiles.
+Sorting by `declarations`, a field `PackageSummary` already carries, reads the number the Explorer
+computed instead of discarding it. Every ordering names the field it sorts on, ties break on the
+identifier, and the fact carries the number so a reader can check the ordering rather than trust it.
+
+A second defect surfaced while splitting the extractors: **technologies were never projected for the
+repository kind at all.** The repository branch returned from `identity` before reaching the
+technology loop, so "what technologies are used" was answerable about a symbol and not about a
+repository.
+
+### Every dependency the model had ever been shown was a language builtin
+
+React has 740 external nodes: **395 `builtin`, 11 `node`, 333 `npm`, 1 `outside-analysis`**. The
+architecture view returns them identifier-ordered and capped at 100 — and `ext:builtin:` sorts before
+`ext:npm:`. So the hundred externals that survived the cap were `AbortController`, `AbortSignal`,
+`AnalyserNode`, `Animation`, and not one of React's 333 npm packages appeared in the architecture
+view, in the context assembled from it, or in any answer built on it.
+
+Two changes, because there were two faults. The Explorer now orders external listings
+**dependency-first**, so the cap keeps the answer instead of dropping it — nothing is excluded and
+`total` is unchanged, and the Architecture page gains the same fix. The projection then admits an
+`ext:` identity only where the kind is an ecosystem and a name is present.
+
+**The filter denies rather than allows, and that is the whole cross-language design.** Listing npm,
+pip, Maven, Gradle, Go modules, Cargo, NuGet, Composer and Bundler means a tenth ecosystem silently
+vanishes from every answer until somebody remembers this file. The things that are *not* packages —
+a language's builtins, a language's standard library, the nameless sentinel — are a closed and
+slow-moving set, so denying those admits every ecosystem including ones that do not exist yet. It is
+applied centrally rather than in the dependency extractor, because a builtin also reaches a prompt
+through a call edge and through a dependency closure. Measured after: **25 real npm packages, zero
+non-ecosystem externals anywhere in the projection.**
+
+### Grounding was extended, and its first version was wrong in the dangerous direction
+
+Grounding stopped at identifiers, so "this repository depends on Express" was unfalsifiable while
+`sym:src/a.ts#B` was not — and a model told a repository is JavaScript will volunteer plausible
+dependencies. Package, framework, technology and dependency names are now a closed set too.
+
+The first version reported a **correct** answer as ungrounded, flagging eight terms the facts plainly
+carried: region paths printed inside a `built-with` clause, and the file path inside a `sym:`
+identifier. A guard that is wrong about a right answer is worse than no guard. Facts now *declare*
+the names they make claimable rather than having them parsed back out of rendered prose, and every
+identifier contributes its path and declaration chain as well as itself. Candidates are restricted to
+two shapes a model only writes when it means an artefact — a backtick span and a bare coordinate —
+and a bare lowercase word is never adjudicated however it is quoted, because the cost of a false
+accusation is higher than the cost of a missed one.
+
+### Rules four thousand tokens ago are rules a small model has forgotten
+
+Asked to explain React's architecture, the model returned 582 tokens of correct, specific prose with
+**zero citations** — and markdown headings, which the same standing instruction forbids. The rules
+had not been refused; they were 4,800 tokens away in a system message. Restating the one rule the
+whole verification layer depends on immediately after the question costs about thirty tokens. Same
+question after: `grounded`, four citations, plain prose.
+
+### Validated through the product
+
+`facebook/react`, cold prompt cache, through the browser's own proxy at `/api`:
+
+| | before | after |
+|---|---|---|
+| facts / prompt tokens | 66 / 5,450 | 112 / 5,434 |
+| package facts | 0 | 18 of 100 |
+| architecture facts | 0 | 24 of 37 |
+| hotspot facts | 0 | 10 of 120 |
+| dependency facts | 0 | 25, all real npm |
+| language builtins shown | up to 15 of 15 | 0 |
+| heartbeats during the 102-second wait | 0 | **10** |
+| verdict | `ungrounded`, 0 citations | **`grounded`, 4 citations** |
+| falsely unsupported terms | 8 | 0 |
+
+The answer itself, which before this milestone could not have been produced at all:
+
+> The main packages in this repository include compiler/packages/babel-plugin-react-compiler, …
+> flow-typed/environments has 9 files with 4053 declarations [f62], and packages/react-devtools-shared
+> has 616 files with 3328 declarations [f63].
+
+**Cost.** Projection is **6–9 ms** and is not worth optimising. Acquiring a repository context is
+3.9 s warm and 21–27 s cold on React — three orders of magnitude more, and the thing to attack next.
+Prompt evaluation dominates everything: 4,844 prompt tokens, 108 s to first token cold, 127 s to a
+complete answer. Warm, the daemon reuses **4,832 of 4,843** prefix tokens and the same answer takes
+35 s — which is why the fact block being *stable* matters as much as it being *small*.
+
+### Not done
+
+The 7B model still mis-attributes occasionally — it wrote a package name beside a region's file count
+in one answer. The citation makes it checkable, which is the point of the layer, but it is not fixed.
+Hotspot ranking surfaces test scaffolding on React (`expect`, `it`, `describe` are genuinely the most
+referenced declarations), which is honest and unhelpful. Only two repositories were driven end to end
+through chat in this pass; the remaining eight in the corpus were not re-validated after the change.
+
+## Product Integration — one pipeline, reached from every surface
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web`
+clean; **2,387 backend + 375 web** tests passing; ground truth 5 of 5 exact. Ten repositories
+analysed through the HTTP API and the browser.
+
+### The reported failure was not in the code
+
+`POST /analysis` accepted `pallets/flask`, cloned and validated it, then failed the scan stage with
+`unsupported-repository` — *"pallets/flask is not a TypeScript repository, so there is nothing for
+TraceIQ to analyse."* Tracing the path found no such gate: `endpoints.ts handle()` →
+`AnalysisRegistry.start()` → `#run` → `RepositoryAnalyzer.analyze` → `RepositoryPipeline.scan` →
+`defaultAnalyzersFor(inventory)`, with the only mention of the string a comment recording its
+removal three milestones earlier.
+
+The proof of what was actually running:
+
+```
+docker exec traceiq-api-1 grep -r "is not a TypeScript repository" /app   # 1 hit, repository-analyzer.js
+grep -r "is not a TypeScript repository" packages/                        # 0 hits
+```
+
+The images were built 2026-07-31, before any of the last three milestones existed. Every capability
+was present in source and absent from the running product. **The deployed artefact is part of the
+system; a milestone that ends without rebuilding it has not shipped.**
+
+Rebuilding required dropping the `traceiq-graph` volume, which held a schema-v2 database the v3
+build correctly refuses to misread. The `ollama-models` volume was kept — a 4.7 GB re-pull for no
+reason. Chat's inability to name a repository's language had the same single cause: the stale AI
+projection carried no `written-in` facts.
+
+### What the audit found once the product was current
+
+Every `RepositoryPipeline` consumer — CLI, API analysis, API graph-holder, bench — constructs the
+same class; every analyser construction is inside `defaultAnalyzersFor`. No duplicated pipeline, no
+registry bypass, no CLI-only or UI-only feature. One dead export (`COMPILER_ANALYZERS`, no caller,
+misrepresenting the analyser set) removed. OpenAPI compared method-and-path against the source
+`ENDPOINTS` table: 22 = 22, zero drift.
+
+### Three real defects, each found by using the product rather than by reading it
+
+**A grounded answer reported as unverifiable.** The chat page showed `unverifiable` beside a
+paragraph that had plainly cited `[f8-f12]`. `CITATION_PATTERN` accepted `[f8]` and `[f8, f10]` and
+not the range form, so an answer with five real citations was scored as having none. Ranges now
+expand, bounded at 50 ids so a malformed `[f1-f9999]` cannot flood the list. The same question now
+returns `grounded` with 6 citations.
+
+**A Spring repository reported as having no framework.** Two components disagreed about how a
+dependency is spelled: `fromPomXml` emits `org.springframework.boot:spring-boot-starter-web`, and
+the rule listed the bare npm-style artifact. Matching now compares the artifact half of a
+coordinate — never the group, so one vendor's namespace cannot stand in for its products. That
+exposed a second half: spring-petclinic declares `spring-boot-starter-webmvc`, `-actuator`,
+`-cache`, `-thymeleaf`, `-validation` and `-data-jpa`, and *none* of the two names the rule listed.
+Spring publishes dozens of starters, so `DependencyRule` grew an optional `prefixes` field for a
+technology distributed as a family. Evidence, from the live API: *"Spring Boot is used: build.gradle
+declares 'spring-boot-starter-actuator', …"*.
+
+The failure mattered because another surface already knew: the capability line said *"Java sources
+were parsed and Spring or Jakarta annotations recognised"* on the same page that said no framework
+was named. **Two surfaces disagreeing about one repository is worse than either answer alone.**
+
+**The dialog's examples taught the wrong thing.** `facebook/react`, `openai/openai-node` and
+`honojs/hono` — all TypeScript or JavaScript, in the one place a first-time visitor looks. Now one
+per semantically-analysed language: React, Flask, spring-petclinic, Gin.
+
+### Validated through the deployed product
+
+Every stage OK, no `unsupported-repository`, each also opened in the browser:
+
+| repository | files | depth | framework named |
+|---|---|---|---|
+| pallets/flask | 236 | framework | Flask ×3 regions, Redis |
+| spring-projects/spring-petclinic | 131 | framework | Spring Boot, K8s, Compose |
+| gin-gonic/gin | 130 | framework | Gin, Go modules |
+| tiangolo/fastapi | 3,137 | framework | FastAPI |
+| apache/commons-lang | 712 | semantic | — |
+| kubernetes/client-go | 2,531 | semantic | — |
+| vuejs/core | 704 | semantic | — |
+| nestjs/nest | 2,128 | framework | NestJS |
+| facebook/react | 7,280 | framework | Next.js, Jest, Rollup, Yarn, Cargo |
+
+The Flask dashboard reads `LANGUAGE: Python`, `HTTP ROUTING: 134 routes`, `Analysis depth:
+FRAMEWORK` and contains the word "TypeScript" zero times. spring-petclinic was started from the
+dialog itself and navigated to a Java/FRAMEWORK dashboard naming Spring Boot. The failure path was
+exercised too: a nonexistent repository renders the server's own `repository-not-found` code,
+message and hint with later stages marked skipped — the dialog holds no error vocabulary of its own,
+so a new code surfaces without a frontend change.
+
+### Not done
+
+Next.js still has not been validated through the API. Bounded compilation removed the memory
+ceiling, but the wall-clock cost of 22,400 sources exceeds what an interactive validation pass can
+wait for; it is a scheduling problem rather than an architectural one.
+
+## Incremental & Bounded Analysis — removing the whole-program ceiling
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web`
+clean; **2,377 backend + 375 web** tests passing; ground truth 5 of 5 exact.
+
+The previous milestone ended with Next.js unanalysable: 22,400 sources exhausted a default heap and
+had not finished at 12 GB. This one removes the reason.
+
+### Measured first, and the first two measurements changed the design
+
+**Where the memory goes.** Stage by stage on React, with a collection between each:
+
+| stage | heap after | added |
+|---|---|---|
+| scanned (4,505 sources) | 25 MB | — |
+| project loaded | 526 MB | **+501 MB** |
+| IR built | 1,200 MB | +674 MB |
+| resolved | 1,235 MB | +35 MB |
+| call graph | 1,527 MB | +292 MB |
+| disposed | 212 MB | **−1,315 MB** |
+
+The compiler holds 1.3 GB of a 1.5 GB peak. Everything else is downstream of it.
+
+**Whether regions actually partition anything.** They do, but not enough on their own:
+
+| repository | sources | regions | largest region |
+|---|---|---|---|
+| react | 4,505 | 129 | 1,967 (43.7%) |
+| zod | 409 | 8 | 287 (70.2%) |
+| dash | 487 | 16 | 204 (41.9%) |
+| **next.js** | **22,400** | **688** | **13,151 (58.7%), the root** |
+
+Next.js's root region is 13,151 sources, of which **6,715 are under `test/e2e/app-dir`** —
+hundreds of independent fixture applications that share no manifest and import nothing of each
+other's. It is a leftovers bucket rather than a semantic unit, and compiling it as one program is
+the ceiling.
+
+**What a bounded program actually costs.** This is the measurement that mattered most, because it
+contradicted the reasoning the old design rested on:
+
+| program | roots | heap | time |
+|---|---|---|---|
+| whole repository | 4,505 | **501 MB** | 1,025 ms |
+| largest region alone | 1,967 | **69 MB** | 227 ms |
+| `packages/react-dom` | 224 | 97 MB | 213 ms |
+
+Cost tracks the **type surface reached**, not the file count — a 224-file package costs more than a
+1,967-file one — and a region reaches far less of it than a repository. Compiling all 113 of
+React's units in turn: peak **501 MB → 209 MB**, total time **1,012 ms against 1,025 ms**, and 5 MB
+resident afterwards.
+
+### What was built
+
+**A unit owns files; its program contains rather more.** The old docstring said running per region
+would mean "no cross-region resolution at all". That was wrong, and the reason is that a unit's
+roots are not its program: whatever those roots import — a sibling package through a path mapping,
+a relative file in another region, a `.d.ts` under `node_modules` — TypeScript's own module
+resolution pulls in. A frontend does not load the backend's symbols because nothing in the frontend
+imports them.
+
+**Two passes, because one was measurably wrong.** Resolving each unit against its own IR alone put
+cross-unit targets outside the analysed set: on TraceIQ, opaque IMPORTS went **19 → 1,581** and
+`CALLS internal` fell 61.2% → 56.1%. So every unit's IR is built first, one declaration index is
+built over all of it, and every unit is then resolved against that. The index is plain data keyed by
+source position, so the second pass needs nothing from the first — which is what lets each program
+be released as soon as its IR exists. Accuracy came back exactly: opaque IMPORTS 19, internal 61.1%.
+
+**Bounding is off below 8,000 sources, and that is the measurement's verdict rather than caution.**
+A unit's program re-parses every shared dependency it reaches, so a source imported by thirty
+packages is parsed thirty times. Measured on TraceIQ: building the IR took **1.8 s as one program
+and 8.4 s across 32 units** — same files, 4.8× the work — while program construction was near-free
+either way (118 ms against 219 ms). A repository that already analyses comfortably should not pay
+for a ceiling it never reaches. React (4,505) stays on the single-program path; Next.js (22,400)
+does not.
+
+**A region above 4,000 roots is split by directory.** The one place accuracy can be affected: a
+relative import crossing two parts of a split region is reported unresolved. It applies to no
+repository in the corpus except Next.js, and the capability reason says so rather than letting an
+absence read as a fact about the code. A single directory over the budget is returned oversized
+rather than cut at an index — a program that is too big is a better failure than one that is wrong.
+
+**Failure is per unit.** One program throwing used to abort the analyser and drop every region to
+discovery depth together. A unit now costs its own files, the rest are analysed in full, and the
+outcome reports the difference even though it succeeded.
+
+**An unchanged repository is not analysed twice.** `revisions.source_hash` — reserved and unwritten
+since the graph contract was drafted — now carries a fingerprint over every analysed source: path,
+size and modification time, the same triple every build tool uses and cheap for the same reason.
+Per unit as well as per repository, because reusing *part* of a graph is not sound yet and the
+record of which units moved cannot be recovered afterwards.
+
+**Thresholds are overridable** via `TRACEIQ_WHOLE_PROGRAM_LIMIT` and `TRACEIQ_FILE_BUDGET`. The
+defaults suit an ordinary heap, which is the one thing a library cannot know: a build agent with
+64 GB should compile far more at once than a container capped at 1 GB.
+
+### Accuracy
+
+Bounded and whole-program output is asserted **identical** by test, on a workspace whose packages
+import each other — same IMPORTS edges, same CALLS edges, same declaration count, each file owned
+exactly once.
+
+| repository | IMPORTS | CALLS internal | opaque IMPORTS |
+|---|---|---|---|
+| traceiq | 100.0% → 100.0% | 61.2% → 61.1% | 19 → 19 |
+
+### Scalability, validated
+
+| repository | sources | plan | before | after |
+|---|---|---|---|---|
+| traceiq | 474 | 1 unit (whole program) | 5.4 s | unchanged |
+| react | 4,505 | 1 unit (whole program) | 1.5 GB peak | unchanged |
+| angular | 7,141 | 1 unit (whole program) | — | under the threshold |
+| **vscode** | **12,220** | **101 units, largest 3,877** | would exceed a default heap | bounded |
+| **next.js** | **22,400** | **~600 units** | **OOM at 4 GB, unfinished at 12 GB** | **ran under 2.4 GB** |
+
+**Next.js no longer exhausts memory.** Watched through a 35-minute run, resident memory cycled
+between **0.2 GB and 2.3 GB** as units loaded and released — against a previous run that died
+outright. The ceiling is gone.
+
+**It did not finish inside the session, and wall-clock is now the binding constraint rather than
+memory.** That is a real result and worth stating plainly: bounding converted an impossible scan
+into a slow one, and the next thing to fix is the 4.8× re-parsing cost below, not the memory.
+
+### Known limitations
+
+- **Bounded mode is 4.8× slower per file**, because shared dependencies are re-parsed per unit.
+  That is the price of the ceiling and is only paid above the threshold. Sharing a parsed-file cache
+  across programs would remove most of it; ts-morph exposes no `DocumentRegistry` hook, so it would
+  mean constructing the compiler host directly.
+- **Incremental reuse is all-or-nothing.** An unchanged repository is skipped entirely; a changed
+  one is rebuilt entirely. Rebuilding a subset is unsound without invalidating every unit that
+  resolves *into* a changed one, and that dependency record does not exist yet. The per-unit
+  fingerprints are the input it will need.
+- **The fingerprint misses an edit preserving both size and timestamp.** `force` exists for it.
+- **A relative import crossing a split region is unresolved.** Only above the file budget.
+
+## Repository Intelligence Platform — frameworks, architecture and the cross-language seam
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web` clean;
+**2,355 backend + 375 web** tests passing; ground truth **5 of 5 cases exact**. Validated on fifteen
+public repositories across six ecosystems and in a real browser.
+
+### Three defects found by measuring, two of them serious
+
+**67 of TraceIQ's own call edges were fabricated.** `CheckerBinder#identify` walks outwards from the
+compiler's declaration to the IR's, because `const f = () => {}` resolves to the arrow while the IR
+recorded the variable. The walk was unbounded, so any local the IR does not model bound to whichever
+declaration enclosed it: `const [n, setN] = useState(0)` made `setN(…)` an edge from `App` to `App`.
+**Every React component in this repository called itself** — 83 self-referential edges, all
+checker-bound, none in the source. A parameter did the same without even a body to cross:
+`function f(cb) { cb() }` bound `f → f`. The walk now stops at a function boundary; 16 self-calls
+remain and every one is genuine recursion.
+
+**A named import from an uninstalled package was reported as a failure.** The checker hands back a
+symbol with no declaration sites, which is true of the symbol and misleading about the repository:
+the module *did* resolve, to an external, and `import { useState } from 'react'` is a dependency on
+react whichever binding it names. React carried **5,226** of these. Its IMPORTS bind rate went
+**74.5% → 92.3%** (+4,596 resolved), zod's **73.0% → 97.3%**.
+
+**One legal file name cost Next.js its entire scan.** `#` is the delimiter in `sym:<path>#<chain>`,
+so `normalizeRepoPath` rejected any path containing one — and Next.js ships
+`test/e2e/app-dir/resource-url-encoding/app/client#component.tsx`. The throw escaped the *file* node,
+which `buildTolerantly` cannot retry past: it retries without an analyser, and there is no retrying
+without files. All 22,554 sources failed over one file. Percent-encoded now, which is reversible and
+safe for every existing parser — they split on the first literal `#`, and an encoded one has none.
+
+### Technology detection, with evidence
+
+A new package, `@traceiq/technology`. Forty-eight rules across six categories, and **no claim without
+proof**: every detection names the files that establish it and what was found in each.
+
+Three sources, all direct readings: a **declared dependency** (`"next": "^14"`), a **marker file**
+(`docker-compose.yml`, `next.config.js`, `*.tf`), and a **manifest's own name**. That last one is
+what makes a framework's own repository self-identifying — nestjs/nest does not depend on
+`@nestjs/core`, it *is* `@nestjs/core`, and without the rule scanning it found every framework Nest
+uses and not the one it is. Hono, Fastify and Vue behaved the same way.
+
+**Kubernetes is the one detection that reads a file's contents**, and it has to: `.yaml` is the
+extension of CI config, application config, Compose files and OpenAPI documents alike. A Kubernetes
+document states `apiVersion` and `kind` at the top level and nothing else in common use states both.
+Bounded to YAML candidates and the first two kilobytes of each.
+
+Detection is **per region**, which is what makes it useful in a monorepo. TraceIQ describes itself as
+Docker, Compose, GitHub Actions, pnpm and Vitest at the root; Express in `apps/api`; Next.js, React
+and Vitest in `apps/web`; SQLite in `packages/graph`.
+
+**The confidence field is `CERTAIN` for every rule, and that is a finding.** An earlier version rated
+an extension match INFERRED, on the theory that a file type is weaker evidence than a marker file.
+The first test written against it disproved the theory — `.tf` *is* Terraform, and the extension is
+owned exclusively. INFERRED is documented as reserved for a rule that infers rather than reads.
+
+### Architecture extraction
+
+Each region is classified `application`, `service`, `library`, `infrastructure`, `tooling` or
+`unknown`, from the technologies found in it, with the reason carried for a reader to check.
+
+The priority order is not arbitrary. A frontend framework beats a backend one, because a Next.js app
+that also serves API routes is still the thing a user opens. Infrastructure is checked only after
+code has been ruled out, because almost every application region also carries a Dockerfile —
+checking it first reclassified the whole repository. `unknown` is returned rather than avoided: a
+region holding only documentation is none of the others, and calling it a library would invent a
+fact.
+
+### The cross-language seam
+
+**`CONTINUES_TO`, and it needed no vocabulary change.** The relationship has been reserved and
+unproduced since the contract was written, and "execution continues to" is exactly what an outbound
+request to a locally-served endpoint does — the position `DEPENDS_ON` was in before the milestone
+that gave it manifest-to-dependency.
+
+Routes have been extracted for every supported language for two milestones and **nothing recorded who
+called them**, so a repository whose React frontend talks to its Flask backend was two disconnected
+graphs. `extractClientCalls` reads the other end: `fetch('/api/users')`, `api.get('/api/users')`,
+`axios.post(…)`. Matching normalises both sides for what cannot be compared across languages — the
+origin, the query string, a trailing slash, and the *name* of a path parameter, since Express writes
+`:id`, Flask writes `<int:id>`, Spring writes `{id}` and a caller writes `42`.
+
+Verified end to end on a purpose-built polyglot repository: a TypeScript React component's `fetch`
+links to a Python Flask route, across two analysers that never meet. React's own repository produced
+**50** such edges.
+
+**Conservative by construction, and one of the guards was added because it was wrong first.**
+`removeUser` stating `{ method: 'DELETE' }` linked to a GET endpoint, because the method is in the
+options object where the callee shape cannot show it. Reading it turned a fabricated edge into no
+edge. A template literal is skipped entirely; an absolute URL to another host is excluded rather than
+stripped to its path, since sharing a path shape with a local route would assert the repository calls
+itself.
+
+### Surfacing
+
+`Technology` is a node kind, not a capability row, and the distinction from a region is the reason: a
+region describes the *analysis* and would pollute search results, while a technology describes the
+*software* and a reader searching `next` should find it. It needed one nullable column,
+`nodes.category` — schema version 3. Reusing `external_kind` was tried and reverted, because it is a
+closed vocabulary of packaging systems and a consumer filtering `external_kind = 'npm'` must never
+meet `'frontend'`.
+
+Technologies reach search, the `/overview` payload, `RepositoryContext`, and a new `built-with` AI
+predicate carrying the evidence — so a future answer can begin "a Next.js application talking to a
+Flask service" rather than with a file count.
+
+**The Overview names frameworks now.** The field's comment read "framework extraction reports these
+outcomes; it does not name the framework", which was true and was a gap: a Spring Boot service was
+shown as "HTTP routing (16 routes registered)" and the reader left to work it out. The rule the
+comment stated still holds — nothing is inferred in the browser, every name and every reason comes
+from the API.
+
+### Regression
+
+| repository | IMPORTS | CALLS | note |
+|---|---|---|---|
+| traceiq | 100.0% → 100.0% | 79.8% → 79.2% | +367 resolved on a larger source tree |
+| react | 74.5% → **92.3%** | 49.8% → 48.6% | +4,596 imports; −1,858 fabricated calls; **14.4 s faster** |
+| zod | 73.0% → **97.3%** | 73.5% → 73.3% | +566 imports |
+| express | 98.2% → 98.2% | 24.2% → 23.9% | unchanged but for fabricated calls |
+| flask, fastapi, petclinic, commons-lang, gin, client-go | unchanged | unchanged | byte-identical |
+
+Ground truth held at **100% precision and recall on all five languages** throughout.
+
+The CALLS movement is downward and is the point: those edges were not in the programs.
+
+### Repository validation
+
+Fifteen repositories. The ten from the previous corpus are unchanged or improved. Five new:
+
+| repository | ecosystem | files | declarations | edges | self-detected |
+|---|---|---|---|---|---|
+| nestjs/nest | NestJS | 2,128 | 7,625 | 50,812 | **NestJS** |
+| vuejs/core | Vue | 704 | 5,279 | 63,957 | **Vue** |
+| honojs/hono | Hono | 477 | 2,894 | 21,248 | **Hono** |
+| fastify/fastify | Fastify | 390 | 1,698 | 21,215 | **Fastify** |
+| vercel/next.js | Next.js | 22,554 sources | — | — | **scale limit, below** |
+
+### Known limitations
+
+- **Next.js does not scan in a default Node heap.** 22,554 source files against React's 7,280; it
+  needs `--max-old-space-size` well above the default and had not finished at the time of writing.
+  The `#` defect above was found on the way there and is fixed; the memory ceiling is not, and it is
+  a property of loading one whole-program TypeScript project rather than of anything added here.
+- **Client calls are extracted for TypeScript and JavaScript only.** Python, Java and Go record no
+  call arguments, so an outbound request in those languages has no literal path to read — a Python
+  service calling another service is not linked.
+- **A template-literal URL is not matched**, which is how most real client code builds a
+  parameterised path. The seam finds fixed paths; `` `${base}/users/${id}` `` is skipped rather than
+  guessed at.
+- **Region classification does not read a manifest's `private` or `exports` fields**, which would
+  separate a published library from an internal one.
+- **`Technology` evidence is capped at twelve files per detection**, so a Vue application proves Vue
+  with twelve components rather than four hundred.
+- **Rust, C#, Kotlin, PHP, Ruby, Swift and Scala remain universal-discovery only**, by decision.
+
+## Cross-Language Semantic Parity + Ground Truth
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web` clean;
+**2,307 backend + 374 web** tests passing. All ten public repositories rescanned with zero analyser
+failures, and every language validated in a real browser through the real API and the real Next app.
+
+**The objective was not more languages.** It was making the five TraceIQ already supports answer the
+same questions to the same depth — and, for the first time, being able to prove it.
+
+### The finding that shaped the milestone
+
+Measured before anything was written. The benchmark was run against all ten repositories and one
+column decided the whole shape of the work:
+
+| repository | language | `CALLS` reaching a named dependency |
+|---|---|---|
+| traceiq | TypeScript, dependencies installed | **12,851** |
+| express | JavaScript | **0** |
+| dash | polyglot | **0** |
+| spring-petclinic | Java | **0** |
+| commons-lang | Java | **0** |
+| gin | Go | **0** |
+| client-go | Go | **0** |
+| flask | Python | **0** |
+| fastapi | Python | **0** |
+
+**Only one repository in the corpus could answer "which of my declarations use this dependency".**
+Every other language dropped those calls into `unresolved`, and mostly under the wrong reason: gin
+reported 4,082 `root-not-bound` for calls like `fmt.Println`, where the root is bound — to an import,
+plainly, in the file's own header. The same rule was missing in the TypeScript path whenever the
+checker could not help, which is every repository a user clones before running `npm install`.
+
+**The fix is one rule shared by all five analysers.** A call rooted at a name the file imported from
+outside the repository is a call into that dependency. The import statement is the evidence, the
+external identity is the one the `IMPORTS` edge already mints, and the confidence is what each
+language's own rules earn.
+
+### Ground truth, which is the part that makes the rest checkable
+
+Everything the benchmark measured before this milestone was a count of what the engine produced.
+That distinguishes a scan that got bigger from one that got smaller and **cannot distinguish either
+from one that is wrong** — a bind rate rises just as happily when calls start binding to the wrong
+declarations.
+
+`@traceiq/bench` now carries a ground-truth corpus: one small repository per language, hand-written
+as translations of the same program, with **every** fact enumerated by reading the source. Precision
+and recall are only meaningful against a complete expectation, which is why the cases are small on
+purpose rather than pending expansion.
+
+| case | precision | recall | facts | scan |
+|---|---|---|---|---|
+| typescript | **100.0%** | **100.0%** | 21 | 133 ms |
+| javascript | **100.0%** | **100.0%** | 17 | 67 ms |
+| python | **100.0%** | **100.0%** | 18 | 9 ms |
+| java | **100.0%** | **100.0%** | 15 | 5 ms |
+| go | **100.0%** | **100.0%** | 16 | 4 ms |
+
+It earned its keep on the first run, at 85.7% / 94.7%. Four defects and three wrong expectations of
+mine came out of it, and none of the four would have been visible in a bind rate:
+
+- **Java's `this.save()` was `callee-not-addressable`.** `this` is a keyword rather than an
+  identifier, so `leftmostIdentifier` returned null — for the call with the *most* determinable
+  receiver in the language. The resolver had always had rules for `this` and `super`; nothing ever
+  reached them.
+- **Go's `inner := store.New()` gave `inner` no type.** The factory's result type was resolved in the
+  *caller's* package. `func New() *Store` in package `store` writes `Store` unqualified because it is
+  local there, and the caller's directory does not declare it.
+- **`module.exports = { save, load }` published nothing.** The checker's symbol at a shorthand
+  property is the property, not the local it reads. `getShorthandAssignmentValueSymbol` is the
+  distinction, and TypeScript models it precisely because the two meanings differ.
+- **`const path = require(\'node:path\'); path.join(…)` bound to nothing.** A CommonJS module binding
+  is a variable *and* an import, and the variable was found first.
+
+### Measured effect, on real repositories
+
+| repository | language | CALLS bind rate | internal calls | → dependency |
+|---|---|---|---|---|
+| spring-petclinic | Java | 6.8% → **46.3%** | 106 → **226** | 0 → **498** |
+| commons-lang | Java | 40.7% → **89.6%** | 34,106 → **40,196** | 0 → **34,938** |
+| gin | Go | 21.2% → **64.7%** | 1,949 → **2,471** | 0 → **3,479** |
+| client-go | Go | 31.6% → **52.7%** | 14,247 → **16,630** | 0 → **7,145** |
+| flask | Python | 7.9% → **26.7%** | 312 → **334** | 0 → **723** |
+| fastapi | Python | 9.2% → **28.2%** | 1,432 → **1,434** | 0 → **2,953** |
+| express | JavaScript | 19.2% → **24.2%** | 2,249 → **2,271** | 0 → **571** |
+| react | JS/TS | 45.0% → **49.8%** | 73,752 → **73,759** | 0 → **7,885** |
+| zod | TypeScript | 50.2% → **73.5%** | 17,440 → 17,440 | 0 → **8,110** |
+| dash | polyglot | 12.1% → **27.3%** | 5,151 → **5,159** | 0 → **6,444** |
+
+The internal-call growth is the local-variable work; the dependency column is the shared external
+rule. Both are visible in the browser: petclinic's Overview shows `maven 71 / stdlib 11`, gin's shows
+`stdlib 45 / go 19`, flask's `stdlib 43 / python 27`.
+
+### What each analyser gained
+
+**Java.** Local variable type inference — declared type, `var x = new T()`, and a factory
+`var x = T.make()` resolved through `make`'s declared return type. External calls through a local's
+declared type, an imported type used statically, and a static import. `this.` and `super.` calls,
+which had never bound at all.
+
+**Go.** Local variable type inference — `var s T`, `s := T{}`, `s := &T{}`, and `s := New()` through
+the function's first declared result, resolved in the *declaring* package. External calls through an
+import alias, at `RESOLVED`, matching the confidence the internal package-qualified rule already
+earned. **Route handlers are linked**, which the previous milestone recorded as a limitation: a bare
+identifier argument is a package-level name and Go's package is a directory, so the lookup is exact.
+gin reports 14 linked handlers and 194 honestly unlinked closures.
+
+**Python.** Constructor inference: `store = Store()` in a function body gives `store.save()` a
+target, resolved through the inheritance chain, and only when the callee is a *class* — a call to a
+function keeps no entry, so `result.method()` stays honestly unbound. External calls through
+`import requests` and `from flask import Flask` alike.
+
+**JavaScript.** CommonJS exports, carried forward as a known limitation through two milestones.
+`module.exports = X`, `module.exports = { a, b }`, `exports.x`, `module.exports.x`, aliased and
+quoted keys, mixed CJS + ESM, and `module.exports = require(\'./x\')` as a star re-export. No new
+`ExportKind` was needed: CommonJS states the same three things ES modules do. Express went from
+**9 to 52** resolved exports, react from **10,526 to 10,896**. An exported function expression is now
+a declaration, as its `export const` twin always was — express gained 28.
+
+### Defects found by measuring, not by reading
+
+- **`isExported()` is true without an `export` keyword in JavaScript.** TypeScript\'s binder marks
+  `function Router() {}` exported when the file later writes `module.exports = Router`, so the IR
+  recorded an export *named* `Router` for a module whose only export is the whole value. Suppressing
+  every keyword-less inline export fixed it and cost React **189 correct edges**; the rule is now
+  narrow — only a declaration the file assigns to `module.exports` wholesale.
+- **Routing every CommonJS export through the checker lost 189 more.** The IR knows the link
+  syntactically for a bare identifier and for a function expression it just recorded, which is
+  exactly what `ExportIR.declarationId` means. Linking there and skipping the checker recovered all
+  of them and added 370.
+- **262 of React\'s config literals were reported as `no-symbol`.** `module.exports = { printWidth: 80 }`
+  is a real export whose value is the number 80. Resolution did not fail; there is nothing
+  addressable at the other end. A new reason, `value-is-not-a-declaration`, says so — a sibling of
+  `type-parameter`, added for the same reason.
+- **Flask\'s Overview said `LANGUAGE: Markdown`.** 85 markdown files against 83 Python ones, directly
+  above a paragraph correctly calling it a Python project. The identity header now prefers a language
+  some region reached `semantic` depth in, and falls back to file counts only when nothing was
+  analysed. Found by opening the page — the same way the `TypeScript`-for-everything defect was.
+- **"The TypeScript compiler read these sources"** was the capability reason a 141-file JavaScript
+  repository got. True, and it reads as though the wrong analysis ran. It names the language now.
+
+### TypeScript regression
+
+| | baseline | now |
+|---|---|---|
+| IMPORTS bind rate | 100.0% | **100.0%** |
+| `root-not-bound` | 64 | 67 |
+| `callee-outside-analysis` | 6 | 8 |
+| `callee-not-addressable` | 3 | 3 |
+| `root-type-unknown` | 2 | 4 |
+| `REFERENCES_TYPE type-parameter` | 56 | 56 |
+| Internal call edges | 9,063 | **9,257** |
+| External call edges | 12,851 | **13,139** |
+| Scan time | 5,300 ms | 5,620 ms |
+
+**Not identical input**: this milestone added 167 declarations to the repository being measured. The
+three genuine unresolved reasons moved by 3, 2 and 2 — all attributable to the new source, all in
+new files. Nothing bound differently. `opaque IMPORTS` moved 13 → 19, which is six more `bin/*.js`
+launchers importing built output the scanner ignores by design.
+
+zod, react and dash all *gained* on every relationship and lost on none.
+
+### Repository validation
+
+| repository | language | files | declarations | edges | calls | ext calls | routes | scan |
+|---|---|---|---|---|---|---|---|---|
+| facebook/react | TS/JS | 7,280 | 30,254 | 162,078 | 81,644 | 7,885 | 2 | 81.4 s |
+| colinhacks/zod | TypeScript | 580 | 4,434 | 39,026 | 25,550 | 8,110 | 0 | 10.5 s |
+| expressjs/express | JavaScript | 213 | 557 | 4,258 | 2,842 | 571 | 0 | 1.1 s |
+| pallets/flask | Python | 236 | 1,833 | 4,120 | 1,057 | 723 | 310 | 0.2 s |
+| fastapi/fastapi | Python | 3,137 | 8,382 | 18,314 | 4,387 | 2,953 | 1,305 | 1.1 s |
+| spring-petclinic | Java | 131 | 310 | 1,840 | 724 | 498 | 17 | 0.1 s |
+| apache/commons-lang | Java | 712 | 12,669 | 101,623 | 75,134 | 34,938 | 0 | 2.6 s |
+| gin-gonic/gin | Go | 130 | 2,006 | 9,859 | 5,950 | 3,479 | 14 | 0.3 s |
+| kubernetes/client-go | Go | 2,531 | 31,164 | 103,087 | 23,775 | 7,145 | 0 | 6.1 s |
+| plotly/dash | polyglot | 1,230 | 8,490 | 28,284 | 11,603 | 6,444 | 3 | 5.2 s |
+
+Zero analyser failures. Scan time is within noise of the baseline everywhere except react (+8.5 s on
+73 s, for 7,892 more call edges and 370 more exports) and gin, which got *faster*.
+
+### Browser validation
+
+Verified in Chrome against Java, Go, Python and JavaScript graphs, each served through the real API
+into the real production Next build. Every page renders, with **no console errors** on any of them:
+
+- **petclinic** — "Java monorepo", `LANGUAGE: Java`, 16 routes, 71 packages, `maven 71 / stdlib 11`,
+  the Java analyser\'s own capability reason, `CALLS 724` where the baseline showed 106, a real
+  package dependency graph on Architecture with 25 packages and one edge.
+- **gin** — "Go monorepo", 112 routes, `HANDLED_BY 14`, `stdlib 45 / go 19`.
+- **flask** — "polyglot monorepo (Python and HTML)", `LANGUAGE: Python` after the fix, 134 routes,
+  four regions each carrying the Python analyser\'s reason, `stdlib 43 / python 27`.
+- **express** — "JavaScript monorepo", `npm 42 / node 11`, and the capability reason now naming
+  JavaScript.
+
+### Product consistency
+
+Audited by hitting every published read endpoint against five graphs, one per language. Overview,
+Architecture, Explorer, Health, Search, Routes, Cycles, Hotspots, Symbol, Impact, Dependencies and
+File all answered `200` with content for all five. Impact reports `externalDependencies` for Python
+and Java now, where it reported zero before, and each language gets its own limitation set.
+
+### Known limitations
+
+- **Java\'s remaining 517 `root-type-unknown` in petclinic** are chained expressions and lambda
+  parameters. A local whose type is written down binds; one whose type Java infers from a stream
+  pipeline does not.
+- **Go\'s route handlers are linked only for a bare identifier.** A closure names nothing, and a
+  method value `h.List` needs the receiver\'s type. gin\'s 194 unlinked handlers are almost all
+  closures in its own tests, and each is recorded with its text rather than dropped.
+- **A Go inline handler\'s text is the whole function literal**, newlines included, and it reaches the
+  unresolved reference\'s identity string. The TypeScript route extractor has always behaved this way
+  for an inline arrow; it is more visible in Go because Go registers imperatively.
+- **`REFERENCES_TYPE no-declaration` dominates Go\'s unresolved references** — 1,190 in gin, 15,320 in
+  client-go. These are builtins (`string`, `error`, `int`) and type parameters, which are correctly
+  not declarations, but they share a reason with a genuine miss. The same split
+  `value-is-not-a-declaration` just made for exports is available here and was not taken.
+- **Python\'s constructor inference is first-assignment-wins.** A local rebound to a different class
+  later in the same function keeps the first type.
+- **No analyser resolves an interface call to its implementations.** Java\'s sole-implementor case is
+  statically decidable within analysed source and was deliberately not implemented: a dependency may
+  implement the interface too, and the edge would be a guess wearing a proof\'s clothing.
+- **Kotlin, Rust, C, C++, C#, PHP, Ruby, Swift and Scala remain universal-discovery only.**
+- **The ground-truth corpus is five small repositories.** It proves the rules are right on the shapes
+  it covers and says nothing about the shapes it does not.
+
+## Universal Foundation + Java + Go
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web` clean;
+**2,270 backend + 372 web** tests passing. Java and Go validated against real public repositories and in a
+real browser.
+
+### Architecture before and after
+
+| | before | after |
+|---|---|---|
+| Dependency ecosystems the graph could name | `npm` | every value in `ECOSYSTEMS`, shared from `@traceiq/types` |
+| External origins | `package`, `node-builtin`, `typescript-lib` | `package`, `standard-library`, `language-builtin` |
+| Framework field | `'express' \| null` | a free name the recognising analyser supplies |
+| tree-sitter host | one copy inside `@traceiq/python` | `@traceiq/tree-sitter`, shared by three analysers |
+| Analysers | TypeScript/JavaScript, Python | + Java, + Go |
+| Languages reaching `semantic` or better | 3 | **5** |
+
+**Adding an analyser now touches no infrastructure.** Java and Go were built against the existing
+`LanguageAnalyzer` contract and integrate with Explorer, Impact, Architecture, Search, Health, Query, Ask
+TraceIQ and the browser UI without one line of analyser-specific code in any of them.
+
+### Root causes fixed
+
+- **A Python, Java or Go import could not become an external node at all.** `EXTERNAL_ID_KINDS` was
+  `npm | node | builtin | outside-analysis`, so there was no identity for a Maven coordinate or a Go
+  module path to take and the reference was dropped. A reader saw the dependencies a manifest *declared*
+  and never the ones a file actually *used*. The ecosystem now comes from the resolution; flask went from
+  **0 to 70** external nodes, dash from **0 to 218**.
+- **`node-builtin` and `typescript-lib` could not describe another language.** Python's `os`, Java's
+  `java.util` and Go's `net/http` are the same kind of thing as Node's `fs`, and none is a Node builtin.
+  Renamed to `standard-library` and `language-builtin`; `ext:node:*` identities are unchanged.
+- **`FrameworkAnnotations.framework` was typed `'express' | null`.** Every framework after Express would
+  have widened a shared type. It is a free name now — a label for a reader, never a key anything branches on.
+- **Three UI surfaces hardcoded TypeScript, and only the browser found two of them.** The Overview profile
+  said `languages: ['TypeScript']`; the identity header derived `Language: TypeScript` and
+  `Framework: Express` from constants; the chip row led with `TypeScript` and counted only npm packages.
+  The suite was green through all three. A Spring Boot repository introduced itself as a TypeScript/Express
+  project above a paragraph correctly calling it a Java monorepo. Now derived from `capabilities`, with a
+  new `repository-identity.test.ts` that changes the input.
+- **A Java enum implementing an interface failed the whole scan.** `IMPLEMENTS` sourced only at `Class`,
+  which is true of TypeScript enums and false of Java's. Apache Commons Lang lost all 12,669 declarations
+  to one `enum ComparableComparator implements Comparator`.
+- **An `@interface` was labelled a class.** A Java annotation type *is* an interface, and a type may
+  implement it — so `class X implements Tag` produced IMPLEMENTS onto a Class and the graph rejected it.
+- **A supertype's generic arguments were recorded as supertypes.** `implements Formatter<PetType>` said the
+  class implemented `PetType`. Spring PetClinic lost its entire Java analysis to it. The arguments are type
+  *references*, and are recorded as those.
+- **Duplicate role rows failed the write.** `@Service` beside `@Component` both mean "service", and the
+  store's primary key rejected the second. Deduped where identity is decided, as nodes, edges and
+  unresolved references already were.
+
+Every one of these was found by scanning a real repository, and every one degraded rather than crashing
+once `buildTolerantly` was in place — the isolation built in the previous milestone earned itself here.
+
+### Java
+
+Packages, imports (single-type, wildcard, static, static-wildcard), classes, interfaces, enums, records,
+annotation types, methods, constructors, fields, enum constants, nested and inner types, inheritance and
+implementation, static members, generics including arguments inside supertypes, method calls, construction,
+`super`/`this` delegation, Maven and Gradle manifests, Spring stereotype roles, Spring and Jakarta routes
+with class-path composition, JUnit test roles.
+
+**Confidence discipline.** A type resolved through an explicit import is `RESOLVED`; every call edge is
+`INFERRED`, because Java dispatches on the runtime type and a field declared as an interface may hold any
+implementation. No jar is opened, so a dependency's type is a *name* — recorded as an external named after
+its package rather than a resolved declaration.
+
+### Go
+
+Packages, imports with aliases and blank imports, functions, methods attributed to their receiver's type,
+structs, interfaces, embedded types with method promotion, constants, variables, generics, `go.mod` module
+paths, `go.work` workspace layouts, Gin, Echo, Fiber and `net/http` route registration, `_test.go` files.
+
+**Go reaches `RESOLVED` where the others cannot**, and the reason is Go's own design: an import path is the
+module path plus a directory, with no search path to guess at. So imports, bare calls and
+package-qualified calls are proven; a call through an interface value or on a local whose type Go infers
+stays inferred or unbound. The standard library needs no list — a module path must contain a dot in its
+first segment, which is a rule rather than an enumeration.
+
+### Repository validation
+
+| repository | language | files | declarations | edges | calls | routes | ext pkgs | depth | scan |
+|---|---|---|---|---|---|---|---|---|---|
+| facebook/react | TypeScript/JS | 7,280 | 30,254 | 153,796 | 73,752 | 11 | 323 | framework | 78.9 s |
+| colinhacks/zod | TypeScript | 580 | 4,434 | 30,916 | 17,440 | 0 | 42 | semantic | 10.7 s |
+| expressjs/express | JavaScript | 213 | 529 | 3,594 | 2,249 | 0 | 42 | semantic | 1.3 s |
+| pallets/flask | Python | 236 | 1,833 | 3,375 | 312 | 134 | 27 | framework | 0.2 s |
+| fastapi/fastapi | Python | 3,137 | 8,382 | 15,359 | 1,432 | 598 | 40 | framework | 1.2 s |
+| spring-petclinic | Java | 131 | 310 | 1,222 | 106 | 16 | 69 | framework | 0.1 s |
+| apache/commons-lang | Java | 712 | 12,669 | 60,595 | 34,106 | 0 | 17 | semantic | 2.3 s |
+| gin-gonic/gin | Go | 130 | 2,006 | 5,844 | 1,949 | 111 | 19 | framework | 0.6 s |
+| kubernetes/client-go | Go | 2,531 | 31,164 | 93,559 | 14,247 | 4 | 150 | framework | 6.3 s |
+| plotly/dash | polyglot | 1,230 | 8,490 | 21,810 | 5,151 | 3 | 129 | framework | 4.5 s |
+
+`ext pkgs` counts dependency-ecosystem externals only; standard-library externals are counted separately
+(flask 70 external nodes in total, of which 27 are packages and 43 standard-library modules).
+
+Zero analyser failures across all ten.
+
+### TypeScript regression
+
+| | previous milestone | now |
+|---|---|---|
+| IMPORTS bind rate | 100.0% | **100.0%** |
+| `root-not-bound` / `callee-not-addressable` / `root-type-unknown` | 64 / 3 / 2 | **64 / 3 / 2** |
+| Internal call edges | 8,575 | 9,025 |
+| Opaque IMPORTS | 13 | 13 |
+
+The three genuine unresolved reasons are byte-identical. Growth in the absolute counts is this milestone's
+own new source files being scanned.
+
+### Browser validation
+
+Verified in Chrome against a Spring Boot graph and a Gin graph served through the real API and the real
+Next app. Both render the same Overview as TypeScript — correct language, correct route count, correct
+package counts, per-region analysis depth — with **no console errors or warnings**. Screenshots taken
+before and after the three hardcoded-TypeScript fixes.
+
+### Known limitations
+
+- **Java has no classpath**, so a dependency's type is a package name rather than a resolved declaration,
+  and a call on a local's inferred type is unbound. `root-type-unknown` dominates petclinic's unresolved
+  calls for exactly this reason.
+- **Go does not link a route to its handler.** `r.GET("/users", listUsers)` names the handler in an
+  argument position, and binding it is resolver work this reader does not do. Routes exist; `HANDLED_BY`
+  does not.
+- **Java route paths are not property-substituted.** `@GetMapping("${api.base}/x")` is recorded as written.
+- **Kotlin, Rust, C, C++, C#, PHP, Ruby, Swift and Scala remain universal-discovery only.**
+- **CommonJS `module.exports` is still not extracted** — carried forward.
+- **ts-morph throws on a non-literal module specifier**, from both `getModuleSpecifierValue` and
+  `getModuleSpecifierSourceFile`. Guarded in one place now, but it is the third distinct ts-morph throw
+  this project has had to catch — the compiler API is not total, and any new call into it needs the same
+  treatment. React cost 30,254 declarations to this one before the guard.
+- A Go package-level import edge anchors on the package's first exported declaration, chosen
+  deterministically, because a package is a directory and a directory is not a node.
+
+## Product Consistency — real-repository multi-language validation
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web` clean; **2,203 backend +
+365 web** tests passing. Validated by scanning **seven real public repositories**, not fixtures.
+
+### What was wrong
+
+Measured, not assumed. Seven public repositories were cloned and scanned through the real pipeline.
+**Four of the seven failed the scan outright** and a fifth silently lost its analysis:
+
+| Repository | Before |
+|---|---|
+| pallets/flask | `GraphConstraintError: two nodes share sym:src/flask/cli.py#locate_app` |
+| fastapi/fastapi | `InvalidNodeIdError: route path "{$callback_url}/invoices/…" must start with "/"` |
+| plotly/dash | `InvalidNodeIdError: route path "POST" must start with "/"` |
+| colinhacks/zod | `GraphConstraintError: DECLARES may not be sourced at a TypeAlias` |
+| axios/axios | scanned, but the TypeScript analyser crashed — 209 JS + 27 TS files, **0 declarations** |
+| expressjs/express | scanned, but **0 IMPORTS edges** across 141 CommonJS files |
+
+Every one of these is a repository a user would plausibly point TraceIQ at first.
+
+### Root causes
+
+- **Python duplicate identifiers.** `@t.overload` declares one name three times. The extractor emitted a
+  declaration per syntactic site, so three nodes claimed one identifier. The TypeScript IR had solved
+  this years of milestones ago with `DeclarationCollector`; Python was not using it. Now it is, and the
+  collector is exported so every future analyser folds sites the same way.
+- **A route path that cannot be addressed failed the whole scan.** FastAPI's OpenAPI callbacks register
+  `"{$callback_url}/invoices/{$request.body.id}"` — a real endpoint whose path is deliberately not
+  absolute. The environment-variable path in the same file already caught `InvalidNodeIdError` and
+  recorded the reference as unresolved; routes simply had no such guard.
+- **A keyword tuple read as a route path.** `@hooks.route(methods=("POST",))` has no positional path,
+  and the extractor took the first quoted string *anywhere* in the decorator — yielding `"POST"`.
+  Anchored to the call's own opening parenthesis; a route by keyword now yields nothing rather than
+  something wrong.
+- **A merged type alias and namespace.** zod declares `type StandardSchemaV1` beside
+  `declare namespace StandardSchemaV1`. Folding took the first kind in source order, so the namespace's
+  members were parented to a `TypeAlias`, which cannot declare anything. A site that *can* contain
+  declarations now wins the merge.
+- **`REFERENCES_TYPE` refused a merged value/type symbol.** `type BENCH` beside `const BENCH: BENCH` is
+  one node wearing both meanings, because an identifier is a symbol path with no room to say which
+  space it belongs to. `EXTENDS` and `IMPLEMENTS` already admitted `Function` and `Variable` for exactly
+  this reason; this row had just never met the case.
+- **A checker crash cost a repository its analysis.** TypeScript's own `getImmediateAliasedSymbol`
+  throws `Cannot read properties of undefined (reading 'flags')` on an alias it cannot follow — reachable
+  from ordinary published JavaScript, in axios and in dash. Every checker call in the Resolver now goes
+  through `symbolAt`, and a fault is reported under its own reason, `checker-failed`, so it is never
+  confused with the checker answering "nothing here".
+- **CommonJS was invisible.** `extractImports` read `getImportDeclarations()` — ES syntax only — so a
+  `require` produced nothing, and resolution walked the syntax tree by the same rule.
+- **`allowJs` was never enabled.** `applyJavaScriptSupport` returned early on
+  `options.allowJs !== undefined`, but `DEFAULT_COMPILER_OPTIONS` sets `allowJs: false`, so the value was
+  *always* defined and the function always returned immediately. JavaScript was only ever read when a
+  repository's own tsconfig said so. Declarations still appeared, because those come from the syntax
+  tree; module resolution did not, because it will not consider a `.js` extension without `allowJs`.
+
+### Measured effect
+
+| | before | after |
+|---|---|---|
+| Public repositories scanning at all | **3 of 7** | **7 of 7**, zero analyser failures |
+| express — IMPORTS bind rate | 58.8% | **98.2%** |
+| express — IMPORTS reaching a file in the repository | **0** | **300** |
+| express — External nodes | 0 | 53 |
+| axios — declarations | **0** | 1,756 |
+| dash — declarations | 0 (TS analyser crashed) | 3,587 from TS/JS, 8,490 total |
+| flask / fastapi / dash / zod | **failed** | 236 / 3,137 / 1,230 / 580 files |
+
+### TypeScript regression
+
+Measured on TraceIQ itself, and the movement was attributed rather than assumed: the CommonJS work was
+temporarily disabled and the benchmark re-run, which changed **2 call edges and nothing else**.
+
+| | baseline (538 files) | now (560 files) |
+|---|---|---|
+| IMPORTS bind rate | 100.0% | **100.0%** |
+| Internal call edges | 8,101 | **8,575** |
+| External dependency call edges | 11,590 | **12,437** |
+| Calls reaching an internal declaration | 64.8% | 63.9% |
+| `root-not-bound` / `callee-not-addressable` / `root-type-unknown` | 60 / 3 / 1 | 64 / 3 / 2 |
+| Scan time | 4.70 s | 5.55 s |
+
+**Not identical input** — the tree carries 22 files the baseline did not. The 13 new opaque IMPORTS were
+traced individually: all are `bin/*.js` launchers importing `../dist/*.js`, build output the scanner
+ignores by design. They were `module-not-resolved` before only because `allowJs` was off; resolving to
+ignored output is the more accurate answer.
+
+### Consistency, where the evidence was already there
+
+- **Search reached no `Dependency` or `Manifest` node.** For a region with no semantic analyser those are
+  the *only* dependency evidence in the graph, so a Python user searching `fastapi` was told nothing
+  matched while the graph held a node of that name. Both kinds are now searchable; flask answers
+  `click` with 4 dependencies.
+- **Ask TraceIQ carried no language, region or depth facts at all.** It could not answer "what is this
+  written in" about *any* repository, and had no way to say that a Go worker's absence of callers was
+  never measured rather than measured and empty. `RepositoryContext` now carries `capabilities` for
+  every context kind, and the projection emits `written-in`, `is-polyglot`, `analysis-depth` and one
+  `region-depth` fact per region. dash grounds 16 regions across three languages.
+- **The web UI said every repository was TypeScript.** `repository-profile.ts` hardcoded
+  `languages: ['TypeScript']` with the evidence "the analysis reads TypeScript projects only" — true when
+  written, false since discovery became universal. A Flask repository was described to the reader, on the
+  first page they see, as a TypeScript project. Languages and shape now come from `capabilities`, and the
+  Overview shows analysis depth per region with the API's own reason for it.
+- **The analysis/import flow reported no language or depth**, so a Python service showed its declarations
+  beside zero routes and zero packages with nothing saying what it was written in.
+
+### Capability honesty
+
+Depth reasons were fixed sentences: the TypeScript analyser claimed "declarations, imports, calls and
+types are resolved" for every region it covered, whatever it found. Express's region said imports were
+resolved while the graph held none. Reasons are now derived from the evidence actually produced, and
+name what is absent as well as what is present — with an `omit` list so an analyser's own gaps are not
+reported as the repository's (Python has no export statement; saying "no exports were found" would blame
+the source).
+
+The same fixed sentence appeared a second time, in the framework-to-semantic downgrade branch, where it
+overwrote the analyser's reason for **8 of dash's 16 regions**. The downgrade is now appended to the
+analyser's own reason rather than replacing it.
+
+### Failure isolation
+
+`runAnalyzers` already caught an analyser that *throws*. An analyser that returns facts the graph
+refuses was still fatal to the entire scan — including the universal layer no analyser produced.
+`buildTolerantly` now retries: everything, then dropping one contributing analyser at a time, then
+discovery alone. A dropped analyser becomes a `rejected` outcome, so its regions fall back to
+`universal` depth with the rejection as the reason rather than keeping a depth whose evidence was
+discarded. Three tests cover it with an analyser that returns a duplicate identifier.
+
+### Performance
+
+Per-stage timings, which is what decides whether the flagged Python scaling risks are worth acting on:
+
+| repository | files | regions | analyse | capability assessment |
+|---|---|---|---|---|
+| flask | 236 | 4 | 211 ms | 0.2 ms |
+| fastapi | 3,137 | 1 | 1,431 ms | 0.7 ms |
+| dash | 1,230 | 16 | 8,557 ms | 12.3 ms |
+| zod | 580 | 8 | 22,800 ms | 2.5 ms |
+| TraceIQ | 560 | 28 | 12,008 ms | 20.9 ms |
+
+The deepest-region lookup is visibly O(regions² × files) — TraceIQ's 28 regions cost more than dash's 16
+over twice the files — but at 0.17% of the scan **the measurement does not justify changing it**, and it
+has not been changed. `ownerIdOf`'s declaration scan is likewise invisible next to parsing. The one
+quadratic path that *was* replaced, `isClassChain`'s scan over every declaration so far, was replaced as
+part of the duplicate-identifier fix rather than speculatively.
+
+### Known limitations
+
+- **CommonJS `module.exports` is not extracted.** Imports were the structural half — they carry the
+  dependency graph, Impact traversal and Architecture — and are done. Express therefore reports 9 EXPORTS
+  (its ES ones) and its region honestly says no exports were found, which understates the source.
+- **Python third-party imports produce no `External` node**, only the `Dependency` the manifest declares.
+  So Impact reports `externalDependencies: 0` for a Python declaration where a JavaScript one reports 19.
+  The evidence exists — `import fastapi` names it — but `EXTERNAL_ID_KINDS` is npm-shaped (`npm`, `node`,
+  `builtin`, `outside-analysis`) with no `pypi`, and widening a closed vocabulary is a schema decision.
+- **`externalPackages` counts only `externalKind === 'npm'`** in the scan summary and in Health, so a
+  non-npm ecosystem reads as zero.
+- **A region's primary language is its most common one by file count**, so flask's `examples/javascript`
+  is reported as an HTML region whose reason describes Python analysis. Both statements are true; together
+  they read oddly.
+- **`DEFAULT_ANALYZERS` is a stale export** that omits Python while its comment calls it the default. No
+  caller uses it.
+- A small local model (`qwen2.5:7b-instruct`) often answers the composition question correctly while
+  omitting `[fN]` markers, so the guard reports `unverifiable` — correctly, there being nothing to check
+  against. Same question, same facts, `grounded` with 8 citations on express.
+
+## Polyglot Repository Foundation — universal discovery and capabilities
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web` clean; **2,133 backend +
+363 web** tests passing. All seven mandated repository shapes verified by test.
+
+### What was wrong
+
+Measured, not assumed. Four of five non-TypeScript fixtures were rejected outright — `ProjectHost` threw
+when `inventory.language !== 'typescript'`, and `RepositoryAnalyzer` string-matched that message into
+`unsupported-repository`.
+
+**The polyglot case was worse: it "succeeded".** A repository of 21 files across TypeScript, Java, Python,
+Go, Terraform and Compose produced a graph of **1 file, 1 declaration, 2 nodes** — only
+`frontend/src/app.tsx` — and Overview then reported "files 1". Misleading success is worse than the honest
+rejection the other cases gave. The cause was one line: the scanner globbed `**/*.{ts,tsx,mts,cts}`, so no
+other file was ever discovered.
+
+### What was built
+
+**Discovery became universal; analysis stayed layered.** The scanner now finds every file and classifies
+each by language (extension) and role (source, test, documentation, configuration, manifest, build,
+infrastructure). It reads manifests for nine ecosystems and derives **technology regions** anchored on
+dependency manifests — the one signal available without parsing that marks where a project begins.
+
+**TypeScript became an enrichment stage.** `enrichWithTypeScript` is the whole boundary: compiler host, IR,
+resolver, call graph and framework extractor sit behind it, and it returns `null` when there is no
+TypeScript. A future Python analyser becomes a sibling of that function. Nothing above it changes shape.
+
+**No new relationship types.** The frozen vocabulary already sufficed: `DEPENDS_ON` was reserved and unused,
+and now carries manifest to declared dependency. Only node kinds were added — `Manifest` and `Dependency` —
+which the schema explicitly permits (`nodes.kind` is an open vocabulary by design).
+
+**A capability model, in the graph.** `getCapabilities()` reports per-region depth: `universal`,
+`structural`, `semantic`, `framework`. Depth records **what ran**, not what the graph happens to contain,
+because only the pipeline knows a region's calls were never looked at rather than looked at and absent.
+Regions live in tables, not as nodes: a region describes the analysis, not the code, and making it a node
+would surface it in search results.
+
+### TypeScript regression
+
+| | before | after |
+|---|---|---|
+| IMPORTS bind rate | 100.0% | **100.0%** |
+| Opaque IMPORTS | 0 | **0** |
+| Internal call edges | 8,024 | **8,101** |
+| External dependency call edges | 11,564 | **11,590** |
+| Calls reaching an internal declaration | 65.6% | 64.8% |
+| `root-not-bound` / `callee-not-addressable` / `root-type-unknown` | 60 / 3 / 1 | **60 / 3 / 1** |
+| Scan time | 4.40 s | 4.70 s |
+
+**The comparison is not on identical input** — this milestone added 21 TypeScript files to the repository
+being measured, so the ratios move even with the engine unchanged. The regression evidence is the last row:
+the three *genuine* unresolved-call reasons are identical at 60 / 3 / 1. The only growth is
+`callee-is-language-builtin` (4,141 to 4,335), which is new string-handling code calling `split`, `replace`
+and `startsWith` — correctly excluded from the graph, and correctly sitting in the denominator.
+
+### Fixture results
+
+| Case | Before | After |
+|---|---|---|
+| TraceIQ (TS monorepo) | 402 files, semantic | 538 files, 26 regions, depth `semantic` |
+| JavaScript | **rejected** | 3 files, 1 manifest, 1 dependency, depth `universal` |
+| Python | **rejected** | 4 files, 2 dependencies from `pyproject.toml`, depth `universal` |
+| Java | **rejected** | 3 files, Maven manifest, depth `universal` |
+| Polyglot | **1 file, "success"** | 11 files, **5 regions**, 4 manifests, `isPolyglot` |
+| Docs/config | **rejected** | 4 files, no primary language, depth `universal` |
+| Empty | rejected | rejected — `empty-repository`, "contains no files" |
+
+### Defects found by testing
+
+- **Rescans were not idempotent.** Universal discovery found the graph database a previous scan had written.
+  Fixed twice over: `.traceiq/` is ignored, and the pipeline passes the database path to the scanner as
+  `excludeFiles` so files, languages *and* regions all agree.
+- **`[tool.poetry.dependencies]` was read as a requirements list**, because the TOML probe required `]`
+  immediately after `tool.poetry`. It reported `python` and `line-length` as dependencies.
+- **`uvicorn[standard]` truncated a PEP 621 dependency array**, because a non-greedy `]` match stopped at
+  the bracket inside the requirement. Replaced with depth counting.
+
+### Known limitations
+
+- **No `Directory` nodes.** Structure is carried by file paths and regions, which is what Explorer already
+  groups by. A node per directory would add hundreds of nodes for no question it can answer.
+- **Language and role are conventions, not proofs.** A repository with sources in `test/` is described
+  wrongly. Both are `INFERRED` with the rule that fired named in the provenance.
+- **Framework depth is repository-wide.** The Framework Extractor reports per repository, so `framework` is
+  claimed for a TypeScript region only when routes were found anywhere; a monorepo with routes in one
+  package over-claims for its siblings.
+- **`.csproj` dependencies are not read** — they are XML attributes, and the Maven reader would miss them.
+  The manifest is still reported present.
+- **Region depth follows the primary language**, so a Python service holding one `.ts` script is `universal`
+  even though that file was compiled. Deliberate: the opposite error is worse.
+- **Downstream is capability-aware, not capability-driven.** Overview carries `capabilities` and Impact
+  reports `region-has-no-semantic-analysis`, but no UI was changed — as instructed.
+
+## Analysis Quality — workspace resolution and compiler-backed calls
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web` clean; **2,038 backend +
+363 web** tests passing. Every number below is measured by `@traceiq/bench` scanning TraceIQ itself.
+
+### Measured effect
+
+| | before | after |
+|---|---|---|
+| **Calls reaching a declaration in this repository** | **20.6%** | **65.6%** |
+| Internal call edges | 4,753 | 8,024 |
+| Call edges onto a named dependency | 0 | 11,564 |
+| IMPORTS bind rate | 85.6% | 100.0% |
+| IMPORTS resolving to a nameless sentinel | 1,110 | 0 |
+| REFERENCES_TYPE bind rate | 94.2% | 98.6% |
+| Scan time | 2.67 s | 4.40 s |
+
+### What was wrong
+
+Two defects, both found by measuring rather than by reading.
+
+**Every `@traceiq/*` import resolved to `ext:outside-analysis`.** A sibling import resolves through
+node_modules to that package's *published types* — `packages/ir/dist/index.d.ts` — and `dist` is on the
+scanner's ignore list. The reference therefore landed outside the analysed file set and collapsed into the
+one nameless external. There were **zero** edges from any package into `packages/ir`: in a monorepo, the
+structure a reader most wants to see was precisely the structure the graph could not show.
+
+**The root tsconfig configured nothing.** TraceIQ's root is a solution file — `"files": []` plus
+`references` — so it declares no `compilerOptions` at all. `new Project({ tsConfigFilePath })` on it yields
+`{}`, and the whole repository was analysed under TypeScript's own defaults: no `paths`, no `jsx`. All 484
+unresolved imports in the repository were `apps/web`'s `@/*` aliases.
+
+**The call graph was the only compiler-backed stage that was not compiler-backed.** A live `TypeChecker`
+existed in the pipeline at the moment `CallGraphResolver.resolve` ran — it is disposed in the `finally`
+afterwards — and the resolver's signature simply excluded it.
+
+### What was built
+
+**`@traceiq/bench`** — the milestone's premise. Quality was previously unmeasurable except by hand-querying
+SQLite, so it was measured first and every change judged against a recorded baseline. Reads only through
+`RepositoryGraphApi`; computes no verdict, just counts and ratios of counts.
+
+It reports `internalCallBindRate` separately from the CALLS bind rate, and that separation caught a real
+problem: once calls into packages became edges, the headline CALLS rate read 99.7% while the number that
+matters — calls reaching a declaration *in this repository* — was 68%. A bind rate that external edges can
+inflate measures the wrong thing.
+
+**Workspace-aware resolution.** The scanner discovers workspace packages (`pnpm-workspace.yaml`, or
+package.json `workspaces`) by matching globs against directories the walk already found, so it can never
+reach into an ignored directory. The Project Host turns them into path mappings — `@traceiq/ir` and
+`@traceiq/ir/*` onto source — and layers built-in defaults beneath the root tsconfig, merges `jsx`, `lib`
+and `paths` from each package's own tsconfig, and records `configurationNotes` saying what it did.
+
+**The one-Program invariant is intact.** Per-package options are merged into a single program rather than
+split across several, so the whole-program type checker still sees the whole repository.
+
+**A checker tier above the name rules.** `CallGraphResolver` takes an optional `ProjectContext`. When given
+one it asks `getResolvedSignature` first and emits `RESOLVED`; the five name rules run for whatever the
+checker declines and still emit `INFERRED`. The tiers are additive — the checker correctly declines a
+dynamic callee, and a name rule may still offer the one declaration in scope, at the weaker confidence.
+
+**Calls that leave the repository became edges.** `CALLS` may now target an `External`, as every other
+outward relationship already could; it was excluded only because a name binder cannot tell a package's
+function from an unbound local. `IMPORTS` is file-scoped, so this is the only thing that can answer which
+*declaration* uses `ts-morph` — 51 of them, as it turns out.
+
+**Language builtins are deliberately excluded.** `JSON.stringify`, `Map`, `items.map` — 4,141 of them. The
+repository did not choose the language it is written in, and an edge per `map` call would bury the packages
+it did choose. Reported unresolved with `callee-is-language-builtin`, which also stops a name rule claiming
+`JSON.parse` for a local function called `parse`.
+
+### Defects found by testing
+
+**Chained calls bound to the wrong target.** `make().run()` and its inner `make()` begin at the same
+character, so keying the call index by start position alone collided and the outer call silently bound to
+`make`. Fixed by keying on the full range. Caught by the first test written for it.
+
+**Impact reported limitations that had become false.** `call-coverage-partial` claimed the call graph
+"binds names rather than symbols"; `no-interface-or-dynamic-dispatch` claimed an interface call "produces
+no edge at all". Both were true when written and are not now. Rewritten to state what remains true — an
+interface call binds to the interface method and never to the implementations, which is the caveat that
+actually matters. `calls-are-inferred` already fired only when inferred calls existed, but said "every".
+
+### Known issues
+
+- **Scan time is up 65%** (2.67 s → 4.40 s). `getResolvedSignature` on ~24,000 call sites is the cost. It
+  buys 3,271 internal edges and 11,564 dependency edges, but nothing here is incremental or cached.
+- **`@vitest/expect` and `@vitest/runner` account for 9,515 of the 11,564 external call edges** — every
+  `expect` and `describe` in the suite. True, and arguably noise; a scan that excluded test files, or an
+  interface that ranked dependencies by distinct callers rather than call count, would read better.
+- **An interface call binds to the interface, not to implementations.** Genuine dynamic dispatch is still
+  unresolved, as it should be.
+- **The pnpm-workspace.yaml parser handles a narrow YAML subset** — `packages:` with `- item` entries. A
+  flow sequence yields no globs, degrading to single-package behaviour rather than guessing.
+- **The benchmark covers one repository: TraceIQ itself.** Fixture repositories for other shapes — a Next.js
+  app, a yarn workspace, a no-tsconfig repository — are the obvious next step, and would likely find more.
+- 60 calls still report `root-not-bound` and 54 type references `type-parameter`; both are small and were
+  not investigated.
+
 ## Release Engineering — v1.0.0 deployment layer
 
 **Status:** complete. `git clone && cd traceiq && docker compose up` brings up the whole stack and opens on a

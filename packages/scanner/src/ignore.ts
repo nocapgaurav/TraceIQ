@@ -14,6 +14,10 @@ export const IGNORED_DIRECTORY_NAMES = [
   'coverage',
   '.next',
   'out',
+  // TraceIQ's own output. Universal discovery records every file, so without this a
+  // repository scanned twice would find the graph database written by the first scan and
+  // report it as one of its own files.
+  '.traceiq',
 ] as const;
 
 /**

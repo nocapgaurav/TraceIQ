@@ -2,6 +2,7 @@ import type { NodeId } from '@traceiq/types';
 import {
   ModuleDeclarationKind,
   Node,
+  SyntaxKind,
   type ClassDeclaration,
   type EnumDeclaration,
   type InterfaceDeclaration,
@@ -11,6 +12,7 @@ import {
 } from 'ts-morph';
 
 import { isAddressableName } from './addressable-name.js';
+import { commonJsExportSitesIn } from './export-extractor.js';
 import { nestedFunctionOf, nestedVariableOf } from './nested-declaration-extractor.js';
 import type { DeclarationCollector } from './declaration-collector.js';
 import { modifiers, visibilityOf } from './modifiers.js';
@@ -33,12 +35,36 @@ export interface ExtractionSink {
    * containing it, without restating which nodes the IR chose to record.
    */
   readonly declarationIdByNode: Map<Node, NodeId>;
+  /**
+   * Top-level declarations of this file, by name.
+   *
+   * Filled here rather than derived afterwards because deriving it means filtering every declaration
+   * collected so far, once per file — quadratic, and React has 30,254 declarations across 7,280
+   * files. Its one consumer is the CommonJS export reader: `module.exports = Router` names a
+   * declaration in this same file, which is knowable syntactically and is exactly the case
+   * `ExportIR.declarationId` exists for.
+   */
+  readonly topLevelIdByName: Map<string, NodeId>;
 }
 
 interface ExtractionContext {
   readonly fileId: NodeId;
   readonly repoRelativePath: string;
   readonly sink: ExtractionSink;
+  /**
+   * Names the file assigns to `module.exports` wholesale: `module.exports = Router`.
+   *
+   * The one case where TypeScript's inferred exportedness carries the *wrong name*. Its binder marks
+   * `function Router() {}` exported because of that assignment, and the IR then recorded an export
+   * called `Router` — but the module exports one value, so an importer writes `require('./router')`
+   * and can never write `require('./router').Router`. The export extractor records the same
+   * statement accurately, as an `equals` export with no name, so the inline one is dropped.
+   *
+   * **Narrow on purpose.** An earlier attempt suppressed the inline export for *every* declaration
+   * with no `export` keyword, which is a much larger set — and cost React 189 export edges that were
+   * correct.
+   */
+  readonly wholeModuleNames: ReadonlySet<string>;
 }
 
 interface DeclarationDetails {
@@ -46,6 +72,15 @@ interface DeclarationDetails {
   readonly modifiers: DeclarationModifiers;
   /** Only classes and functions can carry `export default` inline. */
   readonly isDefaultExport?: boolean;
+  /**
+   * Set when the export statement is recorded elsewhere, so this site must not record a second.
+   *
+   * True only for a CommonJS export assignment. `exports.compile = function compile() {}` is one
+   * statement that both declares and exports, and both readers see it — the export extractor
+   * because it is an export, this one because it is a declaration. Without this the file would
+   * carry `compile` twice, which the graph would reject as a duplicate identity.
+   */
+  readonly exportRecordedElsewhere?: boolean;
 }
 
 /** A node that can hold statements: a file, or a namespace body. */
@@ -73,7 +108,23 @@ export function extractDeclarations(input: {
     fileId: input.fileId,
     repoRelativePath: input.repoRelativePath,
     sink: input.sink,
+    wholeModuleNames: wholeModuleAssignmentsIn(input.file),
   });
+}
+
+/** Identifiers this file assigns to `module.exports` in their entirety. Usually none, rarely one. */
+function wholeModuleAssignmentsIn(file: SourceFile): ReadonlySet<string> {
+  const names = new Set<string>();
+
+  for (const statement of file.getStatements()) {
+    for (const site of commonJsExportSitesIn(statement)) {
+      if (site.kind === 'equals' && site.value !== null && Node.isIdentifier(site.value)) {
+        names.add(site.value.getText());
+      }
+    }
+  }
+
+  return names;
 }
 
 function extractStatements(
@@ -114,8 +165,102 @@ function extractStatements(
       }
     } else if (Node.isVariableStatement(statement)) {
       extractVariables(statement, chain, context);
+    } else if (Node.isExpressionStatement(statement)) {
+      extractCommonJsDeclarations(statement, chain, context);
     }
   }
+}
+
+/**
+ * Declarations a CommonJS module writes as export assignments.
+ *
+ * `exports.normalizeType = function (type) { … }` declares a function called `normalizeType` in
+ * every sense a reader cares about: it has a name, a body, a position, and it is the module's public
+ * surface. The syntax is an assignment rather than a declaration, so nothing above records it — and
+ * measured against express, that is 141 files whose entire API consisted of these.
+ *
+ * The equivalent ES form, `export const normalizeType = function (type) { … }`, has been recorded
+ * since the IR existed, by `extractVariables` and `nestedVariableOf`. This is the same fact written
+ * in the other module system, and it is recorded with the same kinds.
+ *
+ * **Only a function, arrow or class value.** `exports.methods = METHODS.map(…)` publishes a value
+ * whose shape is a computation; there is nothing to declare, and the export itself is still recorded
+ * by the export extractor. Only the top statement level is read, for the reason given on
+ * `commonJsExportSites`: a conditional assignment publishes different things on different runs.
+ */
+function extractCommonJsDeclarations(
+  statement: Node,
+  chain: readonly string[],
+  context: ExtractionContext,
+): void {
+  for (const site of commonJsExportSitesIn(statement)) {
+    if (site.value === null || site.exportedName === null || !isAddressableName(site.exportedName)) {
+      continue;
+    }
+
+    const kind = commonJsDeclarationKindOf(site.value);
+
+    if (kind === null) {
+      continue;
+    }
+
+    const declaredChain = record([site.exportedName], kind, site.value, chain, context, {
+      visibility: null,
+      // Exported by construction: the statement being read *is* the export.
+      modifiers: modifiers({
+        isExported: true,
+        isAsync: Node.isFunctionExpression(site.value) || Node.isArrowFunction(site.value)
+          ? site.value.isAsync()
+          : false,
+      }),
+      exportRecordedElsewhere: true,
+    });
+
+    if (
+      declaredChain !== null &&
+      (Node.isFunctionExpression(site.value) || Node.isArrowFunction(site.value))
+    ) {
+      extractBody(site.value.getBody(), declaredChain, context);
+    }
+  }
+}
+
+/**
+ * Whether this declaration is the value a `module.exports = X` publishes wholesale.
+ *
+ * When it is, the export extractor records the statement accurately — as an `equals` export naming
+ * the whole module — and the inline export this function suppresses would have named it `X`, which
+ * no importer can write. Everything else keeps its inline export, including a declaration made
+ * exported by `exports.foo = foo`, where the inferred name is right.
+ *
+ * The `export` keyword is deliberately *not* the discriminator, though it looks like the obvious
+ * one. Suppressing every keyword-less export cost React 189 correct edges.
+ */
+function isWholeModuleValue(
+  nameSegments: readonly string[],
+  node: Node,
+  context: ExtractionContext,
+): boolean {
+  const name = nameSegments.at(-1);
+
+  if (name === undefined || !context.wholeModuleNames.has(name)) {
+    return false;
+  }
+
+  // A declaration carrying the keyword is exported by its own modifier whatever else the file
+  // writes, and that export is this reader's to record.
+  const bearer = Node.isVariableDeclaration(node) ? (node.getVariableStatement() ?? node) : node;
+
+  return !(Node.isModifierable(bearer) && bearer.hasModifier(SyntaxKind.ExportKeyword));
+}
+
+/** The kind a CommonJS-exported value declares, or `null` when it declares nothing. */
+function commonJsDeclarationKindOf(value: Node): DeclarationKind | null {
+  if (Node.isFunctionExpression(value) || Node.isArrowFunction(value)) {
+    return 'function';
+  }
+
+  return Node.isClassExpression(value) ? 'class' : null;
 }
 
 function extractClass(
@@ -440,7 +585,23 @@ function record(
   // interface attributes its expressions to the same declaration.
   context.sink.declarationIdByNode.set(node, collected.id);
 
-  if (collected.isNew && chain.length === 0 && details.modifiers.isExported) {
+  if (chain.length === 0) {
+    // First site wins, matching the collector: an overload set is one declaration, and a name
+    // redeclared under `if` is one addressable thing written twice.
+    const name = nameSegments.at(-1);
+
+    if (name !== undefined && !context.sink.topLevelIdByName.has(name)) {
+      context.sink.topLevelIdByName.set(name, collected.id);
+    }
+  }
+
+  if (
+    collected.isNew &&
+    chain.length === 0 &&
+    details.modifiers.isExported &&
+    details.exportRecordedElsewhere !== true &&
+    !isWholeModuleValue(nameSegments, node, context)
+  ) {
     const isDefault = details.isDefaultExport === true;
 
     context.sink.inlineExports.push({

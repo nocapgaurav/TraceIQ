@@ -1,6 +1,7 @@
 import type { RepositoryIR } from '@traceiq/ir';
 import type { ResolvedRepository } from '@traceiq/resolver';
 
+import { extractClientCalls } from './client-call-extractor.js';
 import { extractEnvironmentUsages } from './environment-extractor.js';
 import { readExpressFacts } from './express-detection.js';
 import { extractRoles } from './role-extractor.js';
@@ -37,12 +38,16 @@ export class FrameworkExtractor {
     // Environment reads have nothing to do with Express, so they are extracted whether
     // or not it is present.
     const environmentVariables = extractEnvironmentUsages(input.ir);
+    // Extracted whether or not a server framework is present, and deliberately: the half of a
+    // repository that *calls* an API is usually not the half that serves one.
+    const clientCalls = extractClientCalls(input.ir);
 
     if (!express.detected) {
       return {
         ...NO_ANNOTATIONS,
         roles: extractRoles({ ir: input.ir, middlewareDeclarationIds: [] }),
         environmentVariables,
+        clientCalls,
       };
     }
 
@@ -53,6 +58,7 @@ export class FrameworkExtractor {
       roles: extractRoles({ ir: input.ir, middlewareDeclarationIds }),
       routes,
       environmentVariables,
+      clientCalls,
     };
   }
 }

@@ -1,5 +1,5 @@
 import { API_BASE, ApiError, NetworkError } from './api-client';
-import type { ChatAnswer, ChatEvent, ChatGrounding, ChatRequest } from '@/types/api';
+import type { ChatAnswer, ChatEvent, ChatGrounding, ChatPhase, ChatRequest } from '@/types/api';
 
 /**
  * The chat endpoints. Nothing else in the app knows these URLs.
@@ -143,8 +143,18 @@ export function parseFrame(block: string): ChatEvent | null {
   }
 
   switch (name) {
-    case 'open':
-      return { type: 'open', model: (payload as { model?: string | null }).model ?? null };
+    case 'open': {
+      const open = payload as { model?: string | null; contextWindow?: number | null };
+
+      return { type: 'open', model: open.model ?? null, contextWindow: open.contextWindow ?? null };
+    }
+    case 'status': {
+      const phase = (payload as { phase?: string }).phase;
+
+      // An unknown phase is dropped rather than rendered: the vocabulary is closed on the server, and a
+      // frontend that guessed at a new one would print a raw slug at a user.
+      return phase === undefined ? null : { type: 'status', phase: phase as ChatPhase };
+    }
     case 'grounding':
       return { type: 'grounding', grounding: payload as ChatGrounding };
     case 'delta':

@@ -1,7 +1,10 @@
 import {
+  BACKTICK_PATTERN,
   CITATION_PATTERN,
+  COORDINATE_PATTERN,
   IDENTIFIER_PATTERN,
   citationIds,
+  isArtefactShaped,
   trimIdentifier,
   type Citation,
   type ContextProjection,
@@ -21,6 +24,17 @@ export interface GroundingReport {
   readonly citations: readonly Citation[];
   /** Identifiers the answer named that were not in the projection. */
   readonly fabricatedIdentifiers: readonly string[];
+  /**
+   * Repository names the answer claimed that no fact carried.
+   *
+   * Packages, frameworks, technologies and dependencies — the things an answer about a repository is
+   * mostly made of, and which carry no `sym:` prefix to check them by. Kept apart from
+   * `fabricatedIdentifiers` because the two differ in how certain they are: an invented identifier is
+   * a fabrication with no defence, while an unsupported term may be a real thing the projection's
+   * budget simply did not reach. Both make an answer `ungrounded`; only one of them is the model's
+   * fault, and a reader deserves to be able to tell.
+   */
+  readonly unsupportedTerms: readonly string[];
   /** Fact ids the answer cited that the projection did not contain. */
   readonly unknownCitations: readonly string[];
 }
@@ -79,13 +93,89 @@ export function checkGrounding(answer: string, projection: ContextProjection): G
     }
   }
 
+  const unsupportedTerms = checkTerms(answer, projection);
+
   const verdict: GroundingVerdict =
-    fabricated.length > 0 || unknownCitations.length > 0 ? 'ungrounded' : citations.length > 0 ? 'grounded' : 'unverifiable';
+    fabricated.length > 0 || unknownCitations.length > 0 || unsupportedTerms.length > 0
+      ? 'ungrounded'
+      : citations.length > 0
+        ? 'grounded'
+        : 'unverifiable';
 
   return {
     verdict,
     citations,
     fabricatedIdentifiers: fabricated,
+    unsupportedTerms,
     unknownCitations,
   };
+}
+
+/**
+ * Names the answer claimed that the projection never carried.
+ *
+ * **Extends grounding past identifiers without extending it past what is decidable.** The guard's whole
+ * value is that it is deterministic and never wrong, so the candidate set is restricted to two shapes a
+ * model only writes when it means an artefact — a backtick span and a bare coordinate — and each
+ * candidate must additionally *look* like something a manifest or a filesystem produced before it is
+ * adjudicated. See `isArtefactShaped`.
+ *
+ * The failure this prevents is the characteristic one for a repository assistant: an answer that names
+ * plausible dependencies. A model told a repository is a JavaScript project will volunteer `express`
+ * and `lodash` because JavaScript projects have them, and before this nothing in the pipeline could
+ * contradict it — the claim carried no `ext:` prefix, so the identifier guard never looked at it.
+ *
+ * Deliberately *not* checked: prose claims about architecture and design. "The architecture is layered"
+ * is not adjudicable against a closed set, and reporting it would make the guard noise — which is the
+ * failure mode that gets a guard switched off.
+ */
+function checkTerms(answer: string, projection: ContextProjection): readonly string[] {
+  const unsupported: string[] = [];
+  const seen = new Set<string>();
+
+  const consider = (raw: string): void => {
+    const term = trimIdentifier(raw.trim());
+    const key = term.toLowerCase();
+
+    if (term === '' || seen.has(key) || !isArtefactShaped(term)) {
+      return;
+    }
+
+    seen.add(key);
+
+    // An identifier is the identifier guard's business, and reporting it twice would double-count one
+    // mistake across two fields.
+    if (IDENTIFIER_PATTERN.test(term)) {
+      IDENTIFIER_PATTERN.lastIndex = 0;
+
+      return;
+    }
+
+    IDENTIFIER_PATTERN.lastIndex = 0;
+
+    if (projection.terms.has(key)) {
+      return;
+    }
+
+    // A scoped or coordinate name may be written by its last segment — `@babel/core` as `core`. The
+    // projection records both forms, so a miss on the whole is checked against the part before it is
+    // called unsupported.
+    const tail = key.split(/[/:]/).at(-1);
+
+    if (tail !== undefined && tail !== key && projection.terms.has(tail)) {
+      return;
+    }
+
+    unsupported.push(term);
+  };
+
+  for (const match of answer.matchAll(BACKTICK_PATTERN)) {
+    consider(match[1] ?? '');
+  }
+
+  for (const match of answer.matchAll(COORDINATE_PATTERN)) {
+    consider(match[1] ?? '');
+  }
+
+  return unsupported;
 }

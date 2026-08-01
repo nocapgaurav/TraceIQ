@@ -59,6 +59,7 @@ export class IrBuilder {
         declarations,
         inlineExports: [],
         declarationIdByNode: new Map(),
+        topLevelIdByName: new Map(),
       };
 
       extractDeclarations({ file, fileId: id, repoRelativePath, sink });
@@ -78,7 +79,13 @@ export class IrBuilder {
 
       // Inline exports precede statement exports so a file's exports read in the
       // order a reader encounters them.
-      exports.push(...inlineExports, ...extractExports(file, id));
+      exports.push(
+        ...inlineExports,
+        ...extractExports(file, id, {
+          topLevelIdByName: sink.topLevelIdByName,
+          declarationIdByNode: sink.declarationIdByNode,
+        }),
+      );
       imports.push(...extractImports(file, id));
     }
 

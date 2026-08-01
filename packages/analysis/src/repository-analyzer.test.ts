@@ -27,7 +27,7 @@ class FixtureCloner implements GitCloner {
     this.seen = request;
     await this.write(request.destination);
 
-    return { ok: true, failure: null, stderr: '' };
+    return { ok: true, failure: null, stderr: '', bytes: 1024 };
   }
 }
 
@@ -98,8 +98,9 @@ describe('RepositoryAnalyzer', () => {
 
     expect(outcome.failure).toBeNull();
     expect(outcome.repository?.slug).toBe('example/fixture-repo');
-    // Real figures from the real pipeline, not a stub's.
-    expect(outcome.result?.files).toBe(2);
+    // Real figures from the real pipeline, not a stub's. Four files, not two: universal
+    // discovery records the package.json and tsconfig.json alongside the two sources.
+    expect(outcome.result?.files).toBe(4);
     expect(outcome.result?.declarations).toBeGreaterThan(0);
     expect(outcome.result?.nodes).toBeGreaterThan(0);
     expect(outcome.result?.edges).toBeGreaterThan(0);
@@ -182,7 +183,7 @@ describe('RepositoryAnalyzer', () => {
       const analyzer = new RepositoryAnalyzer({
         probe: OFFLINE_PROBE,
         cloner: new FailingCloner({
-          ok: false,
+          ok: false, bytes: null,
           stderr: '',
           failure: { code: 'repository-not-found', detail: 'gone', hint: 'check the spelling' },
         }),
@@ -204,11 +205,32 @@ describe('RepositoryAnalyzer', () => {
       expect(stages.filter((stage) => stage.status === 'skipped').length).toBeGreaterThan(0);
     });
 
-    it('reports a repository with no TypeScript as unsupported, not as a crash', async () => {
+    it('accepts a repository with no TypeScript rather than rejecting it', async () => {
+      // The behaviour this milestone exists to change. A documentation repository used to
+      // fail with "not a TypeScript repository"; it now scans, and its structure,
+      // languages and configuration are described.
       const analyzer = new RepositoryAnalyzer({
         probe: OFFLINE_PROBE,
         cloner: new FixtureCloner(async (destination) => {
-          await writeFile(path.join(destination, 'README.md'), '# nothing to analyse');
+          await writeFile(path.join(destination, 'README.md'), '# a handbook');
+        }),
+      });
+
+      const outcome = await analyzer.analyze({
+        url: 'example/docs',
+        databasePath,
+        createdAt: '1970-01-01T00:00:00.000Z',
+      });
+
+      expect(outcome.failure).toBeNull();
+      expect(outcome.result?.files).toBe(1);
+    });
+
+    it('reports a repository with no files at all as empty', async () => {
+      const analyzer = new RepositoryAnalyzer({
+        probe: OFFLINE_PROBE,
+        cloner: new FixtureCloner(async () => {
+          // Nothing written: an empty checkout is the one thing still refused.
         }),
       });
 
@@ -218,11 +240,8 @@ describe('RepositoryAnalyzer', () => {
         createdAt: '1970-01-01T00:00:00.000Z',
       });
 
-      // The pipeline refuses it — "detected as 'unknown', not TypeScript" — and that has to reach the
-      // user as a supported-languages message rather than as a pipeline crash.
-      expect(outcome.failure?.code).toBe('unsupported-repository');
-      expect(outcome.failure?.detail).toMatch(/is not a TypeScript repository/);
-      expect(outcome.failure?.hint).toMatch(/\.ts or \.tsx sources/);
+      expect(outcome.failure?.code).toBe('empty-repository');
+      expect(outcome.failure?.detail).toMatch(/contains no files/);
     });
   });
 
@@ -251,7 +270,7 @@ describe('RepositoryAnalyzer', () => {
           clone: async (request) => {
             destination = request.destination;
 
-            return { ok: false, stderr: '', failure: { code: 'clone-failed', detail: 'no', hint: 'no' } };
+            return { ok: false, bytes: null, stderr: '', failure: { code: 'clone-failed', detail: 'no', hint: 'no' } };
           },
         },
       });

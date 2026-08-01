@@ -1,4 +1,5 @@
-import type { RepositoryGraphApi } from '@traceiq/graph-api';
+import type { LanguageAnalyzer } from '@traceiq/analyzer';
+import type { AnalysisDepth, RepositoryGraphApi } from '@traceiq/graph-api';
 
 /** What a scan produced, as counts rather than as the graph itself. */
 export interface ScanSummary {
@@ -15,6 +16,24 @@ export interface ScanSummary {
   readonly externalPackages: number;
   readonly callEdges: number;
   readonly unresolvedCalls: number;
+  /** Language distribution across the repository, by file count descending. */
+  readonly languages: readonly { readonly language: string; readonly files: number }[];
+  /** Technology regions discovered. At least one for any repository containing files. */
+  readonly regions: number;
+  readonly manifests: number;
+  /** Distinct dependency names declared across every manifest. */
+  readonly declaredDependencies: number;
+  /** The deepest analysis reached anywhere in the repository. */
+  readonly depth: AnalysisDepth;
+  readonly isPolyglot: boolean;
+  /**
+   * Analysers that threw, and what they said.
+   *
+   * Empty for a clean scan. Non-empty means the scan still succeeded — the regions those analysers
+   * would have covered are reported at discovery depth — so a caller that wants to surface the
+   * failure has it, and one that does not still gets a usable graph.
+   */
+  readonly analyzerFailures: readonly { readonly analyzer: string; readonly failure: string }[];
 }
 
 /**
@@ -31,6 +50,13 @@ export interface RepositorySession {
 
 export interface ScanInput {
   readonly repositoryPath: string;
+  /**
+   * The analysers to run. Defaults to `DEFAULT_ANALYZERS`.
+   *
+   * Injectable so a test can register a deliberately failing analyser and prove that the rest of a
+   * polyglot repository still analyses.
+   */
+  readonly analyzers?: readonly LanguageAnalyzer[];
   readonly databasePath: string;
   /**
    * Stamped into the stored revision.
@@ -40,4 +66,12 @@ export interface ScanInput {
    * exposes it, so the graph a consumer sees is unaffected either way.
    */
   readonly createdAt: string;
+  /**
+   * Analyse even when the sources look unchanged since the last scan.
+   *
+   * The change check compares path, size and modification time, which misses an edit that preserves
+   * both size and timestamp. That is a deliberate trade — hashing content would cost a full read of
+   * the repository — and this is the way out for anyone who has hit it.
+   */
+  readonly force?: boolean;
 }

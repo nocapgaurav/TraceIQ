@@ -39,6 +39,22 @@ export interface AnalysisOutcome {
   readonly failure: AnalysisFailure | null;
   /** Non-null when the workspace could not be removed. Never fails a completed analysis. */
   readonly workspaceWarning: string | null;
+  /**
+   * What running it cost, where the executor can say.
+   *
+   * **Absent from an in-process analysis on purpose.** `process.cpuUsage()` in the API would report the
+   * server's CPU, not the analysis's — it would include every request served alongside it — and a
+   * number that means something else is worse than no number. A worker process has nothing else to do,
+   * so its own accounting *is* the analysis's cost.
+   */
+  readonly execution?: ExecutionCost;
+}
+
+export interface ExecutionCost {
+  /** Which worker ran it, for correlating with logs. */
+  readonly worker: string | null;
+  readonly cpuMs: number | null;
+  readonly peakRssBytes: number | null;
 }
 
 /** Called as the workflow moves. The runner uses it to keep a job's stage list current. */
@@ -194,7 +210,12 @@ export class RepositoryAnalyzer {
         return { repository, result: null, failure: clone.failure, workspaceWarning: null };
       }
 
-      progress.finish('clone', `${repository.slug} cloned`);
+      progress.finish(
+        'clone',
+        clone.bytes === null
+          ? `${repository.slug} cloned`
+          : `${repository.slug} cloned, ${formatBytes(clone.bytes)}`,
+      );
       progress.begin('scan');
 
       let summary;
@@ -265,6 +286,11 @@ export class RepositoryAnalyzer {
           callEdges: summary.callEdges,
           unresolvedCalls: summary.unresolvedCalls,
           unresolvedReferences: summary.unresolvedReferences,
+          languages: summary.languages,
+          regions: summary.regions,
+          depth: summary.depth,
+          isPolyglot: summary.isPolyglot,
+          analyzerFailures: summary.analyzerFailures,
         },
         failure: null,
         workspaceWarning: null,
@@ -279,6 +305,7 @@ export class RepositoryAnalyzer {
       label: STAGE_LABELS[name],
       status: 'pending' as const,
       detail: null,
+      elapsedMs: null,
     }));
   }
 }
@@ -293,26 +320,65 @@ export class RepositoryAnalyzer {
 class StageTracker {
   #stages: AnalysisStage[] = [...RepositoryAnalyzer.initialStages()];
 
-  constructor(private readonly onChange: StageListener) {}
+  /**
+   * When the currently active stage began.
+   *
+   * A single stage covers the whole graph build and can run for minutes on a large repository. A
+   * reader watching a stage list with no clock on it cannot tell working from stalled, so each stage
+   * carries the time it has been running. It is elapsed time, never a percentage: the pipeline reports
+   * no progress of its own and a bar would have to invent one.
+   */
+  #startedAt: number | null = null;
+
+  constructor(
+    private readonly onChange: StageListener,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
 
   begin(name: AnalysisStageName): void {
+    this.#startedAt = this.now();
     this.#set(name, 'active', null);
   }
 
   finish(name: AnalysisStageName, detail: string | null): void {
     this.#set(name, 'done', detail);
+    this.#startedAt = null;
   }
 
   fail(name: AnalysisStageName, detail: string): void {
     this.#set(name, 'failed', detail);
     this.#stages = this.#stages.map((stage) => (stage.status === 'pending' ? { ...stage, status: 'skipped' } : stage));
+    this.#startedAt = null;
     this.onChange([...this.#stages]);
   }
 
   #set(name: AnalysisStageName, status: AnalysisStage['status'], detail: string | null): void {
-    this.#stages = this.#stages.map((stage) => (stage.name === name ? { ...stage, status, detail } : stage));
+    const elapsedMs = this.#startedAt === null ? null : this.now() - this.#startedAt;
+
+    this.#stages = this.#stages.map((stage) =>
+      stage.name === name ? { ...stage, status, detail, elapsedMs } : stage,
+    );
     this.onChange([...this.#stages]);
   }
+}
+
+/**
+ * A byte count a reader can hold in their head.
+ *
+ * Binary units, because that is what a filesystem reports and a repository is measured against a disk
+ * rather than against a marketing figure.
+ */
+function formatBytes(bytes: number): string {
+  const units = ['B', 'KiB', 'MiB', 'GiB'];
+  let value = bytes;
+  let unit = 0;
+
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+
+  return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
 }
 
 /**
@@ -335,22 +401,17 @@ function classifyScan(cause: unknown, repository: GitHubRepository): AnalysisFai
   }
 
   /*
-   * The one the product hits most: someone pastes a repository that is not TypeScript.
+   * The only repository TraceIQ still refuses.
    *
-   * Matched against the message the Project Host actually produces — "the repository was detected as
-   * 'unknown', not TypeScript" — rather than against phrasing guessed in advance. This is a normal
-   * outcome, not a fault, so it says what TraceIQ supports instead of reading like a crash.
+   * A repository written in a language with no semantic analyser is **not** a failure any
+   * more: it is scanned, described and reported at `universal` depth. A checkout with no
+   * files at all has nothing to describe, and that is what this reports.
    */
-  if (
-    text.includes('not typescript') ||
-    text.includes("detected as 'unknown'") ||
-    text.includes('no typescript') ||
-    text.includes('no source files')
-  ) {
+  if (text.includes('contains no files')) {
     return {
-      code: 'unsupported-repository',
-      detail: `${repository.slug} is not a TypeScript repository, so there is nothing for TraceIQ to analyse.`,
-      hint: 'This version reads TypeScript projects only — a repository needs .ts or .tsx sources, and ideally a tsconfig.json. Try one such as facebook/react or openai/openai-node.',
+      code: 'empty-repository',
+      detail: `${repository.slug} contains no files, so there is nothing to describe.`,
+      hint: 'Check that the default branch is not empty. Any repository with files is accepted, whatever language it is written in.',
     };
   }
 

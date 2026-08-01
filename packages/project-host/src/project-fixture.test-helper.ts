@@ -51,6 +51,11 @@ export class ProjectFixture {
       lockfile: null,
       entryPoints: [],
       ignoredPaths: [],
+      workspacePackages: [],
+      files: [],
+      languages: [],
+      manifests: [],
+      regions: [],
       ...overrides,
     };
   }

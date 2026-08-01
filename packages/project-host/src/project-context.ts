@@ -38,15 +38,26 @@ export class ProjectContext {
   /** Repository-relative path to the tsconfig.json in use, or `null`. */
   readonly tsconfigPath: string | null;
 
+  /**
+   * How the compiler options in force were arrived at, in the order decided.
+   *
+   * Resolution quality depends on these options more than on anything else, so a thin
+   * scan is usually a configuration problem rather than an analysis one. These notes
+   * are what makes that diagnosable instead of guesswork.
+   */
+  readonly configurationNotes: readonly string[];
+
   constructor(input: {
     readonly project: Project;
     readonly rootPath: string;
     readonly tsconfigPath: string | null;
     /** Repository-relative path to source file, in inventory order. */
     readonly sourceFilesByPath: ReadonlyMap<string, SourceFile>;
+    readonly configurationNotes?: readonly string[];
   }) {
     this.rootPath = input.rootPath;
     this.tsconfigPath = input.tsconfigPath;
+    this.configurationNotes = input.configurationNotes ?? [];
 
     this.#project = input.project;
     this.#sourceFilesByPath = input.sourceFilesByPath;

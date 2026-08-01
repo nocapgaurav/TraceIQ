@@ -1,5 +1,13 @@
 export type { RepositoryGraphApi } from './graph-api.js';
 export {
+  ANALYSIS_DEPTHS,
+  meetsDepth,
+  type AnalysisDepth,
+  type LanguageFileCount,
+  type RegionCapability,
+  type RepositoryCapabilities,
+} from './types.js';
+export {
   DECLARATION_NODE_KINDS,
   EXTERNAL_ID_KINDS,
   NODE_KINDS,

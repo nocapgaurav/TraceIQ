@@ -1,7 +1,7 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 
 import type { LanguageModel } from '@traceiq/ai';
-import { AnalysisRegistry, RepositoryAnalyzer } from '@traceiq/analysis';
+import { AnalysisRegistry, RepositoryAnalyzer, type AnalysisExecutor } from '@traceiq/analysis';
 
 import { ENDPOINTS, methodsFor, type Endpoint } from './endpoints.js';
 import {
@@ -52,11 +52,27 @@ export interface AppOptions {
    * GitHub. Omitted, the app builds its own with the real git cloner.
    */
   readonly analyses?: AnalysisRegistry;
+  /**
+   * Where analyses run. Omitted, they run in this process, which is what every test wants.
+   *
+   * The API's composition root supplies a process-backed one, because a graph build is synchronous and
+   * CPU-bound: measured on React, running it here left `GET /ping` over five seconds seven times and
+   * once at thirty.
+   */
+  readonly executor?: AnalysisExecutor;
+  /** How many analyses may run at once. One by default — an analysis peaks at 1.5 GB. */
+  readonly concurrency?: number;
+  /** How long one attempt may run before it is stopped as stuck. */
+  readonly analysisTimeoutMs?: number;
+  /** How many times a transient failure is retried. */
+  readonly retries?: number;
 }
 
 export interface TraceIqApp {
   readonly express: Express;
   readonly holder: GraphHolder;
+  /** Whether analyses actually run in a worker. Observed from the wiring, never from a flag. */
+  readonly analysisOutOfProcess: boolean;
   close(): void;
 }
 
@@ -80,14 +96,26 @@ export function createApp(options: AppOptions): TraceIqApp {
    *
    * Only on success: a failed analysis leaves the previous graph untouched and still correct.
    */
+  /**
+   * Where an analysis runs, and what happens to what it produced.
+   *
+   * The executor is injected rather than constructed here when the composition root supplies one: the
+   * API's own root forks a worker process, and a test drives the in-process analyzer over a fake cloner
+   * with no network. Either satisfies `AnalysisExecutor`, and nothing else about a job depends on which.
+   *
+   * `onSettled` is where a staged database becomes the live graph — or is deleted. A failed or cancelled
+   * analysis leaves the previous graph exactly as it was, which is the property that used to be missing:
+   * an analysis that died halfway had already overwritten a graph that worked.
+   */
   const analyses =
     options.analyses ??
     new AnalysisRegistry({
-      analyzer: new RepositoryAnalyzer(analyzerLimits()),
+      analyzer: options.executor ?? new RepositoryAnalyzer(analyzerLimits()),
+      concurrency: options.concurrency ?? 1,
+      ...(options.analysisTimeoutMs === undefined ? {} : { timeoutMs: options.analysisTimeoutMs }),
+      retries: options.retries ?? 1,
       onSettled: (job) => {
-        if (job.status === 'succeeded') {
-          holder.reopen();
-        }
+        holder.settle(job.id, job.status === 'succeeded');
       },
     });
   const log = options.log ?? (() => {});
@@ -148,7 +176,15 @@ export function createApp(options: AppOptions): TraceIqApp {
   // 4. Every endpoint, from the one table.
   for (const endpoint of ENDPOINTS) {
     app[endpoint.method](endpoint.path, (request, response, next) => {
-      void handle(endpoint, request, response, holder, options.model ?? null, analyses).catch(next);
+      void handle(
+        endpoint,
+        request,
+        response,
+        holder,
+        options.model ?? null,
+        analyses,
+        options.executor !== undefined,
+      ).catch(next);
     });
   }
 
@@ -177,6 +213,8 @@ export function createApp(options: AppOptions): TraceIqApp {
   return {
     express: app,
     holder,
+    // Recorded rather than asserted: the one thing `/healthz` must never do is repeat an intention.
+    analysisOutOfProcess: options.executor !== undefined,
     close: () => {
       holder.close();
     },
@@ -208,6 +246,7 @@ async function handle(
   holder: GraphHolder,
   model: LanguageModel | null,
   analyses: AnalysisRegistry,
+  analysisOutOfProcess: boolean,
 ): Promise<void> {
   // Aborted when the client disconnects, so a cancelled request actually stops the model generating rather
   // than leaving a local model burning CPU for an answer nobody will read.
@@ -230,6 +269,7 @@ async function handle(
     query: readQuery(request.query),
     body: request.body,
     holder,
+    analysisOutOfProcess,
     model,
     signal: controller.signal,
     analyses,

@@ -8,7 +8,7 @@ import { Resolver, type ResolvedRepository } from '@traceiq/resolver';
 import type { RepositoryInventory } from '@traceiq/scanner';
 
 import { CallGraphResolver } from './call-graph-resolver.js';
-import type { CallGraph, CallRelationship, UnresolvedCall } from './types.js';
+import type { CallGraph, CallRelationship, ExternalCall, UnresolvedCall } from './types.js';
 
 export type FixtureFiles = Readonly<Record<string, string>>;
 
@@ -38,7 +38,23 @@ export class CallGraphFixture {
     readonly callGraph: CallGraph,
   ) {}
 
+  /**
+   * Builds the call graph with the name rules only.
+   *
+   * The default, because it is what the rules under test were written against: passing a
+   * context would let the checker bind first and most of these cases would never reach
+   * the rule they are meant to exercise.
+   */
   static async create(files: FixtureFiles): Promise<CallGraphFixture> {
+    return CallGraphFixture.build(files, false);
+  }
+
+  /** Builds it with the type checker tier enabled, as the pipeline does. */
+  static async createChecked(files: FixtureFiles): Promise<CallGraphFixture> {
+    return CallGraphFixture.build(files, true);
+  }
+
+  private static async build(files: FixtureFiles, checked: boolean): Promise<CallGraphFixture> {
     const rootPath = await mkdtemp(path.join(tmpdir(), 'traceiq-call-graph-'));
 
     for (const [relativePath, contents] of Object.entries({ 'tsconfig.json': TSCONFIG, ...files })) {
@@ -54,13 +70,20 @@ export class CallGraphFixture {
       language: 'typescript',
       framework: 'unknown',
       packageManager: 'unknown',
-      sourceFiles: Object.keys(files).sort(),
+      sourceFiles: Object.keys(files)
+        .filter((entry) => !entry.startsWith('node_modules/'))
+        .sort(),
       directories: [],
       tsconfigPath: 'tsconfig.json',
       packageJsonPath: null,
       lockfile: null,
       entryPoints: [],
       ignoredPaths: [],
+      workspacePackages: [],
+      files: [],
+      languages: [],
+      manifests: [],
+      regions: [],
     };
 
     const context = new ProjectHost().load(inventory);
@@ -73,7 +96,7 @@ export class CallGraphFixture {
         rootPath,
         ir,
         resolved,
-        new CallGraphResolver().resolve({ ir, resolved }),
+        new CallGraphResolver().resolve(checked ? { ir, resolved, context } : { ir, resolved }),
       );
     } finally {
       context.dispose();
@@ -96,6 +119,10 @@ export class CallGraphFixture {
 
   unresolved(calleeText: string): UnresolvedCall | undefined {
     return this.callGraph.unresolved.find((entry) => entry.calleeText === calleeText);
+  }
+
+  externalCall(calleeText: string): ExternalCall | undefined {
+    return this.callGraph.externalCalls.find((entry) => entry.calleeText === calleeText);
   }
 
   async remove(): Promise<void> {

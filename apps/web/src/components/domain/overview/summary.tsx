@@ -6,6 +6,7 @@ import { Fact, OverviewSection, Unavailable } from '@/components/domain/overview
 import { Card } from '@/components/ui/card';
 import { count, pluralise } from '@/lib/format';
 import type { RepositoryProfile } from '@/lib/repository-profile';
+import type { AnalysisDepth } from '@/types/api';
 import { routes } from '@/lib/routes';
 
 /**
@@ -40,6 +41,30 @@ export function RepositorySummary({ profile }: { readonly profile: RepositoryPro
 
           <Fact label="Languages" evidence={profile.languages.evidence}>
             <TagList items={profile.languages.value} />
+          </Fact>
+
+          <Fact label="Analysis depth" evidence={profile.depth.evidence}>
+            <DepthBadge depth={profile.depth.value} />
+            {profile.regions.length === 0 ? null : (
+              <ul className="mt-2 flex flex-col gap-1.5">
+                {profile.regions.map((region) => (
+                  <li key={region.label} className="flex flex-col gap-0.5">
+                    <span className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      <span className="font-mono text-xs">{region.label}</span>
+                      <span className="text-[11px] text-muted-foreground">
+                        {region.language ?? 'no dominant source language'} ·{' '}
+                        {pluralise(region.sourceFiles, 'source file')} of {pluralise(region.files, 'file')}
+                      </span>
+                      <DepthBadge depth={region.depth} />
+                    </span>
+                    {/* The API's own words. A region at `universal` depth has no declarations, calls or
+                        types, and a reader seeing zero of each deserves to be told which of the two
+                        reasons applies rather than left to assume the code has no dependencies. */}
+                    <span className="text-[11px] leading-relaxed text-muted-foreground">{region.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </Fact>
 
           <Fact
@@ -116,6 +141,29 @@ export function RepositorySummary({ profile }: { readonly profile: RepositoryPro
         </dl>
       </Card>
     </OverviewSection>
+  );
+}
+
+/**
+ * The depth a region reached, as a badge.
+ *
+ * Colour carries the same ordering the vocabulary does, so `universal` is visibly the shallowest rather
+ * than merely a different word. Text accompanies it everywhere — colour is never the only signal.
+ */
+function DepthBadge({ depth }: { readonly depth: AnalysisDepth }) {
+  const tone: Readonly<Record<AnalysisDepth, string>> = {
+    universal: 'border-border text-muted-foreground',
+    structural: 'border-border text-foreground',
+    semantic: 'border-primary/40 text-foreground',
+    framework: 'border-primary/60 text-foreground',
+  };
+
+  return (
+    <span
+      className={`inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${tone[depth]}`}
+    >
+      {depth}
+    </span>
   );
 }
 

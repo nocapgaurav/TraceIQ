@@ -1,4 +1,5 @@
 import type { AnalysisJob, Overview } from '@/types/api';
+import { languageName } from './repository-profile';
 
 /**
  * Which repository is this, and what is known about it?
@@ -61,17 +62,53 @@ export function deriveIdentity(analysis: AnalysisJob | null, overview: Overview)
   }
 
   /*
-   * Language is a property of the analysis, not a detection.
+   * Language, from the scan's own file counts.
    *
-   * The scanner reads TypeScript projects and refuses anything else — a repository detected as anything
-   * other than TypeScript fails before a graph exists. So every loaded graph is TypeScript by
-   * construction, and saying so is honest where claiming to have detected it would not be.
+   * **This said `TypeScript`, always.** The reasoning was sound when written — the scanner refused
+   * anything else, so every graph was TypeScript by construction — and it stopped being true the moment
+   * discovery became universal. Found by opening the page against a Spring repository, which introduced
+   * itself as a TypeScript project in its own heading while the paragraph below it correctly said "a Java
+   * monorepo". A unit test on the profile could not catch it: this is a different derivation.
+   *
+   * **The most numerous language is not always the one the repository is written in.** Flask ships 85
+   * markdown files against 83 Python ones, so this said `Markdown` — directly above a paragraph
+   * correctly calling it a Python project, and beside a depth card explaining what the *Python*
+   * analyser found. Found the same way as the TypeScript defect above: by opening the page.
+   *
+   * So the analysed languages come first. A region records the language an analyser actually read, and
+   * a language with a region is one the graph has semantics for; documentation and configuration never
+   * do. Among those, the most files wins, and the file-count ordering is the fallback for a repository
+   * no analyser covered — where naming its commonest extension is the best that can be said.
    */
-  fields.push({
-    label: 'Language',
-    value: 'TypeScript',
-    evidence: 'the analysis reads TypeScript projects only',
-  });
+  const languages = overview.capabilities.languages;
+  // A region reaching `semantic` or better means an analyser read it, and its primary language is
+  // what that analyser was reading. `universal` regions are discovery only and prove nothing.
+  const analysed = new Set(
+    overview.capabilities.regions
+      .filter((region) => region.depth === 'semantic' || region.depth === 'framework')
+      .map((region) => region.primaryLanguage)
+      .filter((language): language is string => language !== null),
+  );
+  const dominant = languages.find((entry) => analysed.has(entry.language)) ?? languages[0];
+
+  if (dominant !== undefined) {
+    const others = languages.filter((entry) => entry.language !== dominant.language);
+    const total = languages.reduce((sum, entry) => sum + entry.files, 0);
+
+    fields.push({
+      label: 'Language',
+      value: languageName(dominant.language),
+      evidence:
+        others.length === 0
+          ? `${dominant.files} files, by extension`
+          : `${dominant.files} of ${total} files${analysed.has(dominant.language) ? ', and the language an analyser read' : ', by extension'}; also ${others
+              .slice(0, 3)
+              .map((entry) => languageName(entry.language))
+              .join(', ')}`,
+    });
+  } else {
+    unknown.push('Language');
+  }
 
   /*
    * Visibility, where it is genuinely knowable.
@@ -91,20 +128,26 @@ export function deriveIdentity(analysis: AnalysisJob | null, overview: Overview)
   }
 
   /*
-   * Framework.
+   * Framework, as far as recorded routes can say.
    *
-   * Route extraction understands Express conventions and no others, so recorded routes mean Express was
-   * recognised. With none recorded nothing follows — a repository may use a framework this version does
-   * not read — so the field degrades rather than claiming "none".
+   * **This said `Express`, always.** Route extraction now reads Express, Flask, FastAPI, Spring, Jakarta
+   * and four Go routers, so naming one of them from the route count alone would be a coin toss — a
+   * Spring repository was labelled Express on the strength of its 16 endpoints. The API reports the
+   * *outcome* of extraction, not which extractor produced it, so this states the outcome and stops
+   * there. Naming the framework belongs to whichever analyser had the evidence, and it does not reach
+   * this surface yet.
+   *
+   * With no routes recorded nothing follows — a repository may use a framework no extractor reads — so
+   * the field degrades rather than claiming "none".
    */
   if (overview.repository.routes > 0) {
     fields.push({
-      label: 'Framework',
-      value: 'Express',
-      evidence: `${overview.repository.routes} HTTP routes recorded; route extraction reads Express conventions`,
+      label: 'HTTP routing',
+      value: `${overview.repository.routes} ${overview.repository.routes === 1 ? 'route' : 'routes'}`,
+      evidence: 'endpoints recorded by framework extraction, which does not report which framework',
     });
   } else {
-    unknown.push('Framework');
+    unknown.push('HTTP routing');
   }
 
   // The scanner detects the package manager from the lockfile, but nothing carries it into the graph, so

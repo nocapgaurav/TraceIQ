@@ -62,11 +62,39 @@ function context(): RepositoryContext {
         overview: {
           repository: { files: 12, declarations: 40, routes: 1 },
           graph: { nodes: 60, edges: 200, unresolvedReferences: 3 },
+          packages: {
+            entries: [{ name: 'src', files: 12, declarations: 40, dependencies: 0, dependents: 0 }],
+            total: 1,
+            truncated: false,
+          },
         },
-        architecture: {},
-        hotspots: {},
+        architecture: {
+          controllers: { entries: [], total: 0, truncated: false },
+          services: { entries: [], total: 0, truncated: false },
+          repositories: { entries: [], total: 0, truncated: false },
+          middleware: { entries: [], total: 0, truncated: false },
+          models: { entries: [], total: 0, truncated: false },
+          tests: { entries: [], total: 0, truncated: false },
+        },
+        hotspots: {
+          mostReferenced: { entries: [], total: 0, truncated: false },
+          mostConnectedFiles: { entries: [], total: 0, truncated: false },
+        },
       },
     },
+    // Present on every context, and projected for every kind — including this one. Until the technology
+    // extractor was split out, the repository kind returned from `identity` before reaching them, so
+    // "what technologies are used" was unanswerable about a repository and answerable about a symbol.
+    technologies: [
+      {
+        id: 'tech:typescript',
+        name: 'TypeScript',
+        category: 'build',
+        regionPath: '',
+        confidence: 'CERTAIN',
+        evidence: 'tsconfig.json is present',
+      },
+    ],
     related: [],
     references: { incomingCalls: [], outgoingCalls: [], references: [], typeReferences: [] },
     dependencies: { view: null, externalPackages: [], environmentVariables: [], cycles: null },
@@ -75,6 +103,25 @@ function context(): RepositoryContext {
     health: { report: null, subject: null },
     limitations: [{ code: 'capped-lists', detail: 'lists are capped', affected: 7 }],
     provenance: { producer: 'context', parts: [], subject: null },
+    // Carried on every context now, so the model can be told what the repository is made of and how
+    // deeply each part was read.
+    capabilities: {
+      depth: 'semantic',
+      isPolyglot: false,
+      languages: [{ language: 'typescript', files: 12 }],
+      regions: [
+        {
+          path: '',
+          primaryLanguage: 'typescript',
+          languages: [{ language: 'typescript', files: 12 }],
+          ecosystems: ['npm'],
+          fileCount: 12,
+          sourceFileCount: 12,
+          depth: 'semantic',
+          reason: 'the TypeScript compiler read these sources',
+        },
+      ],
+    },
     statistics: { capabilityCalls: {}, totalCapabilityCalls: 0, relatedNodes: 0, explainedNodes: 0, referenceEdges: 0 },
   } as unknown as RepositoryContext;
 }

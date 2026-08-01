@@ -11,7 +11,15 @@ packages:
 #
 # sharp is Next's optional image optimiser. Approved so `pnpm install` exits clean rather
 # than erroring on an ignored build; no code here uses next/image.
+#
+# Each tree-sitter grammar ships both a native addon and a prebuilt `.wasm`. TraceIQ
+# loads only the WASM, through web-tree-sitter, so the native build is denied: compiling a C parser
+# at install time would need a toolchain, would slow every install, and would produce a binding
+# nothing imports. Denying it keeps `pnpm install` fast and portable.
 allowBuilds:
   better-sqlite3: true
   esbuild: true
   sharp: true
+  tree-sitter-python: false
+  tree-sitter-java: false
+  tree-sitter-go: false

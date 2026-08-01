@@ -23,14 +23,48 @@ import { OllamaModel } from './ollama-model.js';
 export interface OllamaOptions {
   /** Where the daemon is listening. Defaults to Ollama's documented local address. */
   readonly baseUrl?: string;
-  /** No token within this long is a timeout. A local model on a cold start can be slow to first token. */
+  /** No token within this long, once tokens have started, is a timeout. */
   readonly idleTimeoutMs?: number;
+  /** Nothing at all within this long is a timeout. Covers prompt evaluation before the first token. */
+  readonly firstTokenTimeoutMs?: number;
+  /**
+   * The largest runtime context to ask the daemon for, whatever the model claims it was trained with.
+   *
+   * A ceiling rather than a setting: the window used is `min(this, what the model reports)`, so naming
+   * a big number here never asks a small model for a context it cannot hold.
+   */
+  readonly maxContextWindow?: number;
   /** Injectable so the contract tests can drive a stub with no daemon and no network. */
   readonly fetch?: typeof globalThis.fetch;
 }
 
 export const DEFAULT_BASE_URL = 'http://127.0.0.1:11434';
 export const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
+
+/**
+ * How long the provider waits for the very first token.
+ *
+ * Sized from measurement rather than taste. Prompt evaluation on the reference stack — a 7B model,
+ * CPU only, in a container — runs at **45.75 tokens per second**, so a prompt filling a 16,384-token
+ * window would take close to six minutes before a single token came back. Six minutes is not a
+ * product, but *failing at two* would report a working provider as broken, so the deadline is set
+ * above the worst case the budget can produce and the wait is made visible instead of short.
+ */
+export const DEFAULT_FIRST_TOKEN_TIMEOUT_MS = 420_000;
+
+/**
+ * The largest runtime context this provider will ask for by default.
+ *
+ * **Not the model's trained context length, and the difference is the point.** A window costs memory
+ * for its key/value cache whether or not it is filled, and — because the projection is budgeted from
+ * this number — it costs *latency* directly: at the measured 45.75 tokens per second, every 1,000
+ * tokens of prompt is another 22 seconds before the answer starts. 16,384 leaves the `standard` tier
+ * (6,000 fact tokens plus scaffolding, question and room to answer) fitting comfortably with the
+ * runtime honouring every token of it, which is the property that was missing.
+ *
+ * Raise it with `maxContextWindow` where the deployment has the memory and the patience.
+ */
+export const DEFAULT_MAX_CONTEXT_WINDOW = 16_384;
 
 /** A model as `/api/tags` reports it. Only the fields actually read are declared. */
 interface TagLine {
@@ -58,11 +92,15 @@ export class OllamaProvider implements ModelProvider {
 
   readonly #baseUrl: string;
   readonly #idleTimeoutMs: number;
+  readonly #firstTokenTimeoutMs: number;
+  readonly #maxContextWindow: number;
   readonly #fetch: typeof globalThis.fetch;
 
   constructor(options?: OllamaOptions) {
     this.#baseUrl = (options?.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
     this.#idleTimeoutMs = options?.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+    this.#firstTokenTimeoutMs = options?.firstTokenTimeoutMs ?? DEFAULT_FIRST_TOKEN_TIMEOUT_MS;
+    this.#maxContextWindow = options?.maxContextWindow ?? DEFAULT_MAX_CONTEXT_WINDOW;
     this.#fetch = options?.fetch ?? globalThis.fetch;
   }
 
@@ -112,10 +150,16 @@ export class OllamaProvider implements ModelProvider {
   }
 
   /**
-   * A model, with its real context window where the provider will say.
+   * A model, with the context window it will genuinely be run with.
    *
-   * The window is asked for rather than assumed because it decides the budget tier, and being wrong about
-   * it is the difference between a full projection and a rejected prompt.
+   * **The window reported here is the window requested at generation time**, because the budget is
+   * computed from the first and the prompt is truncated against the second. Reporting the model's
+   * trained length while letting the daemon pick something smaller is what silently discarded most of
+   * every prompt; see `OllamaModelOptions.contextWindow`.
+   *
+   * `min(trained, ceiling)` — the model's own figure is an upper bound on what it can be asked for, and
+   * the ceiling is an upper bound on what this deployment is willing to pay for in memory and in
+   * time-to-first-token.
    */
   async model(id: string): Promise<LanguageModel> {
     if (id.trim() === '') {
@@ -123,13 +167,15 @@ export class OllamaProvider implements ModelProvider {
     }
 
     const show = await this.#show(id);
+    const trained = contextWindowOf(show) ?? FALLBACK_CONTEXT_WINDOW;
 
     return new OllamaModel({
       baseUrl: this.#baseUrl,
       id,
-      contextWindow: contextWindowOf(show) ?? FALLBACK_CONTEXT_WINDOW,
+      contextWindow: Math.min(trained, this.#maxContextWindow),
       maxOutputTokens: null,
       idleTimeoutMs: this.#idleTimeoutMs,
+      firstTokenTimeoutMs: this.#firstTokenTimeoutMs,
       fetch: this.#fetch,
     });
   }

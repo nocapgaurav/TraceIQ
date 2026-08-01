@@ -1,4 +1,12 @@
-import type { GraphEdge, GraphNode, GraphRole, GraphUnresolvedReference, NodeKind, RepositoryGraphApi } from '@traceiq/graph-api';
+import type {
+  GraphEdge,
+  GraphNode,
+  GraphRole,
+  GraphUnresolvedReference,
+  NodeKind,
+  RepositoryCapabilities,
+  RepositoryGraphApi,
+} from '@traceiq/graph-api';
 import type { NodeId, RelationshipType } from '@traceiq/types';
 
 /**
@@ -25,6 +33,7 @@ export class CachingGraph implements RepositoryGraphApi {
   readonly #roles = new Map<NodeId, readonly GraphRole[]>();
 
   #unresolved: readonly GraphUnresolvedReference[] | null = null;
+  #capabilities: RepositoryCapabilities | null = null;
 
   /** Calls that reached the underlying graph. */
   readonly calls = {
@@ -36,6 +45,7 @@ export class CachingGraph implements RepositoryGraphApi {
     getNodes: 0,
     getRoles: 0,
     getUnresolved: 0,
+    getCapabilities: 0,
   };
 
   /** Calls the cache answered without touching the graph. */
@@ -153,6 +163,23 @@ export class CachingGraph implements RepositoryGraphApi {
     this.#roles.set(nodeId, roles);
 
     return roles;
+  }
+
+  /**
+   * Delegated and memoised like every other read.
+   *
+   * Capabilities are consulted by most surfaces before they render anything, so this is
+   * one of the hotter reads despite being the smallest.
+   */
+  getCapabilities(): RepositoryCapabilities {
+    if (this.#capabilities === null) {
+      this.calls.getCapabilities += 1;
+      this.#capabilities = this.#api.getCapabilities();
+    } else {
+      this.#hits += 1;
+    }
+
+    return this.#capabilities;
   }
 
   getUnresolved(): readonly GraphUnresolvedReference[] {

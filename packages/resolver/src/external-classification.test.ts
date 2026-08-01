@@ -60,6 +60,7 @@ describe('classifyExternalFile', () => {
     expect(classifyExternalFile('/repo/node_modules/express/index.d.ts')).toEqual({
       origin: 'package',
       name: 'express',
+      ecosystem: 'npm',
     });
   });
 
@@ -71,13 +72,14 @@ describe('classifyExternalFile', () => {
     // The specific lib file is deliberately not recorded: a built-in is declared
     // across several, and naming the file would make one type look like several
     // ambiguous candidates.
-    expect(classifyExternalFile(filePath)).toEqual({ origin: 'typescript-lib', name: null });
+    expect(classifyExternalFile(filePath)).toEqual({ origin: 'language-builtin', name: null, ecosystem: null });
   });
 
   it('classifies an unrecognised outside file', () => {
     expect(classifyExternalFile('/somewhere/else/thing.d.ts')).toEqual({
       origin: 'outside-analysis',
       name: null,
+      ecosystem: null,
     });
   });
 
@@ -85,6 +87,7 @@ describe('classifyExternalFile', () => {
     expect(classifyExternalFile('C:\\repo\\node_modules\\express\\index.d.ts')).toEqual({
       origin: 'package',
       name: 'express',
+      ecosystem: 'npm',
     });
   });
 });
@@ -96,7 +99,7 @@ describe('classifyUnresolvedSpecifier', () => {
       // TypeScript never resolves a `node:` specifier to a file — its types come
       // from ambient declarations — so this path is the only one that sees them.
       expect(classifyUnresolvedSpecifier(specifier)).toEqual({
-        target: { kind: 'external', origin: 'node-builtin', name: specifier },
+        target: { kind: 'external', origin: 'standard-library', name: specifier , ecosystem: 'npm' },
         confidence: 'CERTAIN',
         evidence: expect.stringContaining('reserved'),
       });
@@ -106,7 +109,7 @@ describe('classifyUnresolvedSpecifier', () => {
   it('infers an uninstalled package from a bare specifier, without claiming certainty', () => {
     const classified = classifyUnresolvedSpecifier('express/lib/router');
 
-    expect(classified?.target).toEqual({ kind: 'external', origin: 'package', name: 'express' });
+    expect(classified?.target).toEqual({ kind: 'external', origin: 'package', name: 'express' , ecosystem: 'npm' });
     expect(classified?.confidence).toBe('INFERRED');
   });
 
@@ -115,6 +118,7 @@ describe('classifyUnresolvedSpecifier', () => {
       kind: 'external',
       origin: 'package',
       name: '@scope/pkg',
+      ecosystem: 'npm',
     });
   });
 

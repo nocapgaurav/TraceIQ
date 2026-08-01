@@ -1,7 +1,13 @@
 import type { FrameworkAnnotations } from '@traceiq/framework';
 import type { NodeId } from '@traceiq/types';
 
-import type { GraphEdge, GraphNode, GraphRole, GraphUnresolvedReference } from '@traceiq/graph-api';
+import type {
+  GraphEdge,
+  GraphNode,
+  GraphRole,
+  GraphUnresolvedReference,
+  RepositoryCapabilities,
+} from '@traceiq/graph-api';
 
 /**
  * The write payload.
@@ -19,11 +25,16 @@ export type {
   GraphRole,
   GraphUnresolvedReference,
   NodeKind,
+  AnalysisDepth,
+  RegionCapability,
+  RepositoryCapabilities,
 } from '@traceiq/graph-api';
 export {
+  ANALYSIS_DEPTHS,
   DECLARATION_NODE_KINDS,
   EXTERNAL_ID_KINDS,
   NODE_KINDS,
+  meetsDepth,
 } from '@traceiq/graph-api';
 export type { FrameworkAnnotations } from '@traceiq/framework';
 
@@ -32,7 +43,7 @@ export const NO_FRAMEWORK_ANNOTATIONS: FrameworkAnnotations = {
   framework: null,
   roles: [],
   routes: [],
-  environmentVariables: [],
+  environmentVariables: [], clientCalls: [],
 };
 
 export interface RepositoryGraph {
@@ -45,4 +56,13 @@ export interface RepositoryGraph {
   readonly edges: readonly GraphEdge[];
   readonly unresolved: readonly GraphUnresolvedReference[];
   readonly roles: readonly GraphRole[];
+  /**
+   * What this graph can answer, by technology region.
+   *
+   * Part of the graph rather than derived from it, because depth is decided by which
+   * analysers *ran* — a fact only the pipeline holds. Nothing in the stored nodes and
+   * edges could distinguish a region analysed and found to have no calls from one whose
+   * calls were never looked at.
+   */
+  readonly capabilities: RepositoryCapabilities;
 }

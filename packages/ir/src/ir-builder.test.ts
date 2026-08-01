@@ -181,6 +181,11 @@ describe('failure modes', () => {
         lockfile: null,
         entryPoints: [],
         ignoredPaths: [],
+        workspacePackages: [],
+      files: [],
+      languages: [],
+      manifests: [],
+      regions: [],
       });
 
       try {

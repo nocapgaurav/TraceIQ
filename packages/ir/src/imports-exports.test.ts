@@ -261,3 +261,126 @@ describe('default and equals exports', () => {
     expect(entry).toMatchObject({ kind: 'equals', exportedName: null, localName: 'legacy' });
   });
 });
+
+/**
+ * CommonJS exports.
+ *
+ * Carried forward as a known limitation through two milestones, and measurable: express reported
+ * **9** EXPORTS across 141 CommonJS files — its nine ES ones — so the public surface of every
+ * module in the framework most likely to be a JavaScript user's first scan was invisible.
+ *
+ * No new `ExportKind` was added. CommonJS states the same three things ES modules do, and mapping
+ * onto the existing vocabulary is what lets every downstream consumer read these without a branch.
+ */
+describe('CommonJS exports', () => {
+  let commonjs: IrFixture;
+
+  beforeAll(async () => {
+    commonjs = await IrFixture.create({
+      'src/util.js': `
+        function normalize(value) { return value; }
+        exports.normalize = normalize;
+        exports.compile = function compile(value) { return value; };
+        exports.parse = (value) => value;
+      `,
+      'src/router.js': `
+        function Router() {}
+        module.exports = Router;
+      `,
+      'src/pair.js': `
+        const first = 1;
+        function second() {}
+        module.exports = { first, second, aliased: second, 'quoted-name': second };
+      `,
+      'src/mixed.js': `
+        export const fromEs = 1;
+        module.exports.fromCjs = function () {};
+      `,
+      'src/forward.js': `
+        module.exports = require('./router');
+      `,
+      'src/forward-package.js': `
+        module.exports = require('express');
+      `,
+      'src/computed.js': `
+        exports.methods = ['a', 'b'].map((entry) => entry.toUpperCase());
+      `,
+      'src/conditional.js': `
+        if (process.env.X) { module.exports = 1; }
+        exports[String(1)] = 2;
+      `,
+    });
+  });
+
+  afterAll(async () => {
+    await commonjs.remove();
+  });
+
+  const named = (file: string): readonly string[] =>
+    commonjs
+      .exportsIn(file)
+      .filter((entry) => entry.kind === 'named')
+      .map((entry) => entry.exportedName ?? '')
+      .sort();
+
+  it('records exports.<name> for an identifier, a named function and an arrow', () => {
+    expect(named('src/util.js')).toEqual(['compile', 'normalize', 'parse']);
+  });
+
+  it('records module.exports = X as an equals export, matching export =', () => {
+    const entries = commonjs.exportsIn('src/router.js');
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'equals', exportedName: null, localName: 'Router' });
+  });
+
+  it('records one named export per property of an exported object literal', () => {
+    // Shorthand, a property, an alias and a quoted key. A computed key is not here, deliberately.
+    expect(named('src/pair.js')).toEqual(['aliased', 'first', 'quoted-name', 'second']);
+  });
+
+  it('records both module systems in a file that mixes them', () => {
+    expect(commonjs.exportsIn('src/mixed.js').map((entry) => entry.exportedName).sort()).toEqual([
+      'fromCjs',
+      'fromEs',
+    ]);
+  });
+
+  it('records a forwarded module as a star export carrying the specifier', () => {
+    expect(commonjs.exportsIn('src/forward.js')[0]).toMatchObject({
+      kind: 'star',
+      exportedName: null,
+      moduleSpecifier: './router',
+    });
+
+    expect(commonjs.exportsIn('src/forward-package.js')[0]?.moduleSpecifier).toBe('express');
+  });
+
+  it('records nothing for a conditional assignment or a computed name', () => {
+    // Both publish something a static reader cannot state: one depends on the environment, the
+    // other names an expression no importer could write.
+    expect(commonjs.exportsIn('src/conditional.js')).toHaveLength(0);
+  });
+
+  it('declares an exported function expression, as the ES form has always been', () => {
+    // `exports.compile = function compile(v) {}` declares a function in every sense a reader cares
+    // about. Its ES twin, `export const compile = function (v) {}`, has been a declaration since
+    // the IR existed.
+    expect(commonjs.declaration('src/util.js', 'compile')).toMatchObject({
+      kind: 'function',
+      modifiers: expect.objectContaining({ isExported: true }),
+    });
+
+    expect(commonjs.declaration('src/util.js', 'parse')?.kind).toBe('function');
+  });
+
+  it('declares nothing for an exported value that is a computation', () => {
+    // `exports.methods = METHODS.map(…)` publishes a value whose shape is a computation. It is a
+    // real export and is recorded as one; it declares nothing, and inventing a declaration for it
+    // would put a node in the graph with no source construct behind it.
+    expect(commonjs.exportsIn('src/computed.js').map((entry) => entry.exportedName)).toEqual([
+      'methods',
+    ]);
+    expect(commonjs.declaration('src/computed.js', 'methods')).toBeUndefined();
+  });
+});

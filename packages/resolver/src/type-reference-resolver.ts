@@ -1,6 +1,7 @@
 import type { NodeId } from '@traceiq/types';
 import { Node, type TypeNode, type TypeReferenceNode } from 'ts-morph';
 
+import { symbolAt } from './checker-symbol.js';
 import type { DeclarationIndex } from './declaration-index.js';
 import type { ResolutionCollector } from './resolution-collector.js';
 import { sourceRangeOf } from './source-position.js';
@@ -34,7 +35,7 @@ export function resolveTypeReferences(input: {
           resolver: 'type-references',
           fileId: input.fileId,
         },
-        resolveSymbol(name.getSymbol(), input.index),
+        resolveSymbol(symbolAt(name), input.index),
         name.getText(),
       );
     }

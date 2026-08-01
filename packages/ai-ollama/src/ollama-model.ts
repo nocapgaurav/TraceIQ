@@ -26,10 +26,37 @@ import { readNdjson } from './ndjson.js';
 export interface OllamaModelOptions {
   readonly baseUrl: string;
   readonly id: string;
+  /**
+   * The context the runtime will actually be given, and the number the budget is computed from.
+   *
+   * **These used to be two different numbers, and that was the single largest defect in the AI layer.**
+   * `/api/show` reports the *trained* context length — 32,768 for the model this was measured on — and
+   * the projection budgeted against it. The daemon, given no `num_ctx`, chooses its own and resizes it
+   * between requests; measured on a live stack, a 6,043-token prompt came back with
+   * `prompt_eval_count: 2050` and a 24,811-token prompt with the same 2,050. The excess is discarded
+   * from the **front**, so what is dropped is the system prompt and the highest-priority facts. Asked
+   * to repeat the first fact id of 300, the model answered `[f241]`; of 1,200, `[f1148]`. Every rule
+   * about citing, every identity fact and every limitation had been cut before the model read a word.
+   *
+   * So this value is now sent to the daemon as `num_ctx` on every request as well as being reported
+   * upward, and the two cannot disagree. It is also held **constant for the life of the model**:
+   * changing `num_ctx` makes the daemon reload the weights, measured at 106.8 s, which would otherwise
+   * be paid by whichever unlucky request differed from the last.
+   */
   readonly contextWindow: number;
   readonly maxOutputTokens: number | null;
-  /** No token from the provider within this long is a timeout. */
+  /**
+   * No token from the provider within this long, **once tokens have started**, is a timeout.
+   *
+   * Separate from `firstTokenTimeoutMs` because the two measure different things. Between tokens a
+   * healthy local model is silent for milliseconds; before the first token it is silent for as long as
+   * the prompt takes to evaluate, which was measured at 45.75 tokens per second — 89 seconds for a
+   * 4,087-token prompt. One timeout covering both is either too tight to survive a real prompt or too
+   * loose to notice a dead stream.
+   */
   readonly idleTimeoutMs: number;
+  /** Nothing at all from the provider within this long is a timeout. Covers prompt evaluation. */
+  readonly firstTokenTimeoutMs: number;
   readonly fetch: typeof globalThis.fetch;
 }
 
@@ -87,19 +114,24 @@ export class OllamaModel implements LanguageModel {
 
     let idleTimer: NodeJS.Timeout | undefined;
     let timedOut = false;
+    let waitedMs = this.#options.firstTokenTimeoutMs;
 
-    const resetIdle = (): void => {
+    // Two deadlines behind one timer. Until the first token arrives the generous one applies, because
+    // the provider is evaluating the prompt and silence is expected; afterwards the tight one does,
+    // because silence between tokens means the stream has died.
+    const resetIdle = (limitMs: number): void => {
+      waitedMs = limitMs;
       clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
         timedOut = true;
         controller.abort();
-      }, this.#options.idleTimeoutMs);
+      }, limitMs);
     };
 
     let delivered = '';
 
     try {
-      resetIdle();
+      resetIdle(this.#options.firstTokenTimeoutMs);
 
       const response = await this.#post('/api/chat', {
         model: this.#options.id,
@@ -109,6 +141,10 @@ export class OllamaModel implements LanguageModel {
           // Temperature 0 by default: an answer about a repository should be reproducible, and the whole
           // pipeline below is deterministic. Sampling would be the only source of variation left.
           temperature: request.temperature ?? 0,
+          // Always sent, always the same. See `contextWindow` above: omitting it hands the daemon the
+          // decision, and the daemon answers it differently between requests and truncates the prompt
+          // from the front without saying so.
+          num_ctx: this.#options.contextWindow,
           ...(request.maxOutputTokens === undefined ? {} : { num_predict: request.maxOutputTokens }),
           ...(request.stopSequences === undefined ? {} : { stop: [...request.stopSequences] }),
         },
@@ -124,7 +160,10 @@ export class OllamaModel implements LanguageModel {
       let usage: TokenUsage = { promptTokens: null, outputTokens: null };
 
       for await (const line of readNdjson(response.body, controller.signal)) {
-        resetIdle();
+        // A line arrived, so the provider is alive. Which deadline applies next depends on whether any
+        // text has been delivered yet — a keep-alive line before the first token does not mean the
+        // prompt has finished evaluating.
+        resetIdle(delivered === '' ? this.#options.firstTokenTimeoutMs : this.#options.idleTimeoutMs);
 
         const chunk = line as ChatLine;
 
@@ -159,10 +198,14 @@ export class OllamaModel implements LanguageModel {
         partial: delivered,
       });
     } catch (cause) {
+      // Order matters: a timeout aborts through the same controller a cancellation does, so asking
+      // "was it cancelled" first would report every timeout as the user's own doing.
       if (timedOut) {
         throw new AiError(
           'generation-timeout',
-          `the provider sent nothing for ${this.#options.idleTimeoutMs}ms`,
+          delivered === ''
+            ? `the provider produced no output within ${Math.round(waitedMs / 1000)}s of receiving the prompt`
+            : `the provider stopped mid-answer, sending nothing for ${Math.round(waitedMs / 1000)}s`,
           { cause, partial: delivered },
         );
       }

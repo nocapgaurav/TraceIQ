@@ -14,9 +14,12 @@ describe('the endpoint table', () => {
     expect(paths).toEqual([
       'GET /ping',
       'GET /version',
+      'GET /healthz',
       'POST /scan',
       'POST /analysis',
       'GET /analysis',
+      'POST /analysis/{id}/cancel',
+      'POST /analysis/{id}/retry',
       'GET /analysis/{id}',
       'GET /overview',
       'GET /architecture',
@@ -62,10 +65,20 @@ describe('the endpoint table', () => {
   });
 
   it('uses a wildcard for every parameter that can contain a slash', () => {
+    /*
+     * The rule used to be "a path parameter implies a wildcard", which was true while every path
+     * parameter was an identifier — a `file:` path or a `sym:` chain, both of which contain slashes and
+     * would otherwise be cut at the first one.
+     *
+     * It stopped being true when `/analysis/{id}/cancel` arrived. An analysis id is `analysis-4`: it
+     * cannot contain a slash, and a wildcard there would swallow `/cancel` along with it and route the
+     * request nowhere. So the rule is stated as what it always meant — a parameter that is the *last*
+     * segment may hold a path and needs the wildcard; one with a fixed suffix after it cannot.
+     */
     for (const endpoint of ENDPOINTS) {
-      const hasPathParameter = endpoint.parameters.some((parameter) => parameter.location === 'path');
+      const trailing = /\{[a-z]+\}$/.test(endpoint.documentedPath);
 
-      expect(endpoint.path.includes('*')).toBe(hasPathParameter);
+      expect(endpoint.path.includes('*'), endpoint.documentedPath).toBe(trailing);
     }
   });
 

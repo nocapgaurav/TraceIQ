@@ -40,6 +40,8 @@ const GROUNDING = {
   kind: 'repository',
   subject: null,
   factCount: 64,
+  coreCount: 0,
+  intent: 'overview',
   tier: 'standard',
   tokens: 1920,
   digest: 'c0a8bdfbb1fe2e3f',
@@ -55,6 +57,7 @@ const ANSWER = {
     { factId: 'f2', subject: 'repository', predicate: 'contains', object: '228 files', confidence: 'CERTAIN', provenance: '@traceiq/explorer' },
   ],
   fabricatedIdentifiers: [],
+  unsupportedTerms: [],
   unknownCitations: [],
   grounding: GROUNDING,
   model: 'test:1b',
@@ -76,7 +79,15 @@ const REQUEST = { question: 'q', subject: { kind: 'repository' } } as const;
 
 describe('parseFrame', () => {
   it('reads each event type', () => {
-    expect(parseFrame('event: open\ndata: {"model":"m"}')).toEqual({ type: 'open', model: 'm' });
+    expect(parseFrame('event: open\ndata: {"model":"m","contextWindow":16384}')).toEqual({
+      type: 'open',
+      model: 'm',
+      contextWindow: 16_384,
+    });
+    expect(parseFrame('event: status\ndata: {"phase":"awaiting-model"}')).toEqual({
+      type: 'status',
+      phase: 'awaiting-model',
+    });
     expect(parseFrame(`event: grounding\ndata: ${JSON.stringify(GROUNDING)}`)).toMatchObject({ type: 'grounding' });
     expect(parseFrame('event: delta\ndata: {"text":"hi"}')).toEqual({ type: 'delta', text: 'hi' });
     expect(parseFrame(`event: complete\ndata: ${JSON.stringify(ANSWER)}`)).toMatchObject({ type: 'complete' });
@@ -89,6 +100,8 @@ describe('parseFrame', () => {
   });
 
   it('ignores a comment, an unknown name and a frame with no data', () => {
+    // The keep-alive is a comment precisely so it costs a consumer nothing. It resets every idle
+    // timer between the API and the browser and parses to nothing at all.
     expect(parseFrame(': keep-alive')).toBeNull();
     expect(parseFrame('event: unheard-of\ndata: {}')).toBeNull();
     expect(parseFrame('event: delta')).toBeNull();

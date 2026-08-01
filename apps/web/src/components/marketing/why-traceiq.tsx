@@ -21,7 +21,10 @@ const CONTRAST: readonly { readonly generic: string; readonly traceiq: string }[
   },
   {
     generic: 'Infers relationships from how the code reads',
-    traceiq: 'Resolves relationships with the TypeScript compiler, then stores them',
+    // Not "with the TypeScript compiler". Four of the five supported languages are read by a
+    // grammar and their own resolution rules — Go's module arithmetic, Java's imports, Python's
+    // package layout — and none of them involves that compiler.
+    traceiq: "Resolves relationships with each language's own rules, then stores them",
   },
   {
     generic: 'Sounds equally confident whether or not it knows',

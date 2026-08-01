@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@traceiq/shared": "workspace:*",
+    "@traceiq/types": "workspace:*",
     "fast-glob": "^3.3.3"
   },
   "devDependencies": {

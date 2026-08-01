@@ -235,7 +235,14 @@ async function ask(
       },
       controller.signal,
     )) {
-      if (event.type === 'grounding') {
+      if (event.type === 'status') {
+        // Only the wait that is actually long is announced. Prompt evaluation was measured at 45.75
+        // tokens per second, so a terminal sitting silent for a minute and a half is the common case
+        // rather than a rare one; the other phases are milliseconds and naming them would be noise.
+        if (event.phase === 'awaiting-model') {
+          io.write(`${paint('waiting for the model to read the facts…', 'dim', input.colour)}\n`);
+        }
+      } else if (event.type === 'grounding') {
         io.write(`${renderGrounding(event.grounding, input.colour)}\n\n`);
       } else if (event.type === 'delta') {
         // Written as it arrives: a local model takes seconds, and a spinner would say less than the text.

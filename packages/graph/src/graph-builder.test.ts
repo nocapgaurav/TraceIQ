@@ -34,7 +34,7 @@ describe('nodes', () => {
     expect(node(graph, 'file:src/a.ts')).toMatchObject({
       name: 'src/a.ts',
       fileId: null,
-      isDeclarationFile: false,
+      isDeclarationFile: null,
       confidence: 'CERTAIN',
       locations: [],
     });
@@ -416,7 +416,7 @@ describe('determinism', () => {
         relationship({
           type: 'IMPORTS',
           sourceId: 'file:a.ts',
-          target: externalTarget('node-builtin', 'node:fs'),
+          target: externalTarget('standard-library', 'node:fs'),
           line: 2,
         }),
       ],

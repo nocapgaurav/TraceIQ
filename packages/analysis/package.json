@@ -12,6 +12,7 @@
     }
   },
   "dependencies": {
+    "@traceiq/graph-api": "workspace:*",
     "@traceiq/pipeline": "workspace:*"
   },
   "devDependencies": {

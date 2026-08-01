@@ -442,7 +442,7 @@ describe('type references', () => {
 
     expect(promise).toHaveLength(1);
     expect(promise[0]?.confidence).toBe('RESOLVED');
-    expect(promise[0]?.target).toEqual({ kind: 'external', origin: 'typescript-lib', name: null });
+    expect(promise[0]?.target).toEqual({ kind: 'external', origin: 'language-builtin', name: null , ecosystem: null });
   });
 
   it('keeps a type parameter visible, distinguished from a resolution failure', () => {

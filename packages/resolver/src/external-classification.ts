@@ -1,10 +1,12 @@
-import type { ConfidenceLevel } from '@traceiq/types';
+import type { ConfidenceLevel, Ecosystem } from '@traceiq/types';
 
 import type { ExternalOrigin, ResolutionTarget } from './types.js';
 
 export interface ExternalClassification {
   readonly origin: ExternalOrigin;
   readonly name: string | null;
+  /** `npm` for everything this classifier can see: it reads installed JavaScript paths. */
+  readonly ecosystem: Ecosystem | null;
 }
 
 const NODE_MODULES = '/node_modules/';
@@ -25,16 +27,16 @@ export function classifyExternalFile(absolutePath: string): ExternalClassificati
     // The specific lib file is deliberately not recorded. A built-in such as
     // `Promise` is declared across several of them, so naming the file would make
     // one type look like five ambiguous candidates. `origin` carries the meaning.
-    return { origin: 'typescript-lib', name: null };
+    return { origin: 'language-builtin', name: null, ecosystem: null };
   }
 
   const packageName = packageNameFromPath(normalized);
 
   if (packageName !== null) {
-    return { origin: 'package', name: packageName };
+    return { origin: 'package', name: packageName, ecosystem: 'npm' };
   }
 
-  return { origin: 'outside-analysis', name: null };
+  return { origin: 'outside-analysis', name: null, ecosystem: null };
 }
 
 /**
@@ -101,7 +103,7 @@ const NODE_BUILTIN_PREFIX = 'node:';
 export function classifyUnresolvedSpecifier(specifier: string): SpecifierClassification | null {
   if (specifier.startsWith(NODE_BUILTIN_PREFIX)) {
     return {
-      target: { kind: 'external', origin: 'node-builtin', name: specifier },
+      target: { kind: 'external', origin: 'standard-library', name: specifier, ecosystem: 'npm' },
       confidence: 'CERTAIN',
       evidence: `'${specifier}' uses the reserved 'node:' prefix, which names a Node builtin`,
     };
@@ -114,7 +116,7 @@ export function classifyUnresolvedSpecifier(specifier: string): SpecifierClassif
   }
 
   return {
-    target: { kind: 'external', origin: 'package', name: packageName },
+    target: { kind: 'external', origin: 'package', name: packageName, ecosystem: 'npm' },
     confidence: 'INFERRED',
     evidence: `'${specifier}' is a bare specifier naming package '${packageName}', which is not installed or did not resolve`,
   };

@@ -14,10 +14,11 @@
   "dependencies": {
     "@traceiq/ir": "workspace:*",
     "@traceiq/resolver": "workspace:*",
-    "@traceiq/types": "workspace:*"
+    "@traceiq/types": "workspace:*",
+    "@traceiq/project-host": "workspace:*",
+    "ts-morph": "^28.0.0"
   },
   "devDependencies": {
-    "@traceiq/project-host": "workspace:*",
     "@traceiq/scanner": "workspace:*",
     "@types/node": "^26.1.2"
   }

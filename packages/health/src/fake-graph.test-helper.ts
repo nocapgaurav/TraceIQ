@@ -1,4 +1,5 @@
 import type {
+  RepositoryCapabilities,
   GraphEdge,
   GraphNode,
   GraphRole,
@@ -20,6 +21,14 @@ import type { HealthGraph } from './types.js';
  * It counts calls, which is what lets "one pass over the graph" be asserted rather than trusted.
  */
 export class FakeGraph implements HealthGraph {
+  /** Overridable, so a test can exercise a capability-aware consumer. */
+  capabilities: RepositoryCapabilities = {
+    depth: 'universal',
+    regions: [],
+    languages: [],
+    isPolyglot: false,
+  };
+
   readonly #nodes = new Map<NodeId, GraphNode>();
   readonly #edges: GraphEdge[] = [];
   readonly #roles: GraphRole[] = [];
@@ -81,6 +90,16 @@ export class FakeGraph implements HealthGraph {
       .sort((left, right) => left.role.localeCompare(right.role));
   }
 
+  /**
+   * A fake graph describes no repository, so it claims no analysis depth.
+   *
+   * `universal` with no regions is the honest answer for hand-built nodes: a test that
+   * needs a specific capability states it through `capabilities`.
+   */
+  getCapabilities(): RepositoryCapabilities {
+    return this.capabilities;
+  }
+
   getUnresolved(): readonly GraphUnresolvedReference[] {
     this.calls.getUnresolved += 1;
 
@@ -116,6 +135,9 @@ export function node(input: {
     isExportedFromModule: null,
     externalKind: input.externalKind ?? null,
     externalName: null,
+    language: null,
+    fileRole: null,
+    category: null,
     confidence: input.confidence ?? 'CERTAIN',
     provenance: {
       producer: 'graph-builder',

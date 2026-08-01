@@ -265,7 +265,40 @@ describe('POST /chat/stream', () => {
 
     expect(result.status).toBe(200);
     expect(result.contentType).toContain('text/event-stream');
-    expect(result.frames.map((frame) => frame.event)).toEqual(['open', 'grounding', 'delta', 'delta', 'complete']);
+
+    // `status` frames are progress rather than content, and a consumer that ignores them must see the
+    // sequence it always saw. Asserting on the filtered list keeps that the contract while letting the
+    // stream say what it is doing during the 89 seconds it can spend evaluating a prompt.
+    expect(result.frames.filter((frame) => frame.event !== 'status').map((frame) => frame.event)).toEqual([
+      'open',
+      'grounding',
+      'delta',
+      'delta',
+      'complete',
+    ]);
+  });
+
+  it('names the phase it is waiting on, so a silent minute is never blank', async () => {
+    const result = await stream('/chat/stream', { question: 'q', subject: { kind: 'symbol', id: FIND } });
+    const phases = result.frames
+      .filter((frame) => frame.event === 'status')
+      .map((frame) => (frame.data as { phase?: string }).phase);
+
+    expect(phases).toContain('awaiting-model');
+
+    const awaiting = result.frames.findIndex(
+      (frame) => frame.event === 'status' && (frame.data as { phase?: string }).phase === 'awaiting-model',
+    );
+    const firstDelta = result.frames.findIndex((frame) => frame.event === 'delta');
+
+    expect(awaiting).toBeLessThan(firstDelta);
+  });
+
+  it('reports the window the prompt is budgeted against, so a slow answer can be understood', async () => {
+    const result = await stream('/chat/stream', { question: 'q', subject: { kind: 'symbol', id: FIND } });
+    const open = result.frames.find((frame) => frame.event === 'open');
+
+    expect((open?.data as { contextWindow?: number }).contextWindow).toBeGreaterThan(0);
   });
 
   it('describes the grounding before any prose', async () => {

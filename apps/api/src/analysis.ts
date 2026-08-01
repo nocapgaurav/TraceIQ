@@ -18,6 +18,8 @@ export interface WireStage {
   readonly label: string;
   readonly status: string;
   readonly detail: string | null;
+  /** How long this stage has run, or took. Elapsed time, never a percentage. */
+  readonly elapsedMs: number | null;
 }
 
 export interface WireJob {
@@ -31,6 +33,7 @@ export interface WireJob {
   readonly error: AnalysisJob['error'];
   readonly elapsedMs: number;
   readonly workspaceWarning: string | null;
+  readonly telemetry: AnalysisJob['telemetry'];
 }
 
 /** Reads `{ url }` from a submission. The URL itself is validated by the analysis package, not here. */
@@ -66,11 +69,15 @@ export function wireJob(job: AnalysisJob): WireJob {
       label: stage.label,
       status: stage.status,
       detail: stage.detail,
+      elapsedMs: stage.elapsedMs,
     })),
     result: job.result,
     error: job.error,
     elapsedMs: job.elapsedMs,
     workspaceWarning: job.workspaceWarning,
+    // What it cost and where it ran. A reader watching a queue needs to know whether their job is
+    // waiting or working, and an operator reading a slow one needs to know what it consumed.
+    telemetry: job.telemetry,
   };
 }
 

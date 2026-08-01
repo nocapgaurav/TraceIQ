@@ -271,8 +271,10 @@ TRACEIQ_SCAN_PATH=/path/to/your/repo docker compose up
 docker compose run --rm -e TRACEIQ_SCAN_FORCE=1 seed
 ```
 
-Any TypeScript repository with a `tsconfig.json` works. The path is mounted **read-only** — TraceIQ
-never writes to the code it analyses.
+Any repository works, in any language. TypeScript, JavaScript, Python, Java and Go reach semantic
+depth; everything else is described by universal discovery — files, languages, manifests, declared
+dependencies and detected technologies — and the analysis says which it got. No `tsconfig.json` is
+required. The path is mounted **read-only** — TraceIQ never writes to the code it analyses.
 
 ---
 

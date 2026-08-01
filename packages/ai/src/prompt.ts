@@ -48,7 +48,41 @@ export const SYSTEM_PROMPT = [
   'Be brief and concrete. Plain prose, no markdown headings, no code fences.',
 ].join('\n');
 
-/** Renders the fenced fact region, including what was left out. */
+/**
+ * The citation rule again, after the question.
+ *
+ * **Position, not repetition, is what this buys.** The standing instruction sits in a system message
+ * ahead of a fact block that on `facebook/react` runs to 4,800 tokens, and a 7B model asked a
+ * repository-wide question came back with 582 tokens of correct, specific prose and **zero
+ * citations** — markdown headings too, which the same instruction forbids. The rules had not been
+ * refused so much as forgotten: they were 4,800 tokens ago.
+ *
+ * Restating the one rule that the whole verification layer depends on, immediately before the model
+ * begins writing, costs about thirty tokens. Everything else stays in the system message, because a
+ * prompt that repeats itself twice over teaches a model that neither copy is important.
+ */
+export const REMINDER = [
+  'Answer in plain prose — no headings, no bullet lists, no code fences.',
+  'End every sentence that states a fact with the id it came from, in brackets: [f12], or [f8, f10].',
+  'A sentence with no id must be about something you cannot determine from the facts.',
+].join('\n');
+
+/**
+ * Renders the fenced fact region as a **stable prefix followed by a question-specific tail**.
+ *
+ * **The split is the optimisation.** A local provider caches the longest prompt prefix it has already
+ * evaluated; measured on the reference stack, a repeat question reused 4,832 of 4,843 prompt tokens
+ * and answered in 19 seconds against 108 seconds cold. That saving is worth engineering for, and it
+ * survives only if the bytes before the question are byte-identical between two different questions
+ * about the same repository.
+ *
+ * So everything up to `projection.coreCount` is projected from the repository and the budget tier
+ * alone — never from the question — and is emitted first, in fact-id order. What the question steered
+ * comes after it, under a heading that says so, and the omissions and the fence close come last
+ * because both depend on what the tail contained.
+ *
+ * The consequence for a reader is nil: it is one fenced region of numbered facts either way.
+ */
 export function renderFacts(projection: ContextProjection): string {
   const lines: string[] = [FACTS_OPEN];
 
@@ -56,8 +90,20 @@ export function renderFacts(projection: ContextProjection): string {
   lines.push(`context kind: ${projection.kind}`);
   lines.push('');
 
-  for (const fact of projection.facts) {
+  const core = projection.facts.slice(0, projection.coreCount);
+  const supplement = projection.facts.slice(projection.coreCount);
+
+  for (const fact of core) {
     lines.push(factLine(fact));
+  }
+
+  if (supplement.length > 0) {
+    lines.push('');
+    lines.push('more, selected for this question:');
+
+    for (const fact of supplement) {
+      lines.push(factLine(fact));
+    }
   }
 
   if (projection.omissions.length > 0) {
@@ -70,6 +116,28 @@ export function renderFacts(projection: ContextProjection): string {
   }
 
   lines.push(FACTS_CLOSE);
+
+  return lines.join('\n');
+}
+
+/**
+ * The bytes that are identical for every question about one repository at one tier.
+ *
+ * Exposed so the property can be **asserted** rather than hoped for: a test renders two different
+ * questions' projections and compares this, and a regression that made the prefix question-dependent
+ * would show up as a failing equality rather than as a silently slower product.
+ */
+export function stablePrefixOf(projection: ContextProjection): string {
+  const lines: string[] = [
+    FACTS_OPEN,
+    `subject: ${projection.subject ?? '(the repository as a whole)'}`,
+    `context kind: ${projection.kind}`,
+    '',
+  ];
+
+  for (const fact of projection.facts.slice(0, projection.coreCount)) {
+    lines.push(factLine(fact));
+  }
 
   return lines.join('\n');
 }
@@ -104,7 +172,7 @@ export interface PromptInput {
  */
 export function assemble(input: PromptInput): readonly Message[] {
   const facts = renderFacts(input.projection);
-  const question = `${facts}\n\nQuestion: ${input.question}`;
+  const question = `${facts}\n\nQuestion: ${input.question}\n\n${REMINDER}`;
   const history = input.history === undefined ? [] : renderHistory(input.history);
 
   if (input.model.capabilities.has('system-prompt')) {
@@ -130,5 +198,7 @@ export function reservedTokens(input: {
 
   // The fence, the subject and kind lines, and the omission block are not yet known; 120 tokens covers
   // them with room to spare, and over-reserving costs facts rather than correctness.
-  return input.count(SYSTEM_PROMPT) + input.count(input.question) + input.count(historyText) + 120;
+  return (
+    input.count(SYSTEM_PROMPT) + input.count(input.question) + input.count(historyText) + input.count(REMINDER) + 120
+  );
 }

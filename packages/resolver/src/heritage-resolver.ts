@@ -1,6 +1,7 @@
 import type { NodeId } from '@traceiq/types';
 import { Node, type ExpressionWithTypeArguments } from 'ts-morph';
 
+import { symbolAt } from './checker-symbol.js';
 import type { DeclarationIndex } from './declaration-index.js';
 import type { ResolutionCollector } from './resolution-collector.js';
 import { sourceRangeOf } from './source-position.js';
@@ -59,7 +60,7 @@ function record(
       resolver: 'heritage',
       fileId: input.fileId,
     },
-    resolveSymbol(expression.getSymbol(), input.index),
+    resolveSymbol(symbolAt(expression), input.index),
     expression.getText(),
   );
 }

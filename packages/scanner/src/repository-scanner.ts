@@ -10,14 +10,34 @@ import { walkDirectories, type DirectoryWalk } from './directory-walk.js';
 import { resolveEntryPoints } from './entry-points.js';
 import { IGNORED_GLOB_PATTERNS } from './ignore.js';
 import { readPackageManifest } from './manifest.js';
+import { deriveTechnologyRegions, repositoryLanguages } from './technology-regions.js';
 import type { RepositoryInventory } from './types.js';
+import { discoverUniversalFacts } from './universal-discovery.js';
+import { NO_WORKSPACE_GLOBS } from './workspace-globs.js';
+import { discoverWorkspacePackages } from './workspace-packages.js';
 
 /**
- * TypeScript sources only. Version 1 analyses TypeScript, and `.d.ts` files are
- * included because the Project Host needs them for resolution; deciding what to
- * do with a declaration file is a downstream concern, not a discovery one.
+ * Everything, so that a repository can be described whatever it is written in.
+ *
+ * Discovery is universal and analysis is layered: the walk finds every file, and a
+ * language analyser later takes the subset it can read. Globbing only TypeScript — which
+ * is what this did — meant a repository without it appeared empty, and a polyglot
+ * repository appeared to be only its TypeScript part.
  */
-const SOURCE_FILE_PATTERN = '**/*.{ts,tsx,mts,cts}';
+const ALL_FILES_PATTERN = '**/*';
+
+/**
+ * The subset of the universal file set the TypeScript compiler can read.
+ *
+ * JavaScript is included because the compiler analyses it natively with `allowJs`: `.js`, `.jsx`,
+ * `.mjs` and `.cjs` get the same declarations, imports, exports and call binding TypeScript does,
+ * from the same program. A separate JavaScript analyser would be a second implementation of work
+ * the compiler already does.
+ *
+ * `.d.ts` is included because the Project Host needs declaration files for resolution; deciding
+ * what to do with one is a downstream concern, not a discovery one.
+ */
+const COMPILER_READABLE_EXTENSIONS = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
 
 const TSCONFIG_FILE_NAME = 'tsconfig.json';
 const PACKAGE_JSON_FILE_NAME = 'package.json';
@@ -31,18 +51,47 @@ export class RepositoryScanError extends Error {
 
 /**
  * Discovers what a repository contains. This is the only module that touches the
- * filesystem on behalf of the engine, and it reads no file contents beyond
- * package.json.
+ * filesystem on behalf of the engine.
+ *
+ * **Discovery is universal; analysis is layered.** Every file is found and classified
+ * whatever language it is in, and only manifests have their contents read. Which subset a
+ * language analyser can then parse is that analyser's concern — a repository is never
+ * rejected here for being written in the wrong thing.
  */
 export class RepositoryScanner {
-  async scan(repositoryPath: string): Promise<RepositoryInventory> {
+  async scan(
+    repositoryPath: string,
+    options?: {
+      /**
+       * Repository-relative paths to leave out of the inventory entirely.
+       *
+       * For a caller that writes into the repository it is scanning. The graph database is
+       * the case that matters: universal discovery records every file, so without this a
+       * second scan would find the database the first scan wrote and report it as one of
+       * the repository's own files — and the two scans would disagree.
+       *
+       * Applied before languages and regions are derived, so every part of the inventory
+       * agrees about what the repository contains.
+       */
+      readonly excludeFiles?: readonly string[];
+    },
+  ): Promise<RepositoryInventory> {
     const rootPath = await this.resolveRoot(repositoryPath);
 
-    const [sourceFiles, walk, rootFileNames] = await Promise.all([
-      this.findSourceFiles(rootPath),
+    const [allFilePaths, walk, rootFileNames] = await Promise.all([
+      this.findFiles(rootPath),
       this.walk(rootPath),
       this.readRootFileNames(rootPath),
     ]);
+
+    const excluded = new Set(options?.excludeFiles ?? []);
+    const filePaths = allFilePaths.filter((filePath) => !excluded.has(filePath));
+
+    const universal = await discoverUniversalFacts({ rootPath, filePaths });
+
+    // The TypeScript subset, taken from the universal set rather than globbed separately,
+    // so the two can never disagree about what the repository contains.
+    const sourceFiles = filePaths.filter((filePath) => COMPILER_READABLE_EXTENSIONS.test(filePath));
 
     const hasTsconfig = rootFileNames.includes(TSCONFIG_FILE_NAME);
     const hasPackageJson = rootFileNames.includes(PACKAGE_JSON_FILE_NAME);
@@ -52,6 +101,16 @@ export class RepositoryScanner {
       : null;
 
     const lockfile = selectLockfile(rootFileNames);
+
+    // Discovery, not configuration: what this finds lets the Project Host point a
+    // sibling import at source instead of at ignored build output. It reads each
+    // package's manifest, so it runs after the root manifest rather than beside it.
+    const workspacePackages = await discoverWorkspacePackages({
+      rootPath,
+      directories: walk.directories,
+      sourceFiles,
+      manifestWorkspaceGlobs: manifest?.workspaceGlobs ?? NO_WORKSPACE_GLOBS,
+    });
 
     return {
       name: manifest?.name ?? path.basename(rootPath),
@@ -69,6 +128,14 @@ export class RepositoryScanner {
         sourceFiles,
       }),
       ignoredPaths: walk.ignoredPaths,
+      workspacePackages,
+      files: universal.files,
+      languages: repositoryLanguages(universal.files),
+      manifests: universal.manifests,
+      regions: deriveTechnologyRegions({
+        files: universal.files,
+        manifests: universal.manifests,
+      }),
     };
   }
 
@@ -103,9 +170,9 @@ export class RepositoryScanner {
    * identical inventory. Walk order is not guaranteed, and an unstable inventory
    * would produce unstable output in everything downstream.
    */
-  private async findSourceFiles(rootPath: string): Promise<readonly string[]> {
+  private async findFiles(rootPath: string): Promise<readonly string[]> {
     try {
-      const matches = await fastGlob(SOURCE_FILE_PATTERN, {
+      const matches = await fastGlob(ALL_FILES_PATTERN, {
         cwd: rootPath,
         dot: true,
         onlyFiles: true,

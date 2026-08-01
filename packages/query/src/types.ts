@@ -96,7 +96,7 @@ export interface EnvironmentVariableResult {
 }
 
 export interface DependencyResult {
-  /** The `External` node: a package, a Node builtin, or a TypeScript built-in. */
+  /** The `External` node: a package in any ecosystem, a standard-library module, or a language builtin. */
   readonly node: GraphNode;
   readonly importedBy: readonly ReferenceResult[];
 }
@@ -109,4 +109,23 @@ export interface UnresolvedResult {
 export interface RoleQueryResult extends DeclarationResult {
   /** The role that matched, for callers that asked for several. */
   readonly matched: Role;
+}
+
+/**
+ * One technology the repository is built from, read back from its `Technology` node.
+ *
+ * Structurally the same as the Explorer's and the Context's, and deliberately so: three consumers
+ * reading one set of nodes should see one shape. The duplication is in the type declaration rather
+ * than in the derivation, which is the half that could drift.
+ */
+export interface TechnologyResult {
+  readonly id: string;
+  readonly name: string;
+  /** `frontend`, `backend`, `infrastructure`, `build`, `testing`, `data`. */
+  readonly category: string;
+  /** The region it was found in; `''` is the repository root. */
+  readonly regionPath: string;
+  readonly confidence: string;
+  /** Why the claim is made, naming the files that prove it. */
+  readonly evidence: string;
 }

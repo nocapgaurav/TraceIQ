@@ -1,6 +1,7 @@
 import type { NodeId } from '@traceiq/types';
 import type { Node } from 'ts-morph';
 
+import { aliasedSymbolOf, symbolAt } from './checker-symbol.js';
 import type { ResolvedDeclaration } from './types.js';
 
 /**
@@ -18,7 +19,9 @@ export function enrichDeclaration(input: {
   readonly declarationId: NodeId;
   readonly fileId: NodeId;
 }): ResolvedDeclaration {
-  const symbol = input.node.getSymbol();
+  // Guarded for the same reason every checker call in this package is. See `symbolAt`.
+  const lookup = symbolAt(input.node);
+  const symbol = lookup.outcome === 'symbol' ? lookup.symbol : undefined;
 
   if (symbol === undefined) {
     return {
@@ -59,14 +62,15 @@ export function enrichDeclaration(input: {
  * needing a special case.
  */
 function moduleExportNameOf(node: Node): string | null {
-  const moduleSymbol = node.getSourceFile().getSymbol();
+  const moduleLookup = symbolAt(node.getSourceFile());
+  const moduleSymbol = moduleLookup.outcome === 'symbol' ? moduleLookup.symbol : undefined;
 
   if (moduleSymbol === undefined) {
     return null;
   }
 
   for (const exported of moduleSymbol.getExports()) {
-    const declarations = (exported.getAliasedSymbol() ?? exported).getDeclarations();
+    const declarations = (aliasedSymbolOf(exported) ?? exported).getDeclarations();
 
     if (declarations.includes(node)) {
       return exported.getName();

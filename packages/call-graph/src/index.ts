@@ -7,9 +7,12 @@ export {
   type CallKind,
   type CallProvenance,
   type CallRelationship,
+  type ExternalCall,
   type UnresolvedCall,
   type UnresolvedCallReason,
 } from './types.js';
 
-// No compiler, no database, no graph. This stage reads two plain structures and returns
-// a third.
+// No database and no graph. The stage reads two plain structures and returns a third; it
+// additionally borrows a `ProjectContext` when one is offered, so that a call can be bound
+// to the declaration the type checker resolves rather than to one matching by name. The
+// context is never retained, and no ts-morph type appears in what this package returns.

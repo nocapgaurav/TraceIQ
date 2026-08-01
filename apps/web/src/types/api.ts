@@ -172,6 +172,12 @@ export interface AnalysisResult {
   readonly callEdges: number;
   readonly unresolvedCalls: number;
   readonly unresolvedReferences: number;
+  /** What the repository turned out to be made of, and how deeply it was read. */
+  readonly languages: readonly LanguageFileCount[];
+  readonly regions: number;
+  readonly depth: AnalysisDepth;
+  readonly isPolyglot: boolean;
+  readonly analyzerFailures: readonly { readonly analyzer: string; readonly failure: string }[];
 }
 
 export interface AnalysisJob {
@@ -233,7 +239,74 @@ export interface RepositoryMetrics {
   readonly declarationsPerFile: Distribution;
 }
 
+/** How deeply one part of a repository was actually analysed. Ordered least to most capable. */
+export type AnalysisDepth = 'universal' | 'structural' | 'semantic' | 'framework';
+
+export interface LanguageFileCount {
+  readonly language: string;
+  readonly files: number;
+}
+
+/**
+ * One technology the repository is built from, and how far analysis got with it.
+ *
+ * A region is a directory anchored on a dependency manifest, or the repository root.
+ */
+export interface RegionCapability {
+  /** Repository-relative directory; `''` for the repository root. */
+  readonly path: string;
+  readonly primaryLanguage: string | null;
+  readonly languages: readonly LanguageFileCount[];
+  readonly ecosystems: readonly string[];
+  readonly fileCount: number;
+  readonly sourceFileCount: number;
+  readonly depth: AnalysisDepth;
+  /** Why analysis stopped where it did, in words the API supplies to be shown verbatim. */
+  readonly reason: string;
+}
+
+/**
+ * What this repository's graph can and cannot answer.
+ *
+ * **The UI was blind to this and it showed.** `/overview` has carried it, but the type omitted it, so
+ * the interface had no way to know what language it was looking at — and said "TypeScript" for every
+ * repository, including a Python one. Anything that presents an absence must read this first: no calls
+ * means "none found" for an analysed region and "never looked at" for a `universal` one.
+ */
+export interface RepositoryCapabilities {
+  readonly depth: AnalysisDepth;
+  readonly regions: readonly RegionCapability[];
+  readonly languages: readonly LanguageFileCount[];
+  readonly isPolyglot: boolean;
+}
+
+/**
+ * One technology the repository is built from, with the evidence for it.
+ *
+ * Hand-written like the rest of this file: the frontend consumes the REST API and imports no
+ * `@traceiq` package, so the wire shape is declared here rather than shared.
+ */
+export interface TechnologySummary {
+  readonly id: string;
+  readonly name: string;
+  /** `frontend`, `backend`, `infrastructure`, `build`, `testing`, `data`. */
+  readonly category: string;
+  /** The region it was found in; `''` is the repository root. */
+  readonly regionPath: string;
+  readonly confidence: string;
+  /** The files that prove it, and what was found in each. Shown verbatim. */
+  readonly evidence: string;
+}
+
 export interface Overview {
+  /**
+   * What the repository is built with.
+   *
+   * Optional because an older API answers without it, and a UI that crashed on a field a
+   * deployment mid-upgrade does not send would be worse than one that shows nothing.
+   */
+  readonly technologies?: readonly TechnologySummary[];
+  readonly capabilities: RepositoryCapabilities;
   readonly repository: {
     readonly files: number;
     readonly declarations: number;
@@ -659,6 +732,10 @@ export interface ChatGrounding {
   readonly kind: string;
   readonly subject: string | null;
   readonly factCount: number;
+  /** How many of those facts are the stable core the provider can reuse between questions. */
+  readonly coreCount: number;
+  /** What the question was taken to be about. Decides the supplement, never the core. */
+  readonly intent: string;
   readonly tier: string;
   readonly tokens: number;
   /** Identity of the facts that grounded this answer. Two equal digests ground identically. */
@@ -676,6 +753,14 @@ export interface ChatAnswer {
   readonly citations: readonly ChatCitation[];
   /** Identifiers the answer named that no fact contained. Empty unless the verdict is `ungrounded`. */
   readonly fabricatedIdentifiers: readonly string[];
+  /**
+   * Package, framework and dependency names the answer claimed that no fact carried.
+   *
+   * Kept apart from `fabricatedIdentifiers` because the two differ in how damning they are: an
+   * invented identifier has no defence, while an unsupported term may be a real thing the budget did
+   * not reach. The UI says which.
+   */
+  readonly unsupportedTerms: readonly string[];
   readonly unknownCitations: readonly string[];
   readonly grounding: ChatGrounding;
   readonly model: string;
@@ -718,8 +803,24 @@ export interface ChatRequest {
  * `error` is terminal and arrives instead of `complete`: once the stream has opened the status line is
  * gone, so a mid-answer failure cannot be an HTTP error.
  */
+/**
+ * Which stage the answer has reached.
+ *
+ * Mirrors the API's own closed vocabulary. It exists because the wait is long and was measured: the gap
+ * between the last preparatory frame and the first token was 89 seconds on the reference stack, all of
+ * it the model reading the prompt, with nothing on the wire.
+ */
+export type ChatPhase =
+  | 'acquiring-context'
+  | 'projecting'
+  | 're-projecting'
+  | 'awaiting-model'
+  | 'generating'
+  | 'verifying';
+
 export type ChatEvent =
-  | { readonly type: 'open'; readonly model: string | null }
+  | { readonly type: 'open'; readonly model: string | null; readonly contextWindow: number | null }
+  | { readonly type: 'status'; readonly phase: ChatPhase }
   | { readonly type: 'grounding'; readonly grounding: ChatGrounding }
   | { readonly type: 'delta'; readonly text: string }
   | { readonly type: 'complete'; readonly answer: ChatAnswer }

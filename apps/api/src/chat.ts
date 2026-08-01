@@ -33,6 +33,10 @@ export interface WireGrounding {
   readonly kind: string;
   readonly subject: string | null;
   readonly factCount: number;
+  /** How many of those facts are the stable, question-independent core. */
+  readonly coreCount: number;
+  /** What the question was taken to be about. Decides the supplement, never the core. */
+  readonly intent: string;
   readonly tier: string;
   /** Prompt tokens the facts cost, as the model's counter measured them. */
   readonly tokens: number;
@@ -49,6 +53,8 @@ export interface WireAnswer {
   readonly citations: readonly WireCitation[];
   /** Identifiers the answer named that no fact contained. Empty unless the verdict is `ungrounded`. */
   readonly fabricatedIdentifiers: readonly string[];
+  /** Package, framework and dependency names the answer claimed that no fact carried. */
+  readonly unsupportedTerms: readonly string[];
   readonly unknownCitations: readonly string[];
   readonly grounding: WireGrounding;
   readonly model: string;
@@ -61,6 +67,8 @@ export function wireGrounding(grounding: GroundingSummary): WireGrounding {
     kind: grounding.kind,
     subject: grounding.subject,
     factCount: grounding.factCount,
+    coreCount: grounding.coreCount,
+    intent: grounding.intent,
     tier: grounding.tier,
     tokens: grounding.tokens,
     digest: grounding.digest,
@@ -88,6 +96,7 @@ export function wireAnswer(answer: Answer): WireAnswer {
       provenance: citation.fact.provenance,
     })),
     fabricatedIdentifiers: answer.fabricatedIdentifiers,
+    unsupportedTerms: answer.unsupportedTerms,
     unknownCitations: answer.unknownCitations,
     grounding: wireGrounding(answer.grounding),
     model: answer.model,

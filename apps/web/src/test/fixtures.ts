@@ -66,7 +66,43 @@ const METRICS = {
   declarationsPerFile: DISTRIBUTION,
 };
 
+/** A single-region TypeScript repository, stated rather than assumed. */
+const CAPABILITIES = {
+  depth: 'semantic' as const,
+  isPolyglot: false,
+  languages: [
+    { language: 'typescript', files: 210 },
+    { language: 'markdown', files: 18 },
+  ],
+  regions: [
+    {
+      path: '',
+      primaryLanguage: 'typescript',
+      languages: [
+        { language: 'typescript', files: 210 },
+        { language: 'markdown', files: 18 },
+      ],
+      ecosystems: ['npm'],
+      fileCount: 228,
+      sourceFileCount: 210,
+      depth: 'semantic' as const,
+      reason: 'the TypeScript compiler read these sources, so declarations, imports, exports, calls, type references and inheritance are available',
+    },
+  ],
+};
+
 export const OVERVIEW: Overview = {
+  technologies: [
+    {
+      id: 'express',
+      name: 'Express',
+      category: 'backend',
+      regionPath: '',
+      confidence: 'CERTAIN',
+      evidence: "Express is used: package.json declares 'express'",
+    },
+  ],
+  capabilities: CAPABILITIES,
   repository: {
     files: 228,
     declarations: 3148,

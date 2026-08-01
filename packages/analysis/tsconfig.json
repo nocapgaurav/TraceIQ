@@ -7,5 +7,6 @@
   },
   "include": ["src"],
   "exclude": ["**/*.test.ts", "**/*.test-helper.ts"],
-  "references": [{ "path": "../pipeline" }]
+  "references": [
+    { "path": "../graph-api" },{ "path": "../pipeline" }]
 }

@@ -1,8 +1,19 @@
+import type { RepositoryContext } from '@traceiq/context';
 import { describe, expect, it } from 'vitest';
 
 import { TIER_TOKENS, estimatingCounter } from './budget.js';
 import { factLine } from './facts.js';
-import { CALLER, SUBJECT, node, repositoryContext, symbolContext, wideSymbolContext } from './fixtures.test-helper.js';
+import {
+  CALLER,
+  SUBJECT,
+  node,
+  repositoryContext,
+  symbolContext,
+  wideRepositoryContext,
+  wideSymbolContext,
+} from './fixtures.test-helper.js';
+import { intentOf } from './intent.js';
+import { assemble, stablePrefixOf } from './prompt.js';
 import { project, subjectOf } from './projection.js';
 
 /**
@@ -297,5 +308,257 @@ describe('deduplication', () => {
 
     expect(omission?.total).toBe(600);
     expect(omission?.kept).toBeGreaterThan(0);
+  });
+});
+
+describe('dependencies are real, in every ecosystem', () => {
+  /**
+   * Measured on `facebook/react`: 740 external nodes, of which 395 are `ext:builtin:*` and 11 are
+   * `ext:node:*`. The list is alphabetical by identifier, so `ext:builtin:` sorts first and the fifteen
+   * "dependencies" a `standard` projection showed were fifteen language builtins. React's 333 npm
+   * packages never reached a prompt.
+   */
+  const withExternals = (ids: readonly string[]): RepositoryContext => {
+    const context = repositoryContext();
+
+    return {
+      ...context,
+      dependencies: {
+        ...context.dependencies,
+        externalPackages: ids.map((id) => ({ id, name: id, kind: 'External' })),
+      },
+    } as unknown as RepositoryContext;
+  };
+
+  /** Dependencies are grouped by namespace, so the assertion is on what is *named*, not on line count. */
+  const dependencies = (context: RepositoryContext): readonly string[] => {
+    const projection = project(context, { tier: 'full' });
+    const text = projection.facts
+      .filter((fact) => fact.predicate === 'depends-on')
+      .map((fact) => fact.object)
+      .join(' | ');
+
+    return context.dependencies.externalPackages
+      .map((node) => node.id)
+      .filter((id) => [...projection.identifiers].includes(id) && text.length > 0);
+  };
+
+  it('drops language builtins and standard libraries, and keeps every ecosystem', () => {
+    const kept = dependencies(
+      withExternals([
+        'ext:builtin:Promise',
+        'ext:node:fs',
+        'ext:stdlib:java.util',
+        'ext:outside-analysis',
+        'ext:npm:react-dom',
+        'ext:python:flask',
+        'ext:maven:org.springframework:spring-core',
+        'ext:go:github.com/gin-gonic/gin',
+        'ext:cargo:serde',
+        'ext:nuget:Newtonsoft.Json',
+      ]),
+    );
+
+    expect([...kept].sort()).toEqual(
+      [
+        'ext:cargo:serde',
+        'ext:go:github.com/gin-gonic/gin',
+        'ext:maven:org.springframework:spring-core',
+        'ext:npm:react-dom',
+        'ext:nuget:Newtonsoft.Json',
+        'ext:python:flask',
+      ].sort(),
+    );
+  });
+
+  it('admits an ecosystem nobody has added yet, because the filter denies rather than allows', () => {
+    // The whole reason the strategy is a deny list: a tenth packaging system must not silently vanish
+    // from every answer until somebody remembers to edit a constant.
+    expect(dependencies(withExternals(['ext:hex:phoenix']))).toEqual(['ext:hex:phoenix']);
+  });
+
+  it('makes a dependency name citable without its identity prefix', () => {
+    // A model writes `react-dom`, not `ext:npm:react-dom`. Grounding has to accept the form prose uses.
+    const projection = project(withExternals(['ext:npm:react-dom']), { tier: 'full' });
+
+    expect(projection.terms.has('react-dom')).toBe(true);
+  });
+
+  it('keeps every grouped member citable by its identifier, though the line prints only names', () => {
+    // Compression must not shrink what an answer is allowed to say. The family renders as
+    // "12 npm packages under @babel: core, parser, …" and every member stays a permitted identifier.
+    const projection = project(
+      withExternals(['ext:npm:@babel/core', 'ext:npm:@babel/parser', 'ext:npm:@babel/traverse']),
+      { tier: 'full' },
+    );
+    const line = projection.facts.find((fact) => fact.predicate === 'depends-on')?.object ?? '';
+
+    expect(line).toContain('3 npm packages under @babel');
+    expect(line).not.toContain('ext:npm:');
+
+    for (const id of ['ext:npm:@babel/core', 'ext:npm:@babel/parser', 'ext:npm:@babel/traverse']) {
+      expect(projection.identifiers.has(id), id).toBe(true);
+    }
+  });
+});
+
+describe('the repository can be described, not merely counted', () => {
+  const facts = (predicate: string): readonly string[] =>
+    project(repositoryContext(), { tier: 'full' })
+      .facts.filter((fact) => fact.predicate === predicate)
+      .map((fact) => `${fact.subject} ${fact.object}`);
+
+  it('names the largest packages first, rather than the alphabetically first', () => {
+    const packages = facts('has-package');
+
+    expect(packages[0]).toContain('packages/core');
+    // The dotfile the Explorer returns first is last here, and present rather than filtered away.
+    expect(packages.at(-1)).toContain('.editorconfig');
+  });
+
+  it('names the roles that describe the system and counts the ones that do not', () => {
+    expect(facts('has-role').join(' ')).toContain('Controller');
+    expect(facts('metric').join(' ')).toContain('declarations carry the Test role');
+  });
+
+  it('reports hotspots with the measurement that ordered them', () => {
+    expect(facts('hotspot').join(' ')).toContain('referenced by 63 distinct declarations');
+  });
+
+  it('reports a file nothing imports as an entry point, with its ambiguity stated', () => {
+    const entry = facts('entry-point').join(' ');
+
+    expect(entry).toContain('no analysed file imports it');
+    expect(entry).toContain('or code nothing reaches');
+  });
+
+  it('projects technologies for the repository kind, which it never used to', () => {
+    // The repository kind returned from `identity` before reaching the technology loop, so
+    // "what technologies are used" was unanswerable about a repository and answerable about a symbol.
+    expect(facts('built-with').length).toBeGreaterThan(0);
+  });
+});
+
+describe('the prefix is stable across questions, and the tail is not', () => {
+  /**
+   * **This is the property the warm path is bought with.** The provider caches the longest prompt
+   * prefix it has already evaluated; measured on the reference stack, a repeat question reused 4,832 of
+   * 4,843 tokens and answered in 19 seconds against 108 cold. Asserting byte equality here is what stops
+   * a future change quietly turning every question back into a cold one.
+   */
+  const model = {
+    id: 'test',
+    contextWindow: 16_384,
+    maxOutputTokens: null,
+    capabilities: new Set(['system-prompt'] as const),
+  };
+
+  const promptFor = (question: string): { prefix: string; whole: string } => {
+    const projection = project(repositoryContext(), { tier: 'standard', intent: intentOf(question) });
+
+    return {
+      prefix: stablePrefixOf(projection),
+      whole: assemble({ question, projection, model }).map((message) => message.content).join('\n'),
+    };
+  };
+
+  it('renders byte-identical bytes before the question, whatever the question was', () => {
+    const architecture = promptFor('Explain the architecture and its layers.');
+    const technology = promptFor('What frameworks and dependencies are used?');
+    const hotspots = promptFor('Which declarations are most referenced?');
+
+    expect(architecture.prefix).toBe(technology.prefix);
+    expect(technology.prefix).toBe(hotspots.prefix);
+    expect(architecture.prefix.length).toBeGreaterThan(0);
+  });
+
+  it('starts every prompt with that prefix, so the provider can reuse it', () => {
+    const { prefix, whole } = promptFor('Explain the architecture.');
+
+    expect(whole).toContain(prefix);
+  });
+
+  it('still answers different questions differently, or the intent would be pointless', () => {
+    const architecture = promptFor('Explain the architecture and its layers.');
+    const technology = promptFor('What frameworks and dependencies are used?');
+
+    expect(architecture.whole).not.toBe(technology.whole);
+  });
+
+  it('withholds nothing when the whole repository fits, so a small one is never rationed', () => {
+    const projection = project(repositoryContext(), { tier: 'standard', intent: 'technology' });
+
+    expect(projection.intent).toBe('technology');
+    expect(projection.coreCount).toBe(projection.facts.length);
+  });
+
+  it('leads the supplement with the part the question is about, once there is a supplement', () => {
+    // A repository large enough that the core cannot hold it, which is the only case where the intent
+    // can change anything. `minimal` squeezes the core hard for the same reason.
+    const wide = wideRepositoryContext(60);
+    const technology = project(wide, { tier: 'minimal', intent: 'technology' });
+    const hotspots = project(wide, { tier: 'minimal', intent: 'hotspots' });
+
+    const leading = (projection: ReturnType<typeof project>): string | undefined =>
+      projection.facts[projection.coreCount]?.predicate;
+
+    expect(technology.coreCount).toBeLessThan(technology.facts.length);
+    expect(leading(technology)).toBe('built-with');
+    expect(leading(hotspots)).toBe('hotspot');
+  });
+
+  it('keeps the core a real projection, so a misclassified question still gets a usable answer', () => {
+    const projection = project(repositoryContext(), { tier: 'standard', intent: 'hotspots' });
+    const core = projection.facts.slice(0, projection.coreCount);
+    const predicates = new Set(core.map((fact) => fact.predicate));
+
+    // Identity, composition and the repository's own units are in the core regardless of intent.
+    expect(predicates.has('has-package')).toBe(true);
+    expect(predicates.has('written-in')).toBe(true);
+    expect(projection.coreCount).toBeGreaterThan(5);
+  });
+});
+
+describe('compression buys facts rather than tokens', () => {
+  it('states every language on one line instead of one line each', () => {
+    const written = project(repositoryContext(), { tier: 'standard' }).facts.filter(
+      (fact) => fact.predicate === 'written-in',
+    );
+
+    expect(written).toHaveLength(1);
+  });
+
+  it('groups regions by language and depth, accounting for every one of them', () => {
+    const regions = project(repositoryContext(), { tier: 'standard' }).facts.filter(
+      (fact) => fact.predicate === 'region-depth',
+    );
+
+    expect(regions.length).toBeGreaterThan(0);
+    expect(regions.map((fact) => fact.object).join(' ')).toMatch(/regions? \(/);
+  });
+
+  it('names role members on one line per role rather than one per declaration', () => {
+    const roles = project(repositoryContext(), { tier: 'standard' }).facts.filter(
+      (fact) => fact.predicate === 'has-role',
+    );
+
+    expect(roles.every((fact) => fact.subject === 'repository')).toBe(true);
+    expect(roles.map((fact) => fact.object).join(' ')).toContain('Controller:');
+  });
+});
+
+describe('intentOf', () => {
+  it('reads the question, and falls back to a balanced projection', () => {
+    expect(intentOf('What frameworks does this use?')).toBe('technology');
+    expect(intentOf('Which modules are most referenced?')).toBe('hotspots');
+    expect(intentOf('What are the main packages?')).toBe('packages');
+    expect(intentOf('Explain the architecture.')).toBe('architecture');
+    expect(intentOf('Tell me something.')).toBe('overview');
+  });
+
+  it('matches whole words, so a substring cannot classify a question', () => {
+    // `packaging` is not `package`; a classifier that matched substrings would send a question about
+    // build packaging to the package graph.
+    expect(intentOf('How is packaging handled?')).toBe('overview');
   });
 });

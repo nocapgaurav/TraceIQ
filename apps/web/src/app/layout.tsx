@@ -8,7 +8,8 @@ import { Providers } from '@/app/providers';
 
 export const metadata: Metadata = {
   title: { default: 'TraceIQ', template: '%s · TraceIQ' },
-  description: 'Repository intelligence for TypeScript codebases, derived from static analysis.',
+  description:
+    'Repository intelligence for TypeScript, JavaScript, Python, Java and Go codebases, derived from static analysis.',
 };
 
 export const viewport: Viewport = {

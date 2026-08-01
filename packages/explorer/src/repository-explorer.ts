@@ -53,13 +53,34 @@ import { listing } from './listing.js';
 export class RepositoryExplorer {
   readonly #context: ExplorerContext;
 
+  /**
+   * The whole-repository results, computed at most once each.
+   *
+   * **The docstring above already promised this and the code did not deliver it.** "An instance holds
+   * one immutable revision, so repeated calls return identical results" is exactly the licence to
+   * memoise, and `CachingGraph` makes the same argument one layer down for node reads — but the
+   * *aggregation* over those reads ran again on every call. Measured on `facebook/react`: assembling a
+   * repository context cost **3,990 ms cold and 1,543 ms on every repeat**, and the repeat was almost
+   * entirely these four recomputing results that could not have changed.
+   *
+   * Only the four argument-free, whole-repository results are held. Everything parameterised — a file,
+   * a package, a symbol, a search — is left alone: those are unbounded in number and caching them
+   * would be a memory leak wearing a performance improvement.
+   */
+  #overview: RepositoryOverview | null = null;
+  #architecture: ArchitectureView | null = null;
+  #cycles: CycleReport | null = null;
+  #hotspots: HotspotReport | null = null;
+
   constructor(api: RepositoryGraphApi) {
     this.#context = new ExplorerContext(api);
   }
 
   /** Repository, architecture, package, graph and health summaries in one response. */
   overview(): RepositoryOverview {
-    return overviewOf(this.#context);
+    this.#overview ??= overviewOf(this.#context);
+
+    return this.#overview;
   }
 
   /** A file with its declarations, wiring, routes, configuration and relationship counts. */
@@ -95,17 +116,23 @@ export class RepositoryExplorer {
 
   /** Grouped views by architectural role and by declaration kind. */
   architecture(): ArchitectureView {
-    return architectureViewOf(this.#context);
+    this.#architecture ??= architectureViewOf(this.#context);
+
+    return this.#architecture;
   }
 
   /** Every import, call, reference and inheritance cycle, listed rather than counted. */
   cycles(): CycleReport {
-    return cycleReportOf(this.#context);
+    this.#cycles ??= cycleReportOf(this.#context);
+
+    return this.#cycles;
   }
 
   /** The most connected declarations and files, and the largest strongly connected component. */
   hotspots(): HotspotReport {
-    return hotspotReportOf(this.#context);
+    this.#hotspots ??= hotspotReportOf(this.#context);
+
+    return this.#hotspots;
   }
 
   /** Exact or prefix search. Alphabetical, never ranked. */

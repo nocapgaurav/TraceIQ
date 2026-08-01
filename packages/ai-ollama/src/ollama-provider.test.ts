@@ -79,9 +79,40 @@ describe('listModels', () => {
 describe('model', () => {
   it('reads the real context window, whatever the architecture prefix is', async () => {
     const stub = ollamaStub({ known: ['qwen:7b'], contextLength: 32_768 });
-    const model = await new OllamaProvider({ fetch: stub.fetch }).model('qwen:7b');
+    const model = await new OllamaProvider({ fetch: stub.fetch, maxContextWindow: 32_768 }).model('qwen:7b');
 
     expect(model.describe().contextWindow).toBe(32_768);
+  });
+
+  it('reports the window it will actually run with, not the one the model was trained with', async () => {
+    // The two used to differ silently and the projection was budgeted from the wrong one. A model
+    // trained at 32k that this deployment will only run at 16k has a 16k window as far as everything
+    // above is concerned, because 16k is what the prompt will be truncated against.
+    const stub = ollamaStub({ known: ['qwen:7b'], contextLength: 32_768 });
+    const model = await new OllamaProvider({ fetch: stub.fetch, maxContextWindow: 16_384 }).model('qwen:7b');
+
+    expect(model.describe().contextWindow).toBe(16_384);
+  });
+
+  it('never asks for more context than the model was trained with', async () => {
+    const stub = ollamaStub({ known: ['tiny:1b'], contextLength: 2048 });
+    const model = await new OllamaProvider({ fetch: stub.fetch, maxContextWindow: 16_384 }).model('tiny:1b');
+
+    expect(model.describe().contextWindow).toBe(2048);
+  });
+
+  it('sends that window to the daemon on every request, so the two cannot disagree', async () => {
+    // The defect this closes: with no num_ctx the daemon picks its own, varies it between requests and
+    // discards the front of an over-long prompt — the system prompt and the highest-priority facts.
+    const stub = ollamaStub({ known: ['qwen:7b'], contextLength: 32_768, chunks: ['hi'] });
+    const model = await new OllamaProvider({ fetch: stub.fetch, maxContextWindow: 8192 }).model('qwen:7b');
+
+    await drain(model.generate({ messages: [{ role: 'user', content: 'hi' }] }));
+
+    const chat = stub.calls.filter((call) => call.url.endsWith('/api/chat')).at(-1);
+    const body = chat?.body as { options?: { num_ctx?: number } } | undefined;
+
+    expect(body?.options?.num_ctx).toBe(8192);
   });
 
   it('falls back to a pessimistic window when the provider will not say', async () => {
@@ -260,11 +291,55 @@ describe('generate', () => {
       );
     }) as typeof globalThis.fetch;
 
-    const model = await new OllamaProvider({ fetch: silent, idleTimeoutMs: 30 }).model('q:1b');
+    // Before any token has arrived it is the *first-token* deadline that applies, not the idle one:
+    // prompt evaluation is legitimately silent for minutes, so one deadline covering both would either
+    // kill a healthy prompt or fail to notice a dead stream.
+    const model = await new OllamaProvider({ fetch: silent, firstTokenTimeoutMs: 30, idleTimeoutMs: 30 }).model(
+      'q:1b',
+    );
 
     await expect(
       drain(model.generate({ messages: [{ role: 'user', content: 'hi' }] })),
     ).rejects.toMatchObject({ code: 'generation-timeout' });
+  }, 10_000);
+
+  it('waits out a long prompt evaluation rather than calling it a timeout', async () => {
+    // The generous first-token deadline is the whole reason two exist: a provider that is quiet for
+    // longer than the between-token limit while it reads the prompt is working, not broken.
+    const slow: typeof globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+
+      if (url.endsWith('/api/show')) {
+        return new Response(JSON.stringify({ model_info: { 'x.context_length': 4096 } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            setTimeout(() => {
+              controller.enqueue(
+                new TextEncoder().encode(
+                  `${JSON.stringify({ message: { content: 'ok' } })}\n${JSON.stringify({ done: true, done_reason: 'stop' })}\n`,
+                ),
+              );
+              controller.close();
+            }, 120);
+          },
+        }),
+        { status: 200 },
+      );
+    }) as typeof globalThis.fetch;
+
+    const model = await new OllamaProvider({ fetch: slow, firstTokenTimeoutMs: 2000, idleTimeoutMs: 20 }).model(
+      'q:1b',
+    );
+
+    const events = await drain(model.generate({ messages: [{ role: 'user', content: 'hi' }] }));
+
+    expect(events.some((event) => event.type === 'delta')).toBe(true);
   }, 10_000);
 });
 

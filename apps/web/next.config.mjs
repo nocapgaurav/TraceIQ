@@ -57,6 +57,33 @@ const config = {
   },
 
   /**
+   * How long the proxy tolerates silence from the API.
+   *
+   * **Raised, but the heartbeat is what actually fixes this and the order matters.** Next applies its
+   * default as `proxyReq.setTimeout(30000, …)` in `router-utils/proxy-request` — a socket *inactivity*
+   * timeout, not a total duration — and answering one question was measured spending 89 seconds
+   * between the last preparatory frame and the first token, all of it the model reading the prompt at
+   * 45.75 tokens per second.
+   *
+   * Three options were compared:
+   *
+   * - **Raising this alone.** Fixes the development stack and nothing else. Every other hop a
+   *   deployment puts in front of the API — nginx's 60-second `proxy_read_timeout`, a managed edge's
+   *   idle limit, a corporate proxy — has its own timeout that this repository cannot configure, and
+   *   the same stream dies there instead. It also makes the one honest signal worse: with no ceiling
+   *   at all, a genuinely dead API is indistinguishable from a slow one, forever.
+   * - **Heartbeat frames alone.** Fixes every hop at once, because every one of them resets on bytes
+   *   flowing. This is the portable answer and it is what `HEARTBEAT_MS` in the API's `sse.ts` does,
+   *   writing an SSE comment every ten seconds — under a third of the tightest timeout in a realistic
+   *   chain. It needs no configuration anywhere and works behind proxies nobody here has heard of.
+   * - **Both**, which is what is done. The heartbeat is the correctness mechanism; this stays finite
+   *   and becomes purely a dead-upstream detector. Two minutes is far above the ten-second heartbeat,
+   *   so it can only fire when the API has genuinely stopped writing — which is exactly when a client
+   *   should be told rather than left hanging.
+   */
+  experimental: { proxyTimeout: 120_000 },
+
+  /**
    * The `@/…` alias, declared here as well as in `tsconfig.json`.
    *
    * Next normally reads `paths` out of the tsconfig, but it parses that file with the same TypeScript

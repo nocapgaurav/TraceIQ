@@ -1,3 +1,4 @@
+import type { RepositoryCapabilities } from '@traceiq/graph-api';
 import type {
   GraphEdge,
   GraphNode,
@@ -148,6 +149,35 @@ export class FakeQueries implements ImpactQueries {
     return this.dependencies;
   }
 
+  /**
+   * Fully analysed unless a test says otherwise.
+   *
+   * `semantic` is the right default here: these fixtures are hand-built TypeScript-shaped
+   * graphs, and defaulting to `universal` would attach an "unanalysed region" caveat to
+   * every existing impact test.
+   */
+  capabilities(): RepositoryCapabilities {
+    return this.capabilityRecord;
+  }
+
+  capabilityRecord: RepositoryCapabilities = {
+    depth: 'semantic',
+    regions: [
+      {
+        path: '',
+        primaryLanguage: 'typescript',
+        languages: [],
+        ecosystems: [],
+        fileCount: 0,
+        sourceFileCount: 0,
+        depth: 'semantic',
+        reason: 'stated by a test',
+      },
+    ],
+    languages: [],
+    isPolyglot: false,
+  };
+
   findUnresolved(): readonly UnresolvedResult[] {
     this.calls.findUnresolved += 1;
 
@@ -184,6 +214,9 @@ export function node(input: {
     isExportedFromModule: null,
     externalKind: null,
     externalName: null,
+    language: null,
+    fileRole: null,
+    category: null,
     confidence: input.confidence ?? 'CERTAIN',
     provenance: {
       producer: 'graph-builder',

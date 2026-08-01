@@ -58,12 +58,23 @@ export function GroundingBadge({ verdict }: { readonly verdict: ChatVerdict }) {
 export function ProjectionSummary({ grounding }: { readonly grounding: ChatGrounding }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-      <span>
+      <span
+        title={`${count(grounding.coreCount)} of these are the repository core, shown to the model for every question; the rest were selected for this one`}
+      >
         <span className="tabular-nums">{count(grounding.factCount)}</span> facts
+        {grounding.coreCount > 0 && grounding.coreCount < grounding.factCount ? (
+          <span className="text-muted-foreground/70"> ({count(grounding.coreCount)} core)</span>
+        ) : null}
       </span>
       <span>
         <span className="tabular-nums">{count(grounding.tokens)}</span> tokens
       </span>
+      {/*
+        What the question was taken to be about. Shown because it is the one place the system makes a
+        judgement a reader might disagree with — and if it reads "technology" beside an architecture
+        question, that is worth being able to see rather than having to infer from the answer.
+      */}
+      {grounding.intent === 'overview' ? null : <span>reading for {grounding.intent}</span>}
       <span>tier {grounding.tier}</span>
       <span className="font-mono" title="identity of the facts that grounded this answer">
         {grounding.digest}
@@ -161,7 +172,14 @@ function Identifier({ value }: { readonly value: string }) {
 }
 
 /** Identifiers the answer invented. Named explicitly, because this is the failure that destroys trust. */
-export function Fabrications({ identifiers }: { readonly identifiers: readonly string[] }) {
+export function Fabrications({
+  identifiers,
+  heading = 'Named, but not present in the repository',
+}: {
+  readonly identifiers: readonly string[];
+  /** What kind of claim these were. Defaults to the identifier case, which is the stronger accusation. */
+  readonly heading?: string;
+}) {
   if (identifiers.length === 0) {
     return null;
   }
@@ -170,7 +188,7 @@ export function Fabrications({ identifiers }: { readonly identifiers: readonly s
     <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-2">
       <p className="flex items-center gap-1.5 text-[11px] font-medium text-destructive">
         <AlertTriangle className="h-3 w-3" aria-hidden />
-        Named, but not present in the repository
+        {heading}
       </p>
       <ul className="mt-1 flex flex-col gap-0.5">
         {identifiers.map((identifier) => (

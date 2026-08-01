@@ -3,7 +3,19 @@
  *
  * Statement order matters: a table is created after everything it references.
  */
-export const SCHEMA_VERSION = 1;
+/**
+ * Bumped to 3 for `nodes.category`, which the `Technology` kind needs.
+ *
+ * Version 2 added universal repository facts: `nodes.language`, `nodes.file_role` and the three
+ * `region*` tables. Version 3 adds one nullable column, because a new node kind arrived with an
+ * attribute none of the existing columns means. Reusing `external_kind` was tried and reverted —
+ * it is a closed vocabulary of packaging systems, and a consumer filtering `external_kind = 'npm'`
+ * must never meet `'frontend'` in that column.
+ *
+ * There is no migration path and none is needed — a graph is rebuilt from source on every scan,
+ * and the store refuses a database written by a different version rather than reading it wrongly.
+ */
+export const SCHEMA_VERSION = 3;
 
 const CONFIDENCE_CHECK = `CHECK (confidence IN ('CERTAIN','RESOLVED','INFERRED','AMBIGUOUS'))`;
 
@@ -50,11 +62,47 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
     is_exported_from_module INTEGER,
     external_kind           TEXT,
     external_name           TEXT,
+    language                TEXT,
+    file_role               TEXT,
+    category                TEXT,
     confidence              TEXT NOT NULL ${CONFIDENCE_CHECK},
     provenance_producer     TEXT NOT NULL,
     provenance_file_id      TEXT REFERENCES nodes(id),
     provenance_evidence     TEXT NOT NULL,
     revision_id             INTEGER NOT NULL REFERENCES revisions(id)
+  )`,
+
+  /*
+   * Technology regions and how deeply each was analysed.
+   *
+   * Tables rather than nodes: a region describes the *analysis*, not the code, so putting
+   * it in `nodes` would surface it in search results and traversals where a reader would
+   * not expect it. Its languages and ecosystems are rows rather than delimited strings,
+   * because a delimiter in a column is a parser waiting to be written.
+   */
+  `CREATE TABLE regions (
+    path              TEXT PRIMARY KEY,
+    primary_language  TEXT,
+    file_count        INTEGER NOT NULL,
+    source_file_count INTEGER NOT NULL,
+    analysis_depth    TEXT NOT NULL CHECK (analysis_depth IN (
+      'universal','structural','semantic','framework'
+    )),
+    depth_reason      TEXT NOT NULL,
+    revision_id       INTEGER NOT NULL REFERENCES revisions(id)
+  )`,
+
+  `CREATE TABLE region_languages (
+    region_path TEXT NOT NULL REFERENCES regions(path),
+    language    TEXT NOT NULL,
+    files       INTEGER NOT NULL,
+    PRIMARY KEY (region_path, language)
+  )`,
+
+  `CREATE TABLE region_ecosystems (
+    region_path TEXT NOT NULL REFERENCES regions(path),
+    ecosystem   TEXT NOT NULL,
+    PRIMARY KEY (region_path, ecosystem)
   )`,
 
   `CREATE TABLE node_locations (
@@ -140,6 +188,9 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
 export const TRUNCATE_STATEMENTS: readonly string[] = [
   'DELETE FROM edges',
   'DELETE FROM unresolved_references',
+  'DELETE FROM region_languages',
+  'DELETE FROM region_ecosystems',
+  'DELETE FROM regions',
   'DELETE FROM node_roles',
   'DELETE FROM node_locations',
   'DELETE FROM file_revisions',

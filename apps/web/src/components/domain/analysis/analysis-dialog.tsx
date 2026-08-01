@@ -23,7 +23,23 @@ import { routes } from '@/lib/routes';
  * cost of a round trip on a bad URL is a few milliseconds, and the message comes back better than one
  * this component could invent.
  */
-const EXAMPLES = ['facebook/react', 'openai/openai-node', 'honojs/hono'] as const;
+/**
+ * Repositories offered as a starting point.
+ *
+ * **One per language TraceIQ analyses semantically, and that is the point of the list.** All three
+ * used to be TypeScript or JavaScript, which told a reader looking for somewhere to start that those
+ * were the languages the product handles — the same TypeScript-only impression the Overview used to
+ * give, in the one place a first-time visitor actually looks.
+ *
+ * Each is small enough to finish while somebody watches, and each reaches `framework` or `semantic`
+ * depth, so whichever a reader picks the result is a real analysis rather than a file listing.
+ */
+const EXAMPLES = [
+  'facebook/react',
+  'pallets/flask',
+  'spring-projects/spring-petclinic',
+  'gin-gonic/gin',
+] as const;
 
 export function AnalysisDialog({
   open,
@@ -164,10 +180,33 @@ export function AnalysisDialog({
           )}
 
           {analysis.job?.result === null || analysis.job?.result === undefined ? null : (
-            <p className="text-[11px] text-muted-foreground">
-              {count(analysis.job.result.files)} files, {count(analysis.job.result.declarations)} declarations
-              and {count(analysis.job.result.edges)} relationships.
-            </p>
+            <div className="flex flex-col gap-1">
+              <p className="text-[11px] text-muted-foreground">
+                {count(analysis.job.result.files)} files, {count(analysis.job.result.declarations)} declarations
+                and {count(analysis.job.result.edges)} relationships.
+              </p>
+              {/* Without this, a Python or Go repository reported its declarations beside zero routes and
+                  zero packages with nothing saying what it was written in — which reads as "found
+                  nothing" rather than "found a different set of things". */}
+              {analysis.job.result.languages.length === 0 ? null : (
+                <p className="text-[11px] text-muted-foreground">
+                  {analysis.job.result.languages
+                    .slice(0, 4)
+                    .map((entry) => `${entry.language} (${count(entry.files)})`)
+                    .join(', ')}
+                  {analysis.job.result.isPolyglot ? ' — polyglot' : ''} · analysed to{' '}
+                  {analysis.job.result.depth} depth across {count(analysis.job.result.regions)}{' '}
+                  {analysis.job.result.regions === 1 ? 'region' : 'regions'}.
+                </p>
+              )}
+              {analysis.job.result.analyzerFailures.length === 0 ? null : (
+                <p className="text-[11px] text-warning">
+                  {analysis.job.result.analyzerFailures
+                    .map((entry) => `the ${entry.analyzer} analyser failed: ${entry.failure}`)
+                    .join('; ')}
+                </p>
+              )}
+            </div>
           )}
         </div>
 

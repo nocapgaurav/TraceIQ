@@ -6,6 +6,7 @@ import { AiError } from './errors.js';
 import type { Citation, ContextProjection, Omission } from './facts.js';
 import { checkGrounding, type GroundingVerdict } from './grounding.js';
 import type { LanguageModel, TokenUsage } from './model.js';
+import { intentOf } from './intent.js';
 import { assemble, reservedTokens } from './prompt.js';
 import { project } from './projection.js';
 import type { AnswerEvent, GroundingSummary } from './stream.js';
@@ -50,6 +51,8 @@ export interface Answer {
   readonly verdict: GroundingVerdict;
   /** Identifiers the answer named that no fact contained. Empty unless the verdict is `ungrounded`. */
   readonly fabricatedIdentifiers: readonly string[];
+  /** Package, framework and dependency names the answer claimed that no fact carried. */
+  readonly unsupportedTerms: readonly string[];
   readonly unknownCitations: readonly string[];
   readonly grounding: GroundingSummary;
   readonly model: string;
@@ -84,8 +87,16 @@ export class RepositoryAnswerer {
     const description = this.#model.describe();
     const counter = this.#model.tokens ?? estimatingCounter;
 
+    // Emitted before the work rather than after it, so a consumer names the stage it is waiting on
+    // rather than the stage that just finished. Acquiring a repository context on a large graph is
+    // seconds of work, and it is the first thing a user waits through.
+    yield { type: 'status', phase: 'acquiring-context' };
+
     const context = acquire(this.#source, request.subject);
     const history = request.history ?? NO_HISTORY;
+
+    yield { type: 'status', phase: 'projecting' };
+
     const reserved = reservedTokens({
       question: request.question,
       ...(request.history === undefined ? {} : { history }),
@@ -94,6 +105,10 @@ export class RepositoryAnswerer {
 
     let tier = request.tier ?? tierForWindow(description.contextWindow);
 
+    // What the question is about, decided from the question alone and used only to order the
+    // supplement. The core the answer rests on is the same whichever way this lands.
+    const intent = intentOf(request.question);
+
     if (reserved >= TIER_TOKENS[tier]) {
       throw new AiError(
         'budget-not-satisfiable',
@@ -101,7 +116,7 @@ export class RepositoryAnswerer {
       );
     }
 
-    let projection = project(context, { tier, reserved, counter });
+    let projection = project(context, { tier, reserved, counter, intent });
 
     if (projection.facts.length === 0) {
       throw new AiError(
@@ -127,6 +142,13 @@ export class RepositoryAnswerer {
         model: description,
       });
 
+      // The long silence starts here. Everything above is milliseconds of deterministic work; what
+      // follows is the provider evaluating the whole prompt before it emits a single token, measured
+      // at 89 seconds for a 4,087-token prompt on the reference stack.
+      yield { type: 'status', phase: 'awaiting-model' };
+
+      let announced = false;
+
       try {
         for await (const event of this.#model.generate(
           {
@@ -137,6 +159,11 @@ export class RepositoryAnswerer {
           signal,
         )) {
           if (event.type === 'delta') {
+            if (!announced) {
+              announced = true;
+              yield { type: 'status', phase: 'generating' };
+            }
+
             text += event.text;
             yield { type: 'delta', text: event.text };
           } else if (event.type === 'end') {
@@ -157,10 +184,13 @@ export class RepositoryAnswerer {
         }
 
         tier = smaller;
-        projection = project(context, { tier, reserved, counter });
+        yield { type: 'status', phase: 're-projecting' };
+        projection = project(context, { tier, reserved, counter, intent });
         yield { type: 'grounding', grounding: summarise(projection) };
       }
     }
+
+    yield { type: 'status', phase: 'verifying' };
 
     const report = checkGrounding(text, projection);
 
@@ -176,6 +206,7 @@ export class RepositoryAnswerer {
         citations: report.citations,
         verdict: report.verdict,
         fabricatedIdentifiers: report.fabricatedIdentifiers,
+        unsupportedTerms: report.unsupportedTerms,
         unknownCitations: report.unknownCitations,
         grounding: summarise(projection),
         model: description.id,
@@ -192,6 +223,7 @@ export class RepositoryAnswerer {
     const history = request.history ?? NO_HISTORY;
 
     return project(context, {
+      intent: intentOf(request.question),
       tier: request.tier ?? tierForWindow(this.#model.describe().contextWindow),
       reserved: reservedTokens({
         question: request.question,
@@ -210,6 +242,8 @@ function summarise(projection: ContextProjection): GroundingSummary {
     kind: projection.kind,
     subject: projection.subject,
     factCount: projection.facts.length,
+    coreCount: projection.coreCount,
+    intent: projection.intent,
     omissions,
     tier: projection.tier,
     tokens: projection.tokens,

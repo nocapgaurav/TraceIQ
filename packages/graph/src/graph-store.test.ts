@@ -75,7 +75,7 @@ function sampleGraph(): RepositoryGraph {
         relationship({
           type: 'REFERENCES_TYPE',
           sourceId: 'sym:src/a.ts#Service.run',
-          target: externalTarget('typescript-lib'),
+          target: externalTarget('language-builtin'),
           name: 'Promise',
           fileId: 'file:src/a.ts',
           line: 3,
@@ -117,6 +117,9 @@ describe('schema creation', () => {
       'node_locations',
       'node_roles',
       'nodes',
+      'region_ecosystems',
+      'region_languages',
+      'regions',
       'repository',
       'revisions',
       'unresolved_references',

@@ -63,11 +63,84 @@ describe('deriveProfile', () => {
     expect(deriveProfile(OVERVIEW)).toEqual(deriveProfile(OVERVIEW));
   });
 
-  it('claims TypeScript as a property of the analysis, not as a detection', () => {
+  it('reports the languages the scan counted, rather than assuming TypeScript', () => {
+    // This replaced an assertion that the value was always exactly ['TypeScript'], with the evidence
+    // "the analysis reads TypeScript projects only". Discovery became universal, and that made the
+    // claim false — a Python repository was described to the reader as a TypeScript project.
     const { languages } = deriveProfile(OVERVIEW);
 
-    expect(languages.value).toEqual(['TypeScript']);
-    expect(languages.evidence).toContain('reads TypeScript projects only');
+    expect(languages.value).toEqual(['TypeScript', 'Markdown']);
+    expect(languages.evidence).toContain('by extension');
+  });
+
+  it('names a repository after whatever it is actually written in', () => {
+    const python = overviewWith({});
+    const profile = deriveProfile({
+      ...python,
+      capabilities: {
+        depth: 'semantic',
+        isPolyglot: false,
+        languages: [{ language: 'python', files: 40 }],
+        regions: [
+          {
+            path: '',
+            primaryLanguage: 'python',
+            languages: [{ language: 'python', files: 40 }],
+            ecosystems: ['python'],
+            fileCount: 40,
+            sourceFileCount: 40,
+            depth: 'semantic',
+            reason: 'Python sources were parsed',
+          },
+        ],
+      },
+    });
+
+    expect(profile.languages.value).toEqual(['Python']);
+    expect(profile.shape.value).toContain('Python');
+    expect(profile.shape.value).not.toContain('TypeScript');
+  });
+
+  it('calls a repository whose regions differ in language polyglot', () => {
+    const base = overviewWith({});
+    const profile = deriveProfile({
+      ...base,
+      capabilities: {
+        depth: 'semantic',
+        isPolyglot: true,
+        languages: [
+          { language: 'typescript', files: 30 },
+          { language: 'python', files: 20 },
+        ],
+        regions: [
+          {
+            path: 'frontend',
+            primaryLanguage: 'typescript',
+            languages: [{ language: 'typescript', files: 30 }],
+            ecosystems: ['npm'],
+            fileCount: 30,
+            sourceFileCount: 30,
+            depth: 'semantic',
+            reason: 'the TypeScript compiler read these sources',
+          },
+          {
+            path: 'ml',
+            primaryLanguage: 'python',
+            languages: [{ language: 'python', files: 20 }],
+            ecosystems: ['python'],
+            fileCount: 20,
+            sourceFileCount: 20,
+            depth: 'semantic',
+            reason: 'Python sources were parsed',
+          },
+        ],
+      },
+    });
+
+    expect(profile.shape.value).toContain('polyglot');
+    expect(profile.shape.value).toContain('TypeScript');
+    expect(profile.shape.value).toContain('Python');
+    expect(profile.languages.value).toEqual(['TypeScript', 'Python']);
   });
 
   describe('shape', () => {
@@ -86,20 +159,61 @@ describe('deriveProfile', () => {
   });
 
   describe('frameworks', () => {
-    it('degrades when nothing was extracted, rather than guessing from package names', () => {
-      const profile = deriveProfile(overviewWith({ routes: 0, environmentVariables: 0 }));
+    it('degrades when nothing was found, rather than guessing from package names', () => {
+      const profile = deriveProfile({
+        ...overviewWith({ routes: 0, environmentVariables: 0 }),
+        technologies: [],
+      });
 
       expect(profile.frameworks).toBeNull();
     });
 
-    it('reports what extraction found, without naming the framework', () => {
-      const profile = deriveProfile(overviewWith({ routes: 12, environmentVariables: 3 }));
+    it('names the frameworks the API detected, and only those', () => {
+      // This used to assert that *no* framework was named, because the API named none. It does
+      // now — with the manifest entry or marker file that proves each — so the interface reports
+      // the detection instead of paraphrasing its side effects.
+      const profile = deriveProfile({
+        ...overviewWith({ routes: 12, environmentVariables: 3 }),
+        technologies: [
+          {
+            id: 'nextjs',
+            name: 'Next.js',
+            category: 'frontend',
+            regionPath: 'apps/web',
+            confidence: 'CERTAIN',
+            evidence: "apps/web/package.json declares 'next'",
+          },
+          {
+            id: 'vitest',
+            name: 'Vitest',
+            category: 'testing',
+            regionPath: '',
+            confidence: 'CERTAIN',
+            evidence: "package.json declares 'vitest'",
+          },
+        ],
+      });
 
+      // The region is named beside the framework: in a monorepo, *which* project is Next.js is the
+      // part a reader needs. A test runner is not what a reader means by "what is this built on",
+      // so only frontend and backend reach this field.
       expect(profile.frameworks?.value).toEqual([
+        'Next.js (apps/web)',
         'HTTP routing (12 routes registered)',
         'environment configuration (3 variables read)',
       ]);
-      // The point of the whole field: no framework is named, because the API never names one.
+      expect(profile.frameworks?.evidence).toMatch(/manifest entry or a marker file/);
+    });
+
+    it('still names nothing when the API detected no framework', () => {
+      // The rule the old test guarded is intact: nothing is inferred in the browser. With no
+      // detection the field reports outcomes only, exactly as before.
+      const profile = deriveProfile({
+        ...overviewWith({ routes: 12, environmentVariables: 0 }),
+        technologies: [],
+      });
+
+      expect(profile.frameworks?.value).toEqual(['HTTP routing (12 routes registered)']);
       expect(JSON.stringify(profile.frameworks)).not.toMatch(/express|nest|fastify|next/i);
     });
   });
@@ -164,15 +278,29 @@ describe('deriveProfile', () => {
   });
 
   describe('stack', () => {
-    it('counts npm packages without naming them', () => {
-      const profile = deriveProfile(overviewWith({ externalsByKind: { npm: 39, node: 5 } }));
+    it('counts packages across every ecosystem, naming the ecosystems only in the detail', () => {
+      // `39 npm packages` and `Node.js` were the labels while npm was the only ecosystem the graph could
+      // express. A Maven or Go dependency counted for nothing, and a Python standard-library module was
+      // invisible — the kinds are `maven`, `go`, `python` and `stdlib` now.
+      const profile = deriveProfile(
+        overviewWith({ externalsByKind: { maven: 69, stdlib: 11 } }),
+      );
       const labels = profile.stack.map((item) => item.label);
 
-      expect(labels).toContain('39 npm packages');
-      expect(labels).toContain('Node.js');
+      expect(labels).toContain('69 packages');
+      expect(labels).toContain('Standard library');
+      expect(profile.stack.find((item) => item.label === '69 packages')?.detail).toContain('maven');
     });
 
-    it('omits Node.js when no runtime module was imported', () => {
+    it('sums packages from several ecosystems in a polyglot repository', () => {
+      const profile = deriveProfile(
+        overviewWith({ externalsByKind: { npm: 36, go: 19, python: 12, node: 5 } }),
+      );
+
+      expect(profile.stack.map((item) => item.label)).toContain('67 packages');
+    });
+
+    it('omits the standard-library chip when no runtime module was imported', () => {
       const profile = deriveProfile(overviewWith({ externalsByKind: { npm: 2 } }));
 
       expect(profile.stack.map((item) => item.label)).not.toContain('Node.js');

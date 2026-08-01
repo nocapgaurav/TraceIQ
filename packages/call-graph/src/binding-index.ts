@@ -1,6 +1,23 @@
 import type { RepositoryIR } from '@traceiq/ir';
-import type { ResolvedRepository } from '@traceiq/resolver';
-import type { NodeId } from '@traceiq/types';
+import { classifyUnresolvedSpecifier, type ExternalOrigin, type ResolvedRepository } from '@traceiq/resolver';
+import type { Ecosystem, NodeId } from '@traceiq/types';
+
+/**
+ * What an imported name outside the analysed set actually names.
+ *
+ * Held rather than a bare "this is external" flag so that a call through the name can become an
+ * edge onto the dependency instead of vanishing into an unresolved reason. The origin, name and
+ * ecosystem are exactly the fields an external identity is minted from, so nothing here is a
+ * second, divergent classification — they are copied from the Resolver's own answer where it had
+ * one, and derived from the specifier's syntax where it did not.
+ */
+export interface ExternalRoot {
+  readonly origin: ExternalOrigin;
+  readonly name: string | null;
+  readonly ecosystem: Ecosystem | null;
+  /** The specifier as written, for the evidence sentence. */
+  readonly specifier: string;
+}
 
 /**
  * Everything needed to bind a callee name, indexed once.
@@ -30,12 +47,16 @@ export interface BindingIndex {
   readonly moduleExports: ReadonlyMap<string, NodeId>;
   /**
    * Import bindings that name something outside the analysed set, by
-   * `<fileId>#<localName>`.
+   * `<fileId>#<localName>`, mapped to what they name.
    *
-   * Held so that calling `path.join` or `expect` is explained as leaving the repository
-   * rather than reported as a name nothing could bind.
+   * Held so that calling `path.join` or `expect` becomes an edge onto the dependency rather
+   * than an unresolved reason. It was a set until the milestone that measured what that cost:
+   * a repository whose dependencies are not installed — which is every repository a user
+   * clones before running `npm install` — produced **zero** call edges onto any package,
+   * because the checker could not type the receiver and the name rules had thrown away the
+   * one thing they did know, which is what the import statement said.
    */
-  readonly importedExternals: ReadonlySet<string>;
+  readonly importedExternals: ReadonlyMap<string, ExternalRoot>;
   /** The declaration containing each declaration, where it has one. */
   readonly containerOf: ReadonlyMap<NodeId, NodeId>;
   /** Every declaration's kind, used to tell a container from a value. */
@@ -99,17 +120,39 @@ export function buildBindingIndex(input: {
   const importedDeclarations = new Map<string, NodeId>();
   const importedModules = new Map<string, NodeId>();
   const moduleExports = new Map<string, NodeId>();
-  const importedExternals = new Set<string>();
+  const importedExternals = new Map<string, ExternalRoot>();
+  /** Which specifier each local name came from, so an evidence sentence can quote it. */
+  const specifierOf = new Map<string, string>();
 
   // Two signals, because neither alone is complete. A bare or `node:` specifier is
   // external by syntax, which holds even when the package is not installed and the
   // Resolver could bind nothing. A relative specifier resolving to an external target
   // catches the rest — declaration output outside the analysed set, for instance.
   for (const statement of input.ir.imports) {
-    if (isExternalSpecifier(statement.moduleSpecifier)) {
-      for (const binding of statement.bindings) {
-        importedExternals.add(key(statement.fileId, binding.localName));
-      }
+    for (const binding of statement.bindings) {
+      specifierOf.set(key(statement.fileId, binding.localName), statement.moduleSpecifier);
+    }
+
+    if (!isExternalSpecifier(statement.moduleSpecifier)) {
+      continue;
+    }
+
+    const classified = classifyUnresolvedSpecifier(statement.moduleSpecifier);
+
+    // A bare specifier that names no package — the empty string, say — is left alone rather
+    // than recorded as an unnameable external, so nothing downstream has to handle a root
+    // whose identity is `null` on both fields.
+    if (classified === null || classified.target.kind !== 'external') {
+      continue;
+    }
+
+    for (const binding of statement.bindings) {
+      importedExternals.set(key(statement.fileId, binding.localName), {
+        origin: classified.target.origin,
+        name: classified.target.name,
+        ecosystem: classified.target.ecosystem,
+        specifier: statement.moduleSpecifier,
+      });
     }
   }
 
@@ -130,7 +173,14 @@ export function buildBindingIndex(input: {
       } else if (target.kind === 'file') {
         importedModules.set(key(fileId, name), target.fileId);
       } else if (target.kind === 'external') {
-        importedExternals.add(key(fileId, name));
+        // The Resolver's answer wins over the syntactic one: it had the resolved file, so it
+        // can tell a language builtin from a package where the specifier alone cannot.
+        importedExternals.set(key(fileId, name), {
+          origin: target.origin,
+          name: target.name,
+          ecosystem: target.ecosystem,
+          specifier: specifierOf.get(key(fileId, name)) ?? (target.name ?? 'a module outside the analysed set'),
+        });
       }
 
       continue;

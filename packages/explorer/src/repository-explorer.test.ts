@@ -1,3 +1,5 @@
+import { NODE_KINDS } from '@traceiq/graph-api';
+import { RELATIONSHIP_TYPES } from '@traceiq/types';
 import type { NodeId } from '@traceiq/types';
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -579,16 +581,18 @@ describe('reuse and shared state', () => {
   it('builds the whole-graph index once however many operations need it', () => {
     explorer.overview();
 
-    // Sixteen node kinds and thirteen relationship types, read once each.
-    expect(graph.calls.getNodes).toBe(16);
+    // Eighteen node kinds and thirteen relationship types, read once each.
+    expect(graph.calls.getNodes).toBe(19);
     expect(graph.calls.getEdges).toBe(13);
 
     explorer.hotspots();
     explorer.cycles();
     explorer.architecture();
 
-    expect(graph.calls.getNodes).toBe(16);
-    expect(graph.calls.getEdges).toBe(13);
+    // One read per kind and per relationship type — that is the invariant, not the two totals.
+    // Hardcoding them meant every new node kind failed a test about single-pass reading.
+    expect(graph.calls.getNodes).toBe(NODE_KINDS.length);
+    expect(graph.calls.getEdges).toBe(RELATIONSHIP_TYPES.length);
   });
 
   it('answers a second identical operation entirely from the cache', () => {

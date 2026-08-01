@@ -1,16 +1,31 @@
 import type {
+  AnalysisDepth,
   GraphEdge,
   GraphNode,
   GraphRole,
   GraphUnresolvedReference,
+  LanguageFileCount,
   NodeKind,
+  RegionCapability,
+  RepositoryCapabilities,
   RepositoryGraphApi,
 } from '@traceiq/graph-api';
 import type { SourceRange } from '@traceiq/ir';
 import type { ConfidenceLevel, NodeId, RelationshipType, Role } from '@traceiq/types';
 import Database from 'better-sqlite3';
 
+import { summariseCapabilities } from './capabilities.js';
+
 type Connection = Database.Database;
+
+interface RegionRow {
+  readonly path: string;
+  readonly primary_language: string | null;
+  readonly file_count: number;
+  readonly source_file_count: number;
+  readonly analysis_depth: string;
+  readonly depth_reason: string;
+}
 
 export class GraphApiError extends Error {
   constructor(reason: string, options?: { cause: unknown }) {
@@ -36,6 +51,9 @@ interface NodeRow {
   readonly has_symbol: number | null;
   readonly is_exported_from_module: number | null;
   readonly external_kind: string | null;
+  readonly language: string | null;
+  readonly file_role: string | null;
+  readonly category: string | null;
   readonly external_name: string | null;
   readonly confidence: string;
   readonly provenance_producer: string;
@@ -95,7 +113,7 @@ interface EdgeRow {
 const NODE_COLUMNS = `id, kind, name, file_id, container_chain, visibility,
   is_exported, is_static, is_abstract, is_readonly, is_optional, is_async,
   is_declaration_file, has_symbol, is_exported_from_module,
-  external_kind, external_name, confidence,
+  external_kind, external_name, language, file_role, category, confidence,
   provenance_producer, provenance_file_id, provenance_evidence`;
 
 const EDGE_COLUMNS = `id, type, source_id, target_id, name, confidence, candidate_group,
@@ -226,6 +244,61 @@ export class SqliteGraphApi implements RepositoryGraphApi {
     }));
   }
 
+  /**
+   * Reads the capability record written with the graph.
+   *
+   * Three small queries against tables that hold at most a few dozen rows, so it is not
+   * cached here — `CachingGraph` above this memoises it for consumers that ask repeatedly.
+   */
+  getCapabilities(): RepositoryCapabilities {
+    const languagesByRegion = new Map<string, LanguageFileCount[]>();
+
+    for (const row of this.#connection
+      .prepare(
+        `SELECT region_path, language, files FROM region_languages
+         ORDER BY files DESC, language ASC`,
+      )
+      .all() as readonly { region_path: string; language: string; files: number }[]) {
+      const bucket = languagesByRegion.get(row.region_path) ?? [];
+
+      bucket.push({ language: row.language, files: row.files });
+      languagesByRegion.set(row.region_path, bucket);
+    }
+
+    const ecosystemsByRegion = new Map<string, string[]>();
+
+    for (const row of this.#connection
+      .prepare(`SELECT region_path, ecosystem FROM region_ecosystems ORDER BY ecosystem ASC`)
+      .all() as readonly { region_path: string; ecosystem: string }[]) {
+      const bucket = ecosystemsByRegion.get(row.region_path) ?? [];
+
+      bucket.push(row.ecosystem);
+      ecosystemsByRegion.set(row.region_path, bucket);
+    }
+
+    const regions = (
+      this.#connection
+        .prepare(
+          `SELECT path, primary_language, file_count, source_file_count, analysis_depth, depth_reason
+           FROM regions ORDER BY path ASC`,
+        )
+        .all() as readonly RegionRow[]
+    ).map(
+      (row): RegionCapability => ({
+        path: row.path,
+        primaryLanguage: row.primary_language,
+        languages: languagesByRegion.get(row.path) ?? [],
+        ecosystems: ecosystemsByRegion.get(row.path) ?? [],
+        fileCount: row.file_count,
+        sourceFileCount: row.source_file_count,
+        depth: row.analysis_depth as AnalysisDepth,
+        reason: row.depth_reason,
+      }),
+    );
+
+    return summariseCapabilities(regions);
+  }
+
   getUnresolved(): readonly GraphUnresolvedReference[] {
     return this.#statements.unresolved.all().map((row) => ({
       id: row.id,
@@ -290,6 +363,9 @@ function toNode(row: NodeRow, locations: readonly SourceRange[]): GraphNode {
     hasSymbol: bool(row.has_symbol),
     isExportedFromModule: bool(row.is_exported_from_module),
     externalKind: row.external_kind as GraphNode['externalKind'],
+    language: row.language,
+    fileRole: row.file_role,
+    category: row.category,
     externalName: row.external_name,
     confidence: row.confidence as ConfidenceLevel,
     provenance: {

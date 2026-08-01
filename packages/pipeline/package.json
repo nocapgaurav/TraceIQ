@@ -12,16 +12,23 @@
     }
   },
   "dependencies": {
+    "@traceiq/analyzer": "workspace:*",
     "@traceiq/call-graph": "workspace:*",
     "@traceiq/framework": "workspace:*",
+    "@traceiq/go": "workspace:*",
     "@traceiq/graph": "workspace:*",
     "@traceiq/graph-api": "workspace:*",
     "@traceiq/ir": "workspace:*",
+    "@traceiq/java": "workspace:*",
     "@traceiq/project-host": "workspace:*",
+    "@traceiq/python": "workspace:*",
     "@traceiq/resolver": "workspace:*",
-    "@traceiq/scanner": "workspace:*"
+    "@traceiq/scanner": "workspace:*",
+    "@traceiq/technology": "workspace:*",
+    "@traceiq/types": "workspace:*"
   },
   "devDependencies": {
+    "@traceiq/shared": "workspace:*",
     "@types/node": "^26.1.2"
   }
 }

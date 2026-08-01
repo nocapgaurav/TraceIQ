@@ -10,12 +10,15 @@ import { DECLARATION_NODE_KINDS, NODE_KINDS } from './types.js';
  * rather than silently widen what the graph accepts.
  */
 describe('the endpoint matrix', () => {
-  it('covers exactly the nine edge types now produced', () => {
-    // HANDLED_BY and READS joined with the complete framework annotation model; CALLS
-    // joined with the call graph.
+  it('covers exactly the eleven edge types now produced', () => {
+    // HANDLED_BY and READS joined with the complete framework annotation model; CALLS joined with
+    // the call graph; CONTINUES_TO joined when a request a repository makes could be matched to a
+    // route it serves, which is the one edge that crosses a language boundary.
     expect(Object.keys(ENDPOINT_RULES).sort()).toEqual([
       'CALLS',
+      'CONTINUES_TO',
       'DECLARES',
+      'DEPENDS_ON',
       'EXPORTS',
       'EXTENDS',
       'HANDLED_BY',
@@ -24,6 +27,13 @@ describe('the endpoint matrix', () => {
       'READS',
       'REFERENCES_TYPE',
     ]);
+  });
+
+  it('sources CONTINUES_TO at a file or declaration, and targets a Route', () => {
+    // The source side admits `File` because a module-level `fetch` has no enclosing declaration,
+    // and dropping those would lose the seam in exactly the repositories that have one.
+    expect(ENDPOINT_RULES.CONTINUES_TO?.targets).toEqual(['Route']);
+    expect(ENDPOINT_RULES.CONTINUES_TO?.sources).toContain('File');
   });
 
   it('sources HANDLED_BY only at a Route, and targets a declaration', () => {
@@ -37,8 +47,16 @@ describe('the endpoint matrix', () => {
     expect(ENDPOINT_RULES.CALLS?.sources).toContain('File');
     expect(ENDPOINT_RULES.CALLS?.sources).toContain('Method');
     expect([...(ENDPOINT_RULES.CALLS?.targets ?? [])].sort()).toEqual(
-      [...DECLARATION_NODE_KINDS].sort(),
+      [...DECLARATION_NODE_KINDS, 'External'].sort(),
     );
+  });
+
+  it('lets CALLS target an External, for a call into a package', () => {
+    // Every other relationship that can leave the repository already admits one. CALLS
+    // did not, only because the name-based binder had no way to tell a package's function
+    // from an unbound local; the type checker resolves the callee's declaration and so
+    // knows which file it came from.
+    expect(ENDPOINT_RULES.CALLS?.targets).toContain('External');
   });
 
   it('targets READS only at an EnvironmentVariable, sourced at a file or declaration', () => {
@@ -125,7 +143,9 @@ describe('the endpoint matrix', () => {
 
   it('sources EXTENDS and IMPLEMENTS only at the kinds that can declare heritage', () => {
     expect(ENDPOINT_RULES.EXTENDS?.sources).toEqual(['Class', 'Interface']);
-    expect(ENDPOINT_RULES.IMPLEMENTS?.sources).toEqual(['Class']);
+    // `Enum` because a Java enum may implement interfaces. TypeScript enums cannot, which is why the
+    // row read `['Class']` while TypeScript was the only producer.
+    expect(ENDPOINT_RULES.IMPLEMENTS?.sources).toEqual(['Class', 'Enum']);
   });
 
   it('sources REFERENCES_TYPE at any declaration, and never at a File', () => {
@@ -136,13 +156,17 @@ describe('the endpoint matrix', () => {
   });
 
   it('does not admit an edge type reserved for a later milestone', () => {
-    for (const reserved of [
-      'WRITES',
-      'DEPENDS_ON',
-      'CONTINUES_TO',
-      'TESTS',
-    ] as const) {
+    // DEPENDS_ON left this list when universal facts began producing it: a manifest declaring a
+    // dependency is the one relationship a repository with no language analyser can state.
+    // CONTINUES_TO left it when a request a repository makes could be matched to a route it
+    // serves — the reserved name meant exactly that and needed no vocabulary change.
+    for (const reserved of ['WRITES', 'TESTS'] as const) {
       expect(ENDPOINT_RULES[reserved]).toBeUndefined();
     }
+  });
+
+  it('sources DEPENDS_ON at a Manifest and targets a Dependency', () => {
+    expect(ENDPOINT_RULES.DEPENDS_ON?.sources).toEqual(['Manifest']);
+    expect(ENDPOINT_RULES.DEPENDS_ON?.targets).toEqual(['Dependency']);
   });
 });

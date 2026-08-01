@@ -143,7 +143,9 @@ describe('POST /scan', () => {
     const result = await call('POST', '/scan', { repository: root });
 
     expect(result.status).toBe(201);
-    expect(result.body.data).toMatchObject({ files: Object.keys(FILES).length });
+    // The fixture's files plus the tsconfig.json written alongside them: universal
+    // discovery records every file, not only the analysable ones.
+    expect(result.body.data).toMatchObject({ files: Object.keys(FILES).length + 1 });
   }, 60_000);
 
   it('reports the repository as scanned afterwards', async () => {

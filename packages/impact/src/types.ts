@@ -1,3 +1,4 @@
+import type { RepositoryCapabilities } from '@traceiq/graph-api';
 import type { GraphEdge, GraphNode, GraphProvenance } from '@traceiq/graph-api';
 import type {
   CalleeResult,
@@ -30,6 +31,14 @@ export interface ImpactQueries {
   findEnvironmentVariables(): readonly EnvironmentVariableResult[];
   findDependencies(): readonly DependencyResult[];
   findUnresolved(): readonly UnresolvedResult[];
+  /**
+   * What the graph can answer, by region.
+   *
+   * Needed so an empty result can be distinguished from an unanalysed one. Without it,
+   * impact analysis of a Go declaration would report "nothing depends on this" with the
+   * same confidence as it does for a fully analysed TypeScript one.
+   */
+  capabilities(): RepositoryCapabilities;
 }
 
 /**
@@ -145,6 +154,15 @@ export const LIMITATION_CODES = [
   'containment-not-followed',
   'external-dependencies-are-file-scoped',
   'route-prefixes-not-composed',
+  /**
+   * The target sits in a region no semantic analyser covered.
+   *
+   * The most important limitation in this table, because without it the result is
+   * indistinguishable from "nothing depends on this". A Python or Go declaration has no
+   * calls and no imports in the graph — not because none exist in the code, but because
+   * nothing read it.
+   */
+  'region-has-no-semantic-analysis',
 ] as const;
 
 export type LimitationCode = (typeof LIMITATION_CODES)[number];

@@ -1,6 +1,6 @@
 # traceiq
 
-The command-line interface to TraceIQ. Scan a TypeScript repository, then ask it questions.
+The command-line interface to TraceIQ. Scan a repository in any language, then ask it questions.
 
 ```
 traceiq scan .

@@ -51,6 +51,11 @@ const SUCCESS: AnalysisOutcome = {
     callEdges: 5,
     unresolvedCalls: 1,
     unresolvedReferences: 2,
+    languages: [{ language: 'typescript', files: 10 }],
+    regions: 1,
+    depth: 'semantic',
+    isPolyglot: false,
+    analyzerFailures: [],
   },
   failure: null,
   workspaceWarning: null,
@@ -98,8 +103,15 @@ describe('AnalysisRegistry', () => {
     expect(registry.running()?.id).toBe(job.id);
   });
 
-  /** A scan replaces the whole database, so two at once would race for one file. */
-  it('refuses a second analysis while one is running, handing back the running job', async () => {
+  /**
+   * A second submission is now its own job that waits, rather than a refusal.
+   *
+   * The old note here said "a scan replaces the whole database, so two at once would race for one
+   * file". That is a fact about the *destination*, and the destination is now chosen per job — so the
+   * reason to refuse is gone, while the reason to bound concurrency (an analysis peaks at 1.5 GB)
+   * remains. Bounded means it waits; refused meant the user had to resubmit.
+   */
+  it('queues a second analysis rather than refusing it, and starts it when a slot frees', async () => {
     const first = registry.start(REQUEST);
 
     await Promise.resolve();
@@ -107,8 +119,22 @@ describe('AnalysisRegistry', () => {
     const second = registry.start({ ...REQUEST, url: 'https://github.com/vercel/next.js' });
 
     expect(second.accepted).toBe(false);
-    expect(second.job.id).toBe(first.job.id);
+    expect(second.job.id).not.toBe(first.job.id);
+    expect(second.job.status).toBe('queued');
+    expect(registry.queued()).toBe(1);
     expect(analyzer.started).toBe(1);
+
+    clock = 3000;
+    analyzer.release(SUCCESS);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The freed slot is taken by the job that was waiting, and the wait is reported rather than lost.
+    expect(analyzer.started).toBe(2);
+    expect(registry.get(second.job.id)?.status).toBe('running');
+    // Accepted at 1000, started at 3000 — the two seconds it spent behind the first job.
+    expect(registry.get(second.job.id)?.telemetry.queueWaitMs).toBe(2000);
   });
 
   it('records the result and frees the slot on success', async () => {

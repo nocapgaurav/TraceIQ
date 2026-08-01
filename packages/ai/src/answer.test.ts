@@ -45,7 +45,33 @@ describe('event order', () => {
 
     const events = await drain(answerer.answer({ question: 'Is it in a cycle?', subject: SUBJECT_REQUEST }));
 
-    expect(events.map((event) => event.type)).toEqual(['grounding', 'delta', 'delta', 'complete']);
+    // `status` frames are interleaved and are progress, not content — a consumer that ignores them
+    // must still see the same sequence it always did. That is the invariant, rather than the raw list.
+    expect(events.filter((event) => event.type !== 'status').map((event) => event.type)).toEqual([
+      'grounding',
+      'delta',
+      'delta',
+      'complete',
+    ]);
+  });
+
+  it('names each stage before doing it, so a long wait is never silent', async () => {
+    const answerer = new RepositoryAnswerer(
+      new FakeContextSource(symbolContext()),
+      new ScriptedModel({ chunks: ['a ', 'b [f1]'] }),
+    );
+
+    const events = await drain(answerer.answer({ question: 'What?', subject: SUBJECT_REQUEST }));
+    const phases = events.flatMap((event) => (event.type === 'status' ? [event.phase] : []));
+
+    // `awaiting-model` is the one that matters: it is the 89-second gap measured on the reference
+    // stack, and it must be announced *before* the model is called rather than after it answers.
+    expect(phases).toEqual(['acquiring-context', 'projecting', 'awaiting-model', 'generating', 'verifying']);
+
+    const awaiting = events.findIndex((event) => event.type === 'status' && event.phase === 'awaiting-model');
+    const firstDelta = events.findIndex((event) => event.type === 'delta');
+
+    expect(awaiting).toBeLessThan(firstDelta);
   });
 
   it('describes the grounding before any prose arrives', async () => {
@@ -55,7 +81,7 @@ describe('event order', () => {
     );
 
     const events = await drain(answerer.answer({ question: 'Anything?', subject: SUBJECT_REQUEST }));
-    const first = events[0];
+    const first = events.find((event) => event.type !== 'status');
 
     expect(first?.type).toBe('grounding');
 
@@ -73,7 +99,7 @@ describe('event order', () => {
     );
 
     const events = await drain(answerer.answer({ question: 'Who calls it?', subject: SUBJECT_REQUEST }));
-    const first = events[0];
+    const first = events.find((event) => event.type !== 'status');
 
     if (first?.type !== 'grounding') {
       throw new Error('expected grounding first');

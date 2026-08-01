@@ -47,6 +47,8 @@ export interface RequestContext {
    * supplies a registry over a fake cloner without a network.
    */
   readonly analyses: AnalysisRegistry;
+  /** Whether analyses run in a worker. Observed from the wiring so `/healthz` cannot overstate it. */
+  readonly analysisOutOfProcess: boolean;
 }
 
 /** Builds the answerer for one request, over the graph that request already opened. */
@@ -98,6 +100,9 @@ export interface Endpoint {
 
 const IDENTITY_PREFIX = /^(sym|file|route|env|ext):/;
 
+/** When this process started. Fixed at import so uptime is the process's, not the request's. */
+const STARTED_AT = new Date().toISOString();
+
 /**
  * Every endpoint, and the single source of truth for routing, validation and the OpenAPI document.
  *
@@ -130,6 +135,69 @@ export const ENDPOINTS: readonly Endpoint[] = [
     errors: [],
     handle({ holder }) {
       return { version: API_VERSION, scanned: holder.isScanned(), databasePath: holder.databasePath };
+    },
+  },
+  {
+    method: 'get',
+    path: '/healthz',
+    documentedPath: '/healthz',
+    operationId: 'healthz',
+    summary: 'What is deployed, what it is serving and what is running.',
+    capability: 'api',
+    parameters: [],
+    errors: [],
+    /**
+     * The endpoint that stops a stale deployment being reported as a product bug.
+     *
+     * **This exists because it already happened.** Three milestones of capability were present in
+     * source and absent from the running product, and the symptom was a repository being refused with a
+     * message that no longer existed in the code. Hours went into looking for a gate that had been
+     * deleted. Every field here is something that was, at some point, silently different from what
+     * somebody assumed — the build, the schema, the model, the graph being served.
+     *
+     * Deliberately not `/health`: that name belongs to the repository health report, and two things
+     * called health in one API is exactly the kind of ambiguity this endpoint exists to remove.
+     */
+    handle({ holder, model, analyses, analysisOutOfProcess }) {
+      const scanned = holder.isScanned();
+
+      return {
+        status: 'ok',
+        api: {
+          version: API_VERSION,
+          // Stamped into the image at build time. `unknown` locally, which is honest: a working tree
+          // has no commit that describes what is running.
+          commit: process.env.TRACEIQ_COMMIT ?? 'unknown',
+          builtAt: process.env.TRACEIQ_BUILT_AT ?? 'unknown',
+          startedAt: STARTED_AT,
+          uptimeMs: Math.round(process.uptime() * 1000),
+          pid: process.pid,
+          nodeVersion: process.version,
+          rssBytes: process.memoryUsage.rss(),
+        },
+        graph: {
+          databasePath: holder.databasePath,
+          scanned,
+          // The graph's own account of what it can answer, rather than this file's opinion of it.
+          repository: scanned ? holder.capabilities().explorer().overview().repository.files : null,
+          // What the graph says it can answer, by region — depth, languages, why. Read from the
+          // overview so this endpoint asserts nothing the dashboard does not already show.
+          capabilities: scanned ? holder.capabilities().explorer().overview().capabilities : null,
+        },
+        analysis: {
+          running: analyses.active().length,
+          queued: analyses.queued(),
+          /*
+           * Observed, not declared.
+           *
+           * The first version of this line was the constant `false`, written the same afternoon a
+           * missed option meant every analysis really did run inline while the startup banner claimed
+           * otherwise. A health endpoint that repeats an intention is worse than no health endpoint.
+           */
+          outOfProcess: analysisOutOfProcess,
+        },
+        model: model === null ? null : { id: model.describe().id, contextWindow: model.describe().contextWindow },
+      };
     },
   },
   {
@@ -187,13 +255,18 @@ export const ENDPOINTS: readonly Endpoint[] = [
     handle({ body, holder, analyses }) {
       const url = readAnalysisUrl(body);
 
-      // `accepted: false` means one is already running; the caller is handed that job to follow rather
-      // than a second one being started against the same database.
-      const outcome = analyses.start({
-        url,
-        databasePath: holder.databasePath,
-        createdAt: FIXED_CREATED_AT,
-      });
+      /*
+       * A database of its own, adopted only if it succeeds.
+       *
+       * The live graph is never the thing being written. That is what makes two analyses safe to run at
+       * once — they cannot collide over one file — and it is also why a failed analysis no longer
+       * damages the graph a user was reading: the half-written file is simply discarded. `holder.stage`
+       * hands out the path; `holder.adopt` swaps it in.
+       */
+      const staged = holder.stage();
+      const outcome = analyses.start({ url, databasePath: staged, createdAt: FIXED_CREATED_AT });
+
+      holder.bind(outcome.job.id, staged);
 
       return { accepted: outcome.accepted, job: wireJob(outcome.job) };
     },
@@ -212,6 +285,81 @@ export const ENDPOINTS: readonly Endpoint[] = [
         running: analyses.running() === null ? null : wireJob(analyses.running() as NonNullable<ReturnType<typeof analyses.running>>),
         entries: analyses.list().map(wireJob),
       };
+    },
+  },
+  {
+    method: 'post',
+    path: '/analysis/:id/cancel',
+    documentedPath: '/analysis/{id}/cancel',
+    operationId: 'cancelAnalysis',
+    summary: 'Stop an analysis that is queued or running.',
+    capability: 'analysis',
+    parameters: [
+      {
+        name: 'id',
+        location: 'path',
+        required: true,
+        description: 'The analysis id returned when it was started.',
+        example: 'analysis-1',
+      },
+    ],
+    errors: ['not-found'],
+    handle({ params, analyses }) {
+      const id = params.id ?? '';
+      const job = analyses.get(id);
+
+      if (job === undefined) {
+        throw unknownAnalysis(id);
+      }
+
+      // `false` means it had already settled, which is not an error: the caller wanted it stopped and
+      // it is stopped. The job is returned so they can see how it actually ended.
+      const stopped = analyses.cancel(id);
+
+      return { stopped, job: wireJob(analyses.get(id) ?? job) };
+    },
+  },
+  {
+    method: 'post',
+    path: '/analysis/:id/retry',
+    documentedPath: '/analysis/{id}/retry',
+    operationId: 'retryAnalysis',
+    summary: 'Run a settled analysis again, as a new job.',
+    capability: 'analysis',
+    parameters: [
+      {
+        name: 'id',
+        location: 'path',
+        required: true,
+        description: 'The analysis id to run again.',
+        example: 'analysis-1',
+      },
+    ],
+    errors: ['not-found', 'bad-request'],
+    handle({ params, holder, analyses }) {
+      const id = params.id ?? '';
+
+      if (analyses.get(id) === undefined) {
+        throw unknownAnalysis(id);
+      }
+
+      const staged = holder.stage();
+      const outcome = analyses.retry(id, { databasePath: staged });
+
+      if (outcome === null) {
+        holder.discard(staged);
+
+        throw badRequest(
+          `analysis ${id} has not finished`,
+          'cancel it first, or wait for it to settle before retrying',
+        );
+      }
+
+      // A new job with a new id, so the original's stages and error survive as the evidence of why a
+      // retry was wanted. Its staged database is its own for the same reason.
+      holder.bind(outcome.job.id, staged);
+
+      return { accepted: outcome.accepted, job: wireJob(outcome.job) };
     },
   },
   {
@@ -628,24 +776,71 @@ export const ENDPOINTS: readonly Endpoint[] = [
       const request = parseChatRequest(context.body);
       const answerer = answererFor(context);
 
-      sink.send('open', { model: context.model?.describe().id ?? null });
+      const description = context.model?.describe() ?? null;
+
+      sink.send('open', {
+        model: description?.id ?? null,
+        // The window the prompt is genuinely budgeted against, so a slow answer can be understood
+        // rather than guessed at. See `OllamaModelOptions.contextWindow`.
+        contextWindow: description?.contextWindow ?? null,
+      });
+
+      /**
+       * Whether the answer reached a terminal frame.
+       *
+       * **A stream that ends without one leaves the UI spinning forever, and that is the failure this
+       * milestone exists to remove.** Every path below must set this — the loop completing, a throw, or
+       * the iterator ending early — and the guard afterwards turns "somehow neither" into a named error
+       * instead of a silence.
+       */
+      let settled = false;
 
       try {
         for await (const event of answerer.answer(toAnswerRequest(request), context.signal)) {
           if (!sink.open) {
-            // The client has gone. Returning ends the iteration, which aborts the model through `signal`.
+            // The client has gone. Returning ends the iteration, which aborts the model through
+            // `signal`. There is nobody to send a terminal frame to, so not sending one is correct
+            // rather than a gap.
+            settled = true;
+
             return;
           }
 
-          if (event.type === 'grounding') {
+          if (event.type === 'status') {
+            sink.send('status', { phase: event.phase });
+          } else if (event.type === 'grounding') {
             sink.send('grounding', wireGrounding(event.grounding));
           } else if (event.type === 'delta') {
             sink.send('delta', { text: event.text });
           } else {
+            settled = true;
             sink.send('complete', wireAnswer(event.answer));
           }
         }
+
+        if (!settled && sink.open) {
+          // The iterator finished without completing. Unreachable through `RepositoryAnswerer`, which
+          // always ends with `complete` or throws — but a stream that ends silently is the one failure
+          // a client cannot recover from, so it is named rather than trusted away.
+          settled = true;
+          sink.send('error', {
+            code: 'stream-interrupted',
+            detail: 'the answer ended before it completed',
+            hint: 'ask again',
+            partial: null,
+          });
+        }
       } catch (cause) {
+        settled = true;
+
+        // The client disconnecting aborts the model by design, and the resulting `generation-aborted`
+        // is the *consequence* of the disconnect rather than a fault to report. Distinguishing it from
+        // a provider that aborted on its own is what stops a cancelled answer being logged and rendered
+        // as a failure.
+        if (!sink.open) {
+          return;
+        }
+
         const error = isAiError(cause) ? toApiErrorFromAi(cause) : toUnexpected(cause);
 
         sink.send('error', {
@@ -654,6 +849,8 @@ export const ENDPOINTS: readonly Endpoint[] = [
           hint: error.hint,
           partial: isAiError(cause) ? cause.partial : null,
         });
+      } finally {
+        sink.close();
       }
     },
   },

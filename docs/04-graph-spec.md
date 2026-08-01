@@ -29,6 +29,14 @@ It has no access to the filesystem, the `ProjectContext`, the type checker, or t
 `RepositoryInventory`. Anything not present in those structures cannot appear in the
 graph, and this document says so explicitly wherever that bites.
 
+**A `CallGraph` and a `RepositoryIR` may now be the join of several bounded compilations.** A
+repository too large for one compiler program is analysed a semantic region at a time, each program
+released before the next is loaded. That is invisible here: the units own disjoint file sets, so
+what arrives is a concatenation and every identity is minted exactly once, as before. What changes
+for a reader is that `revisions.source_hash` — reserved and unwritten since this document was
+written — now carries a fingerprint of the analysed sources, so an unchanged repository is not
+analysed twice.
+
 **Later milestones add inputs, never writers.** The Framework Extractor produces
 routes and role annotations; those arrive as a *third input to the Graph Builder*,
 not as a second module writing to SQLite (§8.8). Adding an input is not a schema
@@ -71,6 +79,16 @@ for an edge, and no fact is improved, merged on meaning, or pruned.
 | `Route` | `RouteAnnotation` from the Framework Extractor |
 | `EnvironmentVariable` | `EnvironmentVariableAnnotation` from the Framework Extractor |
 | `External` | `ResolutionTarget` of kind `external` — **conditional on §11.1** |
+| `Technology` | a framework, runtime or infrastructure tool, detected from evidence |
+
+> **`Technology` is a node, and a region is not.** The distinction is the reason for both. A region
+> describes *the analysis* — how deeply TraceIQ read a directory — so making it a node would put the
+> analysis into search results beside the code. A technology describes *the software*: that
+> `apps/web` is a Next.js application is a fact of the same kind as "this file declares that class",
+> and a reader searching `next` should find it. `category` (§3) carries what it is for, and the
+> files that prove it travel in the provenance; no edge links a technology to its evidence, because
+> no member of the frozen vocabulary means "is proof of" and stretching one would make that
+> relationship unqueryable for what it does mean.
 
 `External` is the one node type whose identity prefix does not yet exist in the
 contract. If §11.1 is rejected it is not a node type at all, and external targets
@@ -134,6 +152,25 @@ relationship name is introduced, and there is no generic `USES`.
 | `HANDLED_BY` | `RouteAnnotation.handlers` | copied from the route |
 | `READS` | `EnvironmentVariableAnnotation` | copied |
 | `CALLS` | `CallRelationship` from the call graph | copied |
+| `CALLS` | `ExternalCall` from the call graph | target identity minted, as for an import |
+| `CONTINUES_TO` | a client call matched to a `Route` | `INFERRED`, always |
+
+> **`CONTINUES_TO` is produced, and needed no vocabulary change.** It was reserved and unproduced
+> since this document was written; "execution continues to" is exactly what an outbound HTTP request
+> to a locally-served endpoint does. It is the only relationship that crosses a language boundary —
+> a React component's `fetch('/api/users')` reaching a Flask `@app.route('/api/users')` — and the
+> source side admits `File` because a module-level request has no enclosing declaration. Always
+> `INFERRED`: the two sides agree on a normalised path string, and nothing proves the request
+> reaches *this* server. An absolute URL to another host is excluded for that reason.
+
+> **`ExternalCall` is produced by every analyser, not only the checker-backed one.** It was
+> documented as `RESOLVED` and checker-only, which made "which of my declarations use this
+> dependency" a question only TypeScript could answer — and only with `node_modules` installed.
+> Two rules produce these now. The checker types the receiver and reports `RESOLVED`. Every
+> analyser can also read the *import statement*: a call rooted at a name the file imported from a
+> package is a call into that package, whether or not the package is installed and whether or not
+> the language has a type checker. That rule reports `INFERRED`, except in Go, where a package
+> qualifier names exactly one import path and the internal rule already earned `RESOLVED`.
 
 Five of the six are a field-for-field copy of a `ResolvedRelationship`. `DECLARES`
 is the one edge the Graph Builder derives, and its rule is fully mechanical:
@@ -159,9 +196,11 @@ involves no name resolution, no scope analysis and no compiler.
 
 ### 2.2 Reserved, not produced
 
-`WRITES`, `CONTINUES_TO`, `TESTS`, `DEPENDS_ON`.
+`WRITES`, `TESTS`.
 
-`HANDLED_BY`, `READS` and `CALLS` were reserved and are now produced.
+`HANDLED_BY`, `READS`, `CALLS`, `DEPENDS_ON` and `CONTINUES_TO` were reserved and are now produced.
+Each left this list when a fact it already described became recoverable, and none required widening
+the vocabulary — which is the property the freeze exists to protect.
 
 `DEPENDS_ON` deserves a note: it is `Repository → ExternalPackage` in the contract,
 and is **not producible in version 1 for two reasons** — there is no `Repository`
@@ -181,7 +220,7 @@ loudly; it must never be silently dropped.
 | `EXPORTS` | `File` | `File`, `External`, any declaration node |
 | `EXTENDS` | `Class`, `Interface` | `Class`, `Interface`, `TypeAlias`, `Function`, `Variable`, `External` |
 | `IMPLEMENTS` | `Class` | `Interface`, `TypeAlias`, `Function`, `Variable`, `External` |
-| `CALLS` | `File`, any declaration node | any declaration node |
+| `CALLS` | `File`, any declaration node | any declaration node, `External` |
 | `HANDLED_BY` | `Route` | any declaration node |
 | `READS` | `File`, any declaration node | `EnvironmentVariable` |
 | `REFERENCES_TYPE` | any declaration node | `Class`, `Interface`, `TypeAlias`, `Enum`, `EnumMember`, `Namespace`, `External` |
@@ -463,6 +502,18 @@ This keeps every unresolved reference visible and queryable — the Query Engine
 answer "what does this file reference that we could not resolve" — without inventing
 a sentinel node type whose identity the contract does not define.
 
+**Two of the reasons are not failures**, and the distinction is load-bearing rather than
+cosmetic. `type-parameter` and `value-is-not-a-declaration` both mean resolution succeeded and
+there is simply nothing addressable at the other end: a type parameter the IR does not record, or
+an exported literal such as `module.exports = { printWidth: 80 }`. Filing those under a failure
+reason makes a bind rate a measure of how much data a repository exports. Measured: 262 of React's
+config-file literals were reported as `no-symbol`, in the same bucket as genuine checker faults.
+
+The reason vocabulary is **open** (§8.6) and has now grown three times — `type-parameter` in the
+Resolver milestone, `checker-failed` when a compiler fault had to be told from a compiler answer,
+and `value-is-not-a-declaration` here. Each addition split one bucket that was conflating two
+different facts, which is the only justification the vocabulary accepts.
+
 ---
 
 ## 7. Provenance model
@@ -676,7 +727,7 @@ CREATE INDEX unresolved_by_file ON unresolved_references(provenance_file_id);
 | `node_roles.role` | yes, to the 6 | Frozen vocabulary |
 | `nodes.visibility` | yes, to the 3 | Closed language concept |
 | `nodes.kind` | **no** | Node types are an *open* vocabulary: `Route`, `EnvironmentVariable` and `DatabaseTable` are still to come. A `CHECK` here would force exactly the migration §11.3 exists to avoid |
-| `unresolved_references.reason` | **no** | Open vocabulary — it already grew once, when `type-parameter` was added during the Resolver milestone |
+| `unresolved_references.reason` | **no** | Open vocabulary — grown three times now: `type-parameter`, `checker-failed`, `value-is-not-a-declaration` |
 
 `edges_by_source` and `edges_by_target` are the two indexes that matter: forward
 traversal for Execution Journey, reverse traversal for Impact Analysis. `edges_by_file`

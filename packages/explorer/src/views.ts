@@ -6,10 +6,11 @@ import type { NodeId, RelationshipType, Role } from '@traceiq/types';
 import type { ExplorerContext } from './explorer-context.js';
 import { packageOfNode } from './explorer-context.js';
 import { LIMITATION_DETAIL } from './limitations.js';
-import { byId, listing, reachableFrom, reachedNodes } from './listing.js';
+import { byDependencyFirst, byId, listing, reachableFrom, reachedNodes } from './listing.js';
 import {
   CYCLE_KINDS,
   type ArchitectureSummary,
+  type TechnologySummary,
   type ArchitectureView,
   type Cycle,
   type CycleKind,
@@ -49,6 +50,8 @@ export function overviewOf(context: ExplorerContext): RepositoryOverview {
 
   return {
     repository: health.summary,
+    technologies: technologySummariesOf(context),
+    capabilities: context.graph.getCapabilities(),
     architecture: architectureSummaryOf(health),
     packages: listing(packageSummariesOf(context)),
     graph: graphSummaryOf(health),
@@ -99,6 +102,27 @@ function graphSummaryOf(health: RepositoryHealthReport): GraphSummary {
     relationshipCounts: health.architecture.relationshipCounts,
     nodesByKind: health.summary.nodesByKind,
   };
+}
+
+/**
+ * The technologies, read back out of the graph rather than recomputed.
+ *
+ * The graph is the record. Recomputing from the inventory here would be a second derivation of the
+ * same fact, free to disagree with what search returns for the same query — and a reader who finds
+ * "Next.js" on the Overview and not in search has been shown a product with two answers.
+ */
+function technologySummariesOf(context: ExplorerContext): readonly TechnologySummary[] {
+  return context.graph
+    .getNodes('Technology')
+    .map((node) => ({
+      id: node.externalName ?? node.name,
+      name: node.name,
+      category: node.category ?? 'unknown',
+      regionPath: node.containerChain ?? '',
+      confidence: node.confidence,
+      evidence: node.provenance.evidence,
+    }))
+    .sort((a, b) => a.regionPath.localeCompare(b.regionPath) || a.name.localeCompare(b.name));
 }
 
 function architectureSummaryOf(health: RepositoryHealthReport): ArchitectureSummary {
@@ -213,7 +237,7 @@ export function fileViewOf(context: ExplorerContext, id: NodeId): FileView | nul
     declarations: listing(declarations),
     imports: listing(importEdges.map((edge) => hydrateTarget(context, edge))),
     exports: listing(exportEdges.map((edge) => hydrateTarget(context, edge))),
-    externalPackages: listing(externals),
+    externalPackages: listing(byDependencyFirst(externals)),
     routes: listing(routes),
     environmentVariables: listing(environmentVariables),
     outgoingRelationships: listing(outgoing),
@@ -345,7 +369,7 @@ export function packageViewOf(context: ExplorerContext, name: string): PackageVi
     dependents: listing(dependents.sort((left, right) => left.name.localeCompare(right.name))),
     exports: listing(exports.map((edge) => hydrateTarget(context, edge))),
     imports: listing(imports.map((edge) => hydrateTarget(context, edge))),
-    externalPackages: listing(externals),
+    externalPackages: listing(byDependencyFirst(externals)),
     roles,
     statistics: { files: files.length, declarations: declarations.length, declarationsByKind },
     limitations: limitationsOf(context, [
@@ -432,7 +456,7 @@ export function architectureViewOf(context: ExplorerContext): ArchitectureView {
     tests: byRole('Test'),
     routes: listing(context.query((queries) => queries.findRoutes())),
     environmentVariables: byKind('EnvironmentVariable'),
-    externalPackages: byKind('External'),
+    externalPackages: listing(byDependencyFirst(index.nodesByKind.get('External') ?? [])),
     classes: byKind('Class'),
     interfaces: byKind('Interface'),
     functions: byKind('Function'),

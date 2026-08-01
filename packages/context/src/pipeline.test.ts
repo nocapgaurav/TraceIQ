@@ -134,10 +134,12 @@ describe('symbol context over a real repository', () => {
     expect(context.dependencies.environmentVariables.map((entry) => entry.name)).toContain('JWT_SECRET');
   });
 
-  it('costs two capability calls', () => {
+  it('costs four capability calls, two of them the reads every kind now makes', () => {
     expect(builder.build({ kind: 'symbol', id: FIND }).statistics.capabilityCalls).toEqual({
       'explorer.browseSymbol': 1,
       'explorer.dependencies': 1,
+      'queries.capabilities': 1,
+      'queries.technologies': 1,
     });
   });
 
@@ -239,15 +241,17 @@ describe('repository context over a real repository', () => {
     const context = builder.build({ kind: 'repository' });
     const subject = context.primary.type === 'repository' ? context.primary.value : null;
 
-    expect(subject?.overview.repository.files).toBe(Object.keys(FILES).length);
+    // The fixture's files plus the tsconfig.json it is written with: universal discovery
+    // records every file, not only the analysable ones.
+    expect(subject?.overview.repository.files).toBe(Object.keys(FILES).length + 1);
     expect(subject?.architecture.classes.total).toBeGreaterThan(0);
     expect(subject?.hotspots.fanIn.max).toBeGreaterThan(0);
     expect(context.dependencies.cycles?.totals.call).toBeGreaterThan(0);
     expect(context.health.report).not.toBeNull();
   });
 
-  it('costs five capability calls', () => {
-    expect(builder.build({ kind: 'repository' }).statistics.totalCapabilityCalls).toBe(5);
+  it('costs seven capability calls', () => {
+    expect(builder.build({ kind: 'repository' }).statistics.totalCapabilityCalls).toBe(7);
   });
 });
 

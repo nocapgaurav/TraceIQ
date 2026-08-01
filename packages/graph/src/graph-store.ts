@@ -67,9 +67,24 @@ export class GraphStore {
    * make otherwise identical writes differ — so the one genuinely time-dependent
    * value is the caller's to provide.
    */
-  write(graph: RepositoryGraph, createdAt: string): void {
+  /**
+   * The fingerprint the last write recorded, or `null`.
+   *
+   * Read from `revisions.source_hash`, a column the contract reserved and nothing had written. A
+   * scan compares it against the repository as it is now and skips the whole analysis when they
+   * agree — for a repository large enough to need bounded compilation, that is minutes saved.
+   */
+  readSourceHash(): string | null {
+    const row = this.#connection
+      .prepare(`SELECT source_hash FROM revisions ORDER BY id DESC LIMIT 1`)
+      .get() as { readonly source_hash: string | null } | undefined;
+
+    return row?.source_hash ?? null;
+  }
+
+  write(graph: RepositoryGraph, createdAt: string, sourceHash?: string): void {
     const run = this.#connection.transaction((value: RepositoryGraph) => {
-      this.#replaceAll(value, createdAt);
+      this.#replaceAll(value, createdAt, sourceHash ?? null);
     });
 
     try {
@@ -118,16 +133,16 @@ export class GraphStore {
    * other node, then the tables that reference nodes. Nothing is deferred, so a
    * dangling reference fails at the statement that caused it.
    */
-  #replaceAll(graph: RepositoryGraph, createdAt: string): void {
+  #replaceAll(graph: RepositoryGraph, createdAt: string, sourceHash: string | null): void {
     for (const statement of TRUNCATE_STATEMENTS) {
       this.#connection.exec(statement);
     }
 
     this.#connection
       .prepare(
-        `INSERT INTO revisions (id, created_at, source_hash) VALUES (?, ?, NULL)`,
+        `INSERT INTO revisions (id, created_at, source_hash) VALUES (?, ?, ?)`,
       )
-      .run(graph.revisionId, createdAt);
+      .run(graph.revisionId, createdAt, sourceHash);
 
     this.#connection
       .prepare(
@@ -140,13 +155,13 @@ export class GraphStore {
          id, kind, name, file_id, container_chain, visibility,
          is_exported, is_static, is_abstract, is_readonly, is_optional, is_async,
          is_declaration_file, has_symbol, is_exported_from_module,
-         external_kind, external_name, confidence,
+         external_kind, external_name, language, file_role, category, confidence,
          provenance_producer, provenance_file_id, provenance_evidence, revision_id
        ) VALUES (
          @id, @kind, @name, @fileId, @containerChain, @visibility,
          @isExported, @isStatic, @isAbstract, @isReadonly, @isOptional, @isAsync,
          @isDeclarationFile, @hasSymbol, @isExportedFromModule,
-         @externalKind, @externalName, @confidence,
+         @externalKind, @externalName, @language, @fileRole, @category, @confidence,
          @producer, @provenanceFileId, @evidence, @revisionId
        )`,
     );
@@ -176,6 +191,9 @@ export class GraphStore {
         hasSymbol: flag(node.hasSymbol),
         isExportedFromModule: flag(node.isExportedFromModule),
         externalKind: node.externalKind,
+        language: node.language,
+        fileRole: node.fileRole,
+        category: node.category,
         externalName: node.externalName,
         confidence: node.confidence,
         producer: node.provenance.producer,
@@ -274,6 +292,51 @@ export class GraphStore {
 
     for (const role of graph.roles) {
       insertRole.run(role.nodeId, role.role, role.confidence, role.evidence);
+    }
+
+    this.#writeRegions(graph);
+  }
+
+  /**
+   * Records each technology region and how deeply it was analysed.
+   *
+   * Written last because nothing references it. Regions are read back as a whole rather
+   * than joined against, so they carry no identifiers beyond their path.
+   */
+  #writeRegions(graph: RepositoryGraph): void {
+    const insertRegion = this.#connection.prepare(
+      `INSERT INTO regions (
+         path, primary_language, file_count, source_file_count,
+         analysis_depth, depth_reason, revision_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    const insertLanguage = this.#connection.prepare(
+      `INSERT INTO region_languages (region_path, language, files) VALUES (?, ?, ?)`,
+    );
+
+    const insertEcosystem = this.#connection.prepare(
+      `INSERT INTO region_ecosystems (region_path, ecosystem) VALUES (?, ?)`,
+    );
+
+    for (const region of graph.capabilities.regions) {
+      insertRegion.run(
+        region.path,
+        region.primaryLanguage,
+        region.fileCount,
+        region.sourceFileCount,
+        region.depth,
+        region.reason,
+        graph.revisionId,
+      );
+
+      for (const language of region.languages) {
+        insertLanguage.run(region.path, language.language, language.files);
+      }
+
+      for (const ecosystem of region.ecosystems) {
+        insertEcosystem.run(region.path, ecosystem);
+      }
     }
   }
 }
