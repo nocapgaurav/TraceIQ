@@ -4,675 +4,951 @@
 
 ### Know Your Codebase.
 
-**A repository intelligence platform for TypeScript.** It reads your code once, stores what it found
-as a queryable knowledge graph, and answers questions about it — through a web app, a REST API, a
-CLI, and a chat that cites its sources.
-
-[Quick Start](#quick-start) · [Architecture](#architecture) · [AI Layer](#the-ai-layer) · [Repository Chat](#repository-chat) · [Development](#local-development)
-
-![TypeScript](https://img.shields.io/badge/TypeScript-7.0-3178c6)
-![Node](https://img.shields.io/badge/Node-%E2%89%A522-5fa04e)
-![Tests](https://img.shields.io/badge/tests-2%2C128%20passing-2ea043)
-![Docker](https://img.shields.io/badge/docker%20compose-ready-2496ed)
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
+**Static repository analysis that builds a queryable knowledge graph — then answers questions about
+the repository from that graph, with citations.**
 
 </div>
 
 ---
 
+TraceIQ reads a repository the way a compiler does, not the way a search box does. It walks the
+files, parses what it can parse, resolves references through the TypeScript type checker and
+tree-sitter grammars, reads the repository's non-code artefacts — workflows, Dockerfiles, compose
+files, manifests, schemas, documentation — and writes everything it establishes into a SQLite
+knowledge graph.
+
+Everything else is built on that graph. The web app browses it. The CLI queries it. And **Ask
+TraceIQ** answers natural-language questions by selecting a bounded set of facts from it, sending
+only those facts to a local language model, and then checking the answer back against them.
+
+**The model is the synthesis layer, not the analysis layer.** No source code is ever put in a
+prompt. The model receives numbered, citable facts in exactly this shape —
+
 ```
-git clone <repo> && cd traceiq && docker compose up
+[f12] repository has-package packages/graph (30 files, 364 declarations; imports 9 packages, imported by 7)
 ```
 
-Open **http://localhost:3001**. TraceIQ scans itself on first run, so the dashboard has real data the
-moment it loads.
+— and every sentence it writes is verified against the closed set it was given. That is what makes
+an answer traceable: expand a citation and you see the fact, the confidence attached to it, and
+which analyser established it.
+
+<!--
+  SCREENSHOT PLACEHOLDER — Overview
+  Add a screenshot of http://localhost:3001/dashboard here.
+  No screenshots are committed to this repository yet.
+-->
 
 ---
 
-## Why TraceIQ
-
-Most tools that answer questions about a codebase re-read the source every time you ask. TraceIQ
-analyses once and stores the result, so every feature — navigation, impact analysis, health
-reporting, chat — reads the same structured knowledge instead of re-deriving it.
-
-**The engine is the product. AI is a consumer of it.** Answers are assembled from graph facts and
-cite them; nothing is guessed, ranked or scored.
-
-Three properties hold throughout:
+## Contents
 
 | | |
 |---|---|
-| **Deterministic** | The same repository produces the same graph and the same answers, byte for byte. No timestamps in payloads, no ranking, no scoring anywhere. |
-| **Honest about limits** | Every result carries the analysis's own limitation codes. A capped list reports its exact total, so a cap is never silent. |
-| **Grounded** | Every value shown traces to a graph fact with a provenance and a confidence level. Nothing is invented. |
+| **[What TraceIQ does](#what-traceiq-does)** · **[Quick Start](#quick-start)** · **[The model](#the-model)** | Understand it, then run it |
+| **[Analyse a repository](#analyse-a-repository)** · **[Explorer](#using-the-explorer)** · **[Ask TraceIQ](#using-ask-traceiq)** | Use it |
+| **[How it works](#how-it-works)** · **[What it understands](#what-traceiq-understands)** · **[Tech stack](#tech-stack)** | How it is built |
+| **[Local development](#local-development-without-docker)** · **[Testing](#testing)** · **[Docker cheat sheet](#docker-cheat-sheet)** · **[Troubleshooting](#troubleshooting)** | Work on it |
+| **[Project structure](#project-structure)** · **[Limitations](#limitations)** · **[Privacy](#privacy)** | Know its edges |
 
 ---
 
-## Features
-
-<table>
-<tr><td width="33%" valign="top">
-
-### 🔍 Explore
-Browse packages, files and declarations in a three-pane explorer. Everything the graph records about
-one symbol on a single page — callers, callees, references, roles, routes, environment variables,
-provenance.
-
-</td><td width="33%" valign="top">
-
-### 💥 Impact
-What breaks if you change this? Direct and indirect dependents, never merged, plus the relationships
-the analysis could not resolve — reported as UNKNOWN rather than as absence.
-
-</td><td width="33%" valign="top">
-
-### 🩺 Health
-Coupling, cycles, hotspots, coverage, isolated declarations. Findings are measured facts with
-evidence, not opinions and not a score.
-
-</td></tr>
-<tr><td valign="top">
-
-### 🕸 Architecture
-Package dependency graphs, role trees and cycle detection, drawn with a deterministic layered
-layout — the same input always draws the same picture.
-
-</td><td valign="top">
-
-### 💬 Chat
-Ask questions in plain language. Every answer cites the facts it used, shows what was left out, and
-carries a verdict saying whether it stayed inside them.
-
-</td><td valign="top">
-
-### 🔌 Three interfaces
-A web app, a 21-endpoint REST API with a generated OpenAPI 3 document, and a 16-command CLI. All read
-the same engine; none contains analysis logic.
-
-</td></tr>
-</table>
-
-### What TraceIQ knows about a repository
+## What TraceIQ does
 
 | | |
 |---|---|
-| **16 node kinds** | `File` `Class` `Interface` `TypeAlias` `Enum` `EnumMember` `Function` `Method` `Property` `Accessor` `Constructor` `Variable` `Namespace` `Route` `EnvironmentVariable` `External` |
-| **13 relationships** | `DECLARES` `IMPORTS` `EXPORTS` `CALLS` `IMPLEMENTS` `EXTENDS` `REFERENCES_TYPE` `HANDLED_BY` `READS` `WRITES` `DEPENDS_ON` `CONTINUES_TO` `TESTS` |
-| **4 confidence levels** | `CERTAIN` `RESOLVED` `INFERRED` `AMBIGUOUS` — a closed vocabulary, never a number |
-| **6 roles** | `Controller` `Service` `Repository` `Middleware` `Model` `Test` — annotations on a declaration, not node types |
-
----
-
-## Architecture
-
-Every layer reads only the layer beneath it. The engine is a pipeline; the interfaces are adapters
-over it.
-
-```mermaid
-flowchart TB
-    subgraph interfaces["Interfaces — zero analysis logic"]
-        direction LR
-        WEB["Web<br/><i>Next.js · 8 pages</i>"]
-        CLI["CLI<br/><i>16 commands</i>"]
-        REST["REST API<br/><i>21 endpoints</i>"]
-    end
-
-    subgraph ai["AI Layer — a pure consumer"]
-        direction LR
-        ANSWERER["RepositoryAnswerer<br/><i>project → prompt → guard</i>"]
-        PROVIDER["Provider<br/><i>Ollama</i>"]
-    end
-
-    CONTEXT["Context Builder<br/><i>what context belongs together</i>"]
-
-    subgraph capabilities["Capabilities — repository intelligence"]
-        direction LR
-        EXPLORER["Explorer"]
-        NAV["Navigation"]
-        EXPLAIN["Explain"]
-        IMPACT["Impact"]
-        HEALTH["Health"]
-    end
-
-    QUERY["Query Engine<br/><i>the only way features read the graph</i>"]
-    GRAPHAPI["Graph API<br/><i>abstract read model</i>"]
-    STORE[("Graph Store<br/><i>SQLite</i>")]
-
-    subgraph build["Build pipeline — the write path"]
-        direction LR
-        SCANNER["Scanner"] --> HOST["Project Host"] --> IR["IR Builder"]
-        IR --> RESOLVER["Resolver"] --> CALLS["Call Graph"] --> FRAMEWORK["Framework"]
-    end
-
-    WEB -->|"HTTP only"| REST
-    CLI --> ANSWERER
-    REST --> ANSWERER
-    CLI --> capabilities
-    REST --> capabilities
-    ANSWERER -->|"one method:<br/>build(request)"| CONTEXT
-    ANSWERER --> PROVIDER
-    CONTEXT --> capabilities
-    capabilities --> QUERY
-    QUERY --> GRAPHAPI
-    GRAPHAPI --> STORE
-    build ==>|"builds"| STORE
-
-    classDef iface fill:#1e3a5f,stroke:#3b82f6,color:#e0f2fe
-    classDef aiLayer fill:#3b1e5f,stroke:#a855f7,color:#f3e8ff
-    classDef engine fill:#1e3d2f,stroke:#22c55e,color:#dcfce7
-    classDef storage fill:#4a2c1a,stroke:#f97316,color:#ffedd5
-    class WEB,CLI,REST iface
-    class ANSWERER,PROVIDER aiLayer
-    class CONTEXT,EXPLORER,NAV,EXPLAIN,IMPACT,HEALTH,QUERY,GRAPHAPI engine
-    class STORE storage
-```
-
-### The boundaries that matter
-
-These are enforced by types and asserted by tests, not maintained by discipline:
-
-- **The web app imports no backend package.** Its only contract is the REST surface; its types are a
-  hand-written projection of the wire format.
-- **The AI layer cannot reach the repository.** It receives a `ContextSource` with exactly one
-  method. No SQLite, no graph traversal, no Query Engine, no capability call — its compiled output
-  imports no `@traceiq` module at all.
-- **No vendor name appears above the provider package.** `@traceiq/ai` names none; a test asserts it,
-  including in the published type declarations.
-- **Interfaces contain zero analysis.** Every endpoint and every command validates input, calls one
-  capability, and returns its result unchanged.
-
----
-
-## Repository structure
-
-```
-traceiq/
-├── apps/
-│   ├── api/                REST API — Express, 21 endpoints, OpenAPI 3
-│   ├── cli/                CLI — 15 report commands plus an interactive chat REPL
-│   └── web/                Web app — Next.js 15, React 19, 8 pages
-│
-├── packages/
-│   │                       ── write path ──────────────────────────────
-│   ├── scanner/            repository walk, project type, framework detection
-│   ├── project-host/       owns the ts-morph Project
-│   ├── ir/                 syntax → language-independent IR
-│   ├── resolver/           binds references to declarations
-│   ├── call-graph/         static CALLS relationships
-│   ├── framework/          Express conventions: routes, roles, env vars
-│   ├── graph/              graph builder + SQLite store
-│   │
-│   │                       ── read path ───────────────────────────────
-│   ├── graph-api/          the only read path to the graph (abstract)
-│   ├── query/              query engine — every feature reads through this
-│   ├── explain/            every fact about one declaration
-│   ├── impact/             dependents closure for a change
-│   ├── health/             repository-wide health report
-│   ├── explorer/           the read layer every interface consumes
-│   ├── navigation/         routes, architecture trees, dependency navigation
-│   ├── pipeline/           scan and open a stored graph
-│   ├── context/            what context belongs together for a question
-│   │
-│   │                       ── AI ──────────────────────────────────────
-│   ├── ai/                 grounded answers over projected context
-│   ├── ai-ollama/          the first model provider
-│   │
-│   ├── analysis/           a GitHub URL → clone → the pipeline, as a tracked job
-│   │
-│   ├── shared/             stable identifiers, path rules
-│   └── types/              domain vocabulary
-│
-├── docker/                 model pull and first-run scan
-├── docs/progress.md        the full engineering record, milestone by milestone
-└── docker-compose.yml
-```
-
-Each package documents its own purpose, boundaries, performance and limitations in its `README.md`.
+| **Analyse any repository** | Point it at a local path or a public GitHub URL. TypeScript, JavaScript, Python, Java and Go are parsed semantically; every other language is still described by its files, manifests, dependencies and detected technologies — and the analysis reports which depth it reached rather than pretending. |
+| **Browse the repository graph** | Packages, files, declarations, imports, exports, routes, environment variables, dependencies and the relationships between them. |
+| **Understand non-code artefacts** | Workflows, Dockerfiles, compose files, Kubernetes resources, Terraform, manifests, schemas, shell scripts, tests, `.env` files and documentation are read for what they *declare* — jobs, services, build stages, entities, headings — not just counted. |
+| **Trace impact** | What a change to one declaration could reach, direct and transitive, with the routes affected. |
+| **See architectural health** | Role layers, cycles, coupling hotspots, isolated declarations, unresolved references. |
+| **Ask questions** | Grounded, cited answers about architecture, deployment, onboarding, workflows and components — from a model running on your own machine. |
+| **Use it three ways** | A web app, a REST API with a generated OpenAPI document, and a CLI. All three read the same graph. |
 
 ---
 
 ## Quick Start
 
-**Requirements:** Docker. Nothing else.
+The recommended path. **Docker is the only prerequisite** — Node and pnpm are needed only for
+[local development](#local-development-without-docker).
 
-```bash
-git clone <repo>
-cd traceiq
-docker compose up
-```
+### Prerequisites
 
 | | |
 |---|---|
-| **Web** | http://localhost:3001 |
-| **REST API** | http://localhost:3000 — try `/overview`, `/openapi.json` |
-| **Ollama** | http://localhost:11434 |
+| **Docker** | With Compose v2 (`docker compose`, not `docker-compose`). Verified on Docker 29 / Compose v5. |
+| **Git** | To clone the repository. |
+| **Disk** | ~8 GB of images — the Ollama base image is ~7 GB on its own, plus ~1 GB for TraceIQ's API and web images. Another ~5 GB if you enable chat and download the model. |
+| **Memory** | 4 GB for Docker is enough to browse a repository. Give it **8 GB** if you enable chat — a 7B model runs inside the stack. |
 
-The first `up` builds two images, starts the services, and **scans this repository into its own
-graph** — so the dashboard opens on real data. A few minutes the first time, seconds after that.
+Node.js ≥ 22 and pnpm 11 are required **only** if you run the apps directly instead of in Docker.
 
-Everything binds to `127.0.0.1`. Nothing in this stack authenticates, so none of it should be
-reachable from a network.
-
-### Try the API
+### 1. Clone and start
 
 ```bash
-curl localhost:3000/overview | jq '.data.repository'
-curl localhost:3000/health   | jq '.data.findings[0]'
-curl 'localhost:3000/search?q=Repository' | jq '.data.total'
+git clone https://github.com/nocapgaurav/TraceIQ.git
+cd TraceIQ
+docker compose up -d
 ```
 
-### Analysing your own repository
+The first run pulls the Ollama image, builds TraceIQ's two images, and takes several minutes. It then
+starts five services in dependency order and **scans TraceIQ itself into the graph**, so the app
+opens on real data rather than an empty state.
+
+No `.env` file is needed. Every variable has a working default.
+
+### 2. Open it
+
+| | |
+|---|---|
+| **Web app** | <http://localhost:3001> — start here |
+| **REST API** | <http://localhost:3000/overview> — the API has no root route, so `/` returns 404 |
+| **OpenAPI** | <http://localhost:3000/openapi.json> |
+
+Everything binds to `127.0.0.1`. Nothing in this stack authenticates, so none of it is reachable
+from your network.
+
+### 3. Chat is off until you ask for it
+
+Browsing, Explorer, Impact, Architecture, Search and the whole REST API work immediately. **Ask
+TraceIQ does not**, because a model is several gigabytes and a first `docker compose up` should not
+begin with a download nobody requested. The chat page says so, and the API answers
+`503 ai-not-configured`.
+
+To enable it, see [The model](#the-model) below.
+
+### What just started
+
+```
+ollama ──healthy──▶ ollama-pull ──completed──▶ api ──healthy──▶ web
+  │                                            │                 │
+  │                                            └──healthy──▶ seed │
+  ▼                                            ▼                 ▼
+ollama-models                            traceiq-graph      (no volume)
+  (named volume)                          (named volume)
+```
+
+| Service | Kind | What it does |
+|---|---|---|
+| `ollama` | long-running | The model provider, on port `11434`. Models live in the `ollama-models` volume. |
+| `ollama-pull` | **one-shot** | Downloads the configured model, once, then exits. A no-op when no model is set. |
+| `api` | long-running | The REST API on port `3000`. Waits for `ollama-pull` to *finish*, because it resolves its model at startup. |
+| `seed` | **one-shot** | Scans the mounted repository through `POST /scan` so the app has something to show. **Skips itself when a graph already exists**, so it is a first-run step and not a rescan on every `up`. |
+| `web` | long-running | The Next.js app on port `3001`. Waits for the API to be *healthy*. |
+
+**Two named volumes hold everything that matters:**
+
+| Volume | Contents | Survives `down`? |
+|---|---|---|
+| `traceiq-graph` | The repository graph (`/data/graph.db`) | Yes |
+| `ollama-models` | Downloaded models (gigabytes) | Yes |
+
+`docker compose down` stops and removes the containers and leaves both volumes alone — verified.
+**`docker compose down -v` deletes both**, which means re-downloading the model and re-analysing the
+repository. Use it only when you mean it.
+
+---
+
+## The model
+
+Ollama runs **inside the Docker stack**. You do not install it yourself.
+
+### Enable chat
 
 ```bash
-TRACEIQ_SCAN_PATH=/path/to/your/repo docker compose up
+cp .env.example .env
+```
 
-# Rescan into the existing graph. `seed` skips itself when a graph is already there,
-# so a rescan has to be asked for.
+Set one line in `.env`:
+
+```dotenv
+TRACEIQ_MODEL=qwen2.5:7b-instruct
+```
+
+Then bring the stack up again:
+
+```bash
+docker compose up -d
+```
+
+The `ollama-pull` service downloads the model into the persistent volume — **~4.7 GB, once** — and
+the API waits for it to finish before starting. Watch it:
+
+```bash
+docker compose logs -f ollama-pull
+```
+
+`qwen2.5:7b-instruct` is the model TraceIQ is verified against. Any Ollama chat model works; a
+smaller one (`qwen2.5:0.5b-instruct`, ~400 MB) is much faster and noticeably worse at following the
+citation rules.
+
+### Verify the model is there
+
+```bash
+docker compose exec ollama ollama list
+```
+
+To pull one by hand, or to add a second:
+
+```bash
+docker compose exec ollama ollama pull qwen2.5:7b-instruct
+```
+
+### If the provider is unavailable
+
+With `TRACEIQ_MODEL` set, the API **refuses to start** when the provider is unreachable or does not
+hold the model — it exits with `model provider unavailable` or `model-not-found` rather than failing
+one request at a time. That is deliberate: it is a startup problem, and finding out at startup is
+better than finding out mid-answer. Check `docker compose logs api`.
+
+With `TRACEIQ_MODEL` unset, the API starts normally and only the two chat endpoints report
+`ai-not-configured`.
+
+---
+
+## Verify it is running
+
+```bash
+docker compose ps
+```
+
+All three long-running services should read `Up … (healthy)`; `ollama-pull` and `seed` should be
+absent or `Exited (0)` — they are one-shot jobs that are *supposed* to finish.
+
+```bash
+# Liveness. Answers without opening a graph.
+curl http://localhost:3000/ping
+
+# Is a repository scanned, and where is the graph?
+curl http://localhost:3000/version
+
+# Full status: uptime, memory, graph, analysis depth per region.
+curl http://localhost:3000/healthz
+
+# Real data from the graph.
+curl http://localhost:3000/overview
+```
+
+`/ping` returns:
+
+```json
+{"success":true,"data":{"status":"ok"},"meta":{"endpoint":"/ping","capability":"api","graphApiCalls":0}}
+```
+
+Logs, if something looks wrong:
+
+```bash
+docker compose logs -f api
+docker compose logs seed        # the first-run scan
+docker compose logs ollama-pull # the model download
+```
+
+---
+
+## Analyse a repository
+
+Out of the box TraceIQ analyses **itself**. There are three ways to point it at something else.
+
+### A. A public GitHub repository, from the web app (recommended)
+
+1. Open <http://localhost:3001>.
+2. Click **Analyze a repository**.
+3. Paste a GitHub URL — for example `https://github.com/facebook/react`.
+4. Click **Analyze Repository**.
+5. Watch the five stages: *Validating repository URL → Cloning → Scanning → Loading → Complete*.
+6. When it finishes, the new graph **replaces** the previous one. Open **Overview** or **Explorer**.
+
+The clone happens in the API container, into a temporary directory that is removed afterwards
+whether the analysis succeeded or not. It runs in a worker process, so the API stays responsive.
+
+The same thing over HTTP:
+
+```bash
+curl -X POST http://localhost:3000/analysis \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://github.com/sindresorhus/is-plain-obj"}'
+
+# Progress, newest first.
+curl http://localhost:3000/analysis
+```
+
+### B. A local repository, mounted into the stack
+
+Point `TRACEIQ_SCAN_PATH` at it — a path **on your host** — and bring the stack up. It is mounted
+read-only; TraceIQ never writes to the code it analyses.
+
+```bash
+TRACEIQ_SCAN_PATH=/path/to/your/repo docker compose up -d
+```
+
+`seed` only scans when the graph is empty. To force a rescan of the mounted path:
+
+```bash
 docker compose run --rm -e TRACEIQ_SCAN_FORCE=1 seed
 ```
 
-Any repository works, in any language. TypeScript, JavaScript, Python, Java and Go reach semantic
-depth; everything else is described by universal discovery — files, languages, manifests, declared
-dependencies and detected technologies — and the analysis says which it got. No `tsconfig.json` is
-required. The path is mounted **read-only** — TraceIQ never writes to the code it analyses.
+> The `seed` container's own documentation mentions `docker compose run --rm seed --force`. **That
+> does not work** — Compose replaces the container's command, so it runs `node --force`. Use the
+> environment variable above.
 
----
+### C. The CLI, against a graph on your own disk
 
-## Docker deployment
-
-Five services, started in dependency order, each gated on the one before it being *healthy* rather
-than merely started.
-
-```mermaid
-flowchart LR
-    OLLAMA["ollama<br/><i>model provider</i>"]
-    PULL["ollama-pull<br/><i>one-shot</i>"]
-    API["api<br/><i>REST</i>"]
-    SEED["seed<br/><i>one-shot scan</i>"]
-    WEB["web<br/><i>Next.js</i>"]
-
-    OLLAMA -->|healthy| PULL
-    PULL -->|completed| API
-    API -->|healthy| SEED
-    API -->|healthy| WEB
-
-    MODELS[("ollama-models")] --- OLLAMA
-    GRAPH[("traceiq-graph")] --- API
-
-    classDef svc fill:#1e3a5f,stroke:#3b82f6,color:#e0f2fe
-    classDef once fill:#4a3c1a,stroke:#eab308,color:#fef9c3
-    classDef vol fill:#1e3d2f,stroke:#22c55e,color:#dcfce7
-    class OLLAMA,API,WEB svc
-    class PULL,SEED once
-    class MODELS,GRAPH vol
-```
-
-Both application images are multi-stage and run as an unprivileged user with no compiler in the
-runtime layer. The graph and any downloaded models live in named volumes and survive
-`docker compose down`.
+No Docker, no API. Requires the [local development](#local-development-without-docker) setup.
 
 ```bash
-docker compose up            # the whole stack
-docker compose build         # rebuild after a source change
-docker compose logs -f api   # follow one service
-docker compose down          # stop; volumes kept
-docker compose down -v       # stop and discard the graph and models
+node apps/cli/bin/traceiq.js scan /path/to/repo
+node apps/cli/bin/traceiq.js overview
 ```
-
-### Configuration
-
-Every variable has a working default, so no `.env` is needed. Copy `.env.example` to change
-something.
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `TRACEIQ_MODEL` | *(empty)* | Which model answers. Empty means chat is disabled. |
-| `TRACEIQ_PROVIDER` | `ollama` | Which provider holds it. |
-| `TRACEIQ_SCAN_PATH` | `.` | The repository to analyse, on the host. Mounted read-only. |
-| `WEB_PORT` | `3001` | |
-| `API_PORT` | `3000` | |
-| `OLLAMA_PORT` | `11434` | |
-| `TRACEIQ_API_URL` | `http://api:3000` | Where the browser's `/api/*` calls go. **Build-time** — see below. |
-
-> **Chat is opt-in.** `TRACEIQ_MODEL` is empty by default because a model is several gigabytes, and a
-> first `docker compose up` should not open with a download nobody asked for. Everything else works;
-> the chat page says `ai-not-configured` and what to do. Set the variable and run `up` again — the
-> model is pulled once, into a persistent volume, and the API waits for it to finish.
-
-> **`TRACEIQ_API_URL` is a build-time value.** Next compiles its rewrites into the build, so changing
-> it requires `docker compose build web`. Setting it on a running container has no effect.
 
 ---
 
-## Local development
+## Using the Explorer
 
-**Requirements:** Node ≥ 22, pnpm 11.
+Open **Explorer** in the sidebar. Three panes: navigation on the left, the subject in the middle,
+what the vocabulary means on the right. The selection lives in the URL, so any view is shareable.
+
+1. **Pick a package** in the left pane, then a file inside it.
+2. **For a source file**, the centre pane shows declaration counts, imports, exports, fan-in,
+   fan-out and routes, with tabs for declarations, imports, exports, external packages, environment
+   variables and the raw API payload.
+3. **For a non-code artefact** — a workflow, a Dockerfile, a compose file, a README, a schema — the
+   centre pane shows what that artefact declares instead: a **Structure** tab with its jobs, steps,
+   services, stages, entities or headings; **References** and **Referenced by**; and **Unresolved**
+   for paths it names that match no file.
+4. **Click a declaration** to open it in place — its callers, callees, type references, roles and
+   impact — without leaving the page.
+5. **Ask TraceIQ about what is selected** using the quick action on the panel.
+
+Every panel states what the analysis did *not* establish rather than showing a bare zero. A file
+with no declarations reads "No source-code declarations were extracted from this file", followed by
+what it does declare and where the reading stopped.
+
+<!--
+  SCREENSHOT PLACEHOLDER — Explorer
+  Add a screenshot of http://localhost:3001/explorer with an artefact selected
+  (for example ?file=docker-compose.yml).
+-->
+
+---
+
+## Using Ask TraceIQ
+
+Open **Ask TraceIQ**. Pick a subject — the whole repository, a package, a file, a declaration or a
+route — and ask.
+
+Questions TraceIQ is built to answer:
+
+```
+What does this repository do?
+Explain the architecture.
+What are the major packages, and how do they interact?
+Where should a new developer start?
+What tests should I read first?
+How is this project deployed?
+Walk me through one important workflow end to end.
+What are the most important components, and why?
+How does authentication work?
+Which modules depend on the graph package?
+```
+
+### Reading an answer
+
+| | |
+|---|---|
+| **`[f12]`** | A citation. The model is instructed to cite every claim; expand it to see the fact, its confidence and which analyser produced it. |
+| **grounded** | The answer cited facts and named nothing the facts did not contain. |
+| **unverifiable** | Nothing was fabricated, but nothing was cited either, so nothing could be checked. |
+| **ungrounded** | The answer named something no fact carried, or made a claim the facts do not license. The answer is still shown, with what failed. |
+| **rewritten once** | Verification rejected the first attempt, so it was regenerated from the same facts with the failed sentences named. This happens at most once per answer. |
+
+**Absence is reported as absence.** Asked how caching works in a repository with no cache, TraceIQ
+says the analysis did not identify one — not that the repository does not have one. Those are
+different claims, and only the first is supportable.
+
+<!--
+  SCREENSHOT PLACEHOLDER — Ask TraceIQ
+  Add a screenshot of http://localhost:3001/chat showing an answer with citations.
+-->
+
+### From the CLI
+
+An interactive, streaming REPL. Ctrl+C cancels one answer without ending the session.
+
+```bash
+node apps/cli/bin/traceiq.js chat --model qwen2.5:7b-instruct --subject repository
+```
+
+### From the API
+
+```bash
+# One JSON answer.
+curl -X POST http://localhost:3000/chat \
+  -H 'content-type: application/json' \
+  -d '{"question":"Explain the architecture.","subject":{"kind":"repository"}}'
+
+# Server-sent events, token by token.
+curl -N -X POST http://localhost:3000/chat/stream \
+  -H 'content-type: application/json' \
+  -d '{"question":"Explain the architecture.","subject":{"kind":"repository"}}'
+```
+
+---
+
+## How it works
+
+```
+       repository (local path or GitHub clone)
+                        │
+                        ▼
+  ┌─────────────────────────────────────────────┐
+  │  Analysis pipeline — deterministic, no AI   │
+  │                                             │
+  │  scanner ─▶ language analysers ─▶ resolver  │
+  │      │       (ts-morph, tree-sitter)        │
+  │      └────▶ technology detection            │
+  │      └────▶ artefact readers                │
+  └─────────────────────────────────────────────┘
+                        │
+                        ▼
+              repository graph (SQLite)
+         nodes · edges · confidence · provenance
+                        │
+        ┌───────────────┼───────────────┐
+        ▼               ▼               ▼
+   Query Engine     Explorer        Context Builder
+   Explain          Health          (bounded projection)
+   Impact           Navigation             │
+        │               │                  ▼
+        └───────┬───────┘            selected facts
+                │                          │
+                ▼                          ▼
+        REST API · CLI · Web         local model (Ollama)
+                                           │
+                                           ▼
+                                  grounding + verification
+                                           │
+                                           ▼
+                                   cited answer
+```
+
+Five ideas carry the design.
+
+**Deterministic analysis first.** Nothing in the pipeline guesses. The same repository produces a
+byte-identical graph, and every node and edge carries a confidence level — `CERTAIN` for syntax,
+`RESOLVED` for a reference the type checker bound, `INFERRED` for a heuristic with one candidate,
+`AMBIGUOUS` where several are plausible — plus provenance naming the analyser and the file.
+
+**A graph, reused.** Analysis happens once. Every surface reads the same stored graph, so the CLI,
+the API and the web app cannot disagree about a repository.
+
+**Artefact-aware.** A file with no declarations is not a file with no purpose. See
+[What TraceIQ understands](#what-traceiq-understands).
+
+**Bounded AI context.** A full repository context measures megabytes — far more than any context
+window. So the AI layer never sees it. A projection layer selects facts against a token budget, in
+priority order, and reports every cap it applied. Prompts run around 4,300–4,600 tokens regardless
+of repository size.
+
+**Grounding, then one correction.** After generation, every identifier, package name and citation in
+the answer is checked against the closed set of facts it was given, and a small set of rules checks
+whether the *claims* are licensed — a reference is not an execution order, a secret is not an
+authentication mechanism, a fan-in count is not architectural importance. An answer that fails is
+regenerated **once**, from the same facts, with the failed sentences named. If it still fails, the
+safer of the two is returned with its warning intact.
+
+---
+
+## What TraceIQ understands
+
+### Source code
+
+TypeScript and JavaScript through the TypeScript compiler API; Python, Java and Go through
+tree-sitter grammars. Declarations, containment, imports, exports, calls, type references,
+inheritance, routes, environment variable reads and architectural roles.
+
+Any other language still produces a graph — files, languages, manifests, declared dependencies,
+detected technologies — and the analysis records the depth it reached per region, so a consumer can
+tell "analysed and found nothing" from "never analysed".
+
+### Non-code artefacts
+
+Eighteen artefact families. Fifteen are read for structure, two are recorded by presence, and one is
+an explicit "no reader exists for this":
+
+| Family | What is read |
+|---|---|
+| `ci-workflow` | Jobs, declared prerequisites, steps, commands, triggers, conditions, variable names |
+| `container-image` | Build stages, base images, commands, exposed ports, variable names, copied paths |
+| `container-compose` | Services, images, build contexts, ports, volumes, networks, `depends_on`, commands |
+| `orchestration-resource` | Each document's kind and name, container images, ports, variable names |
+| `infrastructure-as-code` | Terraform resources, data sources, modules, variables, outputs, module sources |
+| `package-manifest` | Scripts, workspace members, declared entry points, metadata |
+| `schema` | Tables, views, indexes, altered tables, Prisma/GraphQL model declarations |
+| `documentation` | Headings, and links that resolve to repository files |
+| `script` | Functions, uppercase assignments, invoked paths, variable references |
+| `test` | Suites, and a bounded sample of case names |
+| `environment-configuration` | **Variable names only** — never values |
+| `tool-configuration`, `build-configuration`, `workspace-configuration`, `data` | Sections, settings, referenced paths |
+| `lockfile`, `generated` | Presence, with the reason they were not read |
+| `unknown-artifact` | Presence, language and position, with a boundary saying no reader exists |
+
+Three things worth knowing:
+
+- **A `.env` file's values are never recorded.** It holds live credentials in a great many
+  repositories, and a value recorded in the graph would reach a prompt and then an answer. Only the
+  names are stored, and a test enforces it.
+- **A YAML file's family is decided by its content, not its name.** `deploy.yml` is a workflow in one
+  repository, a compose file in the next and a Kubernetes manifest in the third; what is knowable is
+  what its top level declares.
+- **No reader is a conforming parser, and every one says what it did not read.** Each artefact
+  carries a boundary sentence — "read as indentation structure; template expansion was not
+  performed" — shown verbatim in the Explorer. An artefact with no extracted structure *and* a
+  boundary sentence is a very different claim from silence.
+
+Where the evidence supports it, artefacts participate in the graph like anything else: a workflow
+step that invokes a script, a compose service that declares it needs another, a document that links
+to a module, a configuration file that configures a detected technology. Those relationships reach
+the Explorer, retrieval and the answers — which is what makes "how is this deployed" and "walk me
+through a workflow" answerable on a repository whose ordering exists only in YAML.
+
+---
+
+## Tech stack
+
+| Layer | |
+|---|---|
+| **Language** | TypeScript 7, strict, project references across a pnpm workspace |
+| **Repository analysis** | ts-morph (TypeScript Compiler API) · web-tree-sitter with Python, Java and Go grammars · fast-glob |
+| **Graph storage** | SQLite via better-sqlite3 — one database per repository |
+| **REST API** | Express 5 · server-sent events · generated OpenAPI 3.0 document |
+| **Web app** | Next.js 15 (App Router) · React 19 · Tailwind CSS 4 · Radix primitives · TanStack Query · Zustand · React Flow · Monaco |
+| **AI** | Ollama, local. The AI layer itself has **zero external runtime dependencies** — Node's own `fetch` and streams |
+| **Testing** | Vitest, for both the Node packages and the web app (jsdom + Testing Library) |
+| **Infrastructure** | Docker Compose, five services, two named volumes |
+
+Everything below the web app depends on four external runtime packages in total —
+`better-sqlite3`, `ts-morph`, `fast-glob`, `express`.
+
+---
+
+## Local development without Docker
+
+Needed only to work on TraceIQ itself. To *use* it, [Docker](#quick-start) is enough.
+
+### Prerequisites
+
+| | |
+|---|---|
+| **Node.js** | ≥ 22 (`engines` in `package.json`). Verified on 22 and 26. |
+| **pnpm** | 11 — the version the lockfile was written by. `corepack enable && corepack prepare pnpm@11.15.0 --activate` |
+| **A C++ toolchain** | Only if `better-sqlite3` has no prebuilt binary for your platform. macOS: Xcode command line tools. Debian/Ubuntu: `python3 make g++`. |
+| **Ollama** | Only for chat. Either run the Docker stack (which exposes it on `127.0.0.1:11434`) or install Ollama natively. |
+
+### Install and build
 
 ```bash
 pnpm install
-pnpm build                   # tsc -b across the workspace; also the typecheck for sources
-pnpm test                    # 2,128 tests, run against sources — no build required
+pnpm build          # tsc -b across the workspace; required before the API or CLI will run
 ```
 
-### The CLI
+### Run the stack directly
+
+**First, scan a repository into a local graph** — a one-shot command, not a long-running process:
 
 ```bash
-mkdir -p .traceiq                            # the store writes the file, not the directory
 node apps/cli/bin/traceiq.js scan .
-
-node apps/cli/bin/traceiq.js overview
-node apps/cli/bin/traceiq.js symbol 'sym:packages/query/src/query-engine.ts#QueryEngine'
-node apps/cli/bin/traceiq.js impact 'sym:packages/types/src/node-id.ts#NodeId'
-node apps/cli/bin/traceiq.js health
+# writes .traceiq/graph.db
 ```
 
-The `mkdir` is needed the first time: the graph store opens a database file but does not create the
-directory above it, so a missing `.traceiq/` reports `the database could not be opened`. Docker is
-unaffected — its volume is mounted, so the directory is always there.
-
-<details>
-<summary><b>All 16 commands</b></summary>
-
-| Command | What it answers |
-|---|---|
-| `scan <repository>` | Build the repository graph and store it |
-| `overview` | Repository, graph and health summary |
-| `architecture` | Roles, kinds and package dependencies |
-| `packages` | Every derived package with counts both ways |
-| `package <name>` | One package: files, dependencies, roles |
-| `file <path>` | One file: declarations, imports, routes |
-| `symbol <id>` | Everything recorded about one declaration |
-| `impact <id>` | What a change to one declaration could affect |
-| `routes` | Every route the repository registers |
-| `route <method> <path>` | One route: chain, roles reached, health |
-| `health` | Architectural health report |
-| `search <text>` | Exact or prefix search, alphabetical |
-| `dependencies <id>` | Direct and transitive dependencies |
-| `cycles` | Import, call, reference and inheritance cycles |
-| `hotspots` | The most connected declarations and files |
-| `chat` | Interactive, grounded, cited — see below |
-
-Options: `--db <path>`, `--profile`. Errors carry a fixed code and a distinct exit status, so a script
-can branch on the status without matching prose.
-
-</details>
-
-### Running the API and web app directly
+**Terminal 1 — the API on port 3000**
 
 ```bash
-# terminal 1
 TRACEIQ_DB=.traceiq/graph.db node apps/api/bin/traceiq-api.js
-
-# terminal 2
-pnpm --filter @traceiq/web dev        # http://localhost:3001
 ```
 
-### Scripts
-
-| | |
-|---|---|
-| `pnpm build` | `tsc -b` across the workspace |
-| `pnpm test` | Backend and web suites |
-| `pnpm test:backend` / `pnpm test:web` | One at a time |
-| `pnpm typecheck:tests` | Typechecks test files, which the build excludes |
-| `pnpm typecheck:web` / `pnpm build:web` | The web app specifically |
-| `pnpm clean` | `tsc -b --clean` |
-
----
-
-## The AI layer
-
-TraceIQ's AI is a **pure consumer** of the engine. It cannot traverse the graph, reach SQLite, call a
-capability or search the repository — it receives assembled context and nothing else.
-
-### The problem it solves
-
-A `RepositoryContext` cannot go in a prompt. Measured on TraceIQ itself:
-
-| Context | Size | ≈ tokens | vs a 128k window |
-|---|---|---|---|
-| `symbol` | 621 KB | 176,712 | 1.3× |
-| `repository` | 1,450 KB | 412,508 | 3.1× |
-| `impact` | 4,201 KB | 1,194,962 | **9.1×** |
-
-So the heart of the AI layer is a **projection**: a deterministic, budgeted, citable reduction of a
-context into facts a model can actually be given.
-
-| Context | ≈ tokens in | projected | reduction | facts | warm |
-|---|---|---|---|---|---|
-| `repository` | 412,508 | 1,920 | **215×** | 64 | 0.10 ms |
-| `impact` | 1,194,962 | 5,989 | **200×** | 152 | 0.12 ms |
-| `symbol` | 176,712 | 5,995 | 29× | 166 | 0.16 ms |
-
-### How an answer is produced
-
-```mermaid
-flowchart LR
-    Q["question +<br/>resolved subject"] --> ACQ["acquire<br/><i>ContextSource.build()</i>"]
-    ACQ --> PROJ["project<br/><i>fixed priority, capped</i>"]
-    PROJ --> ASM["assemble<br/><i>deterministic prompt</i>"]
-    ASM --> GEN["generate<br/><i>streaming only</i>"]
-    GEN --> GUARD["guard<br/><i>closed identifier set</i>"]
-    GUARD --> A["answer +<br/>citations + verdict"]
-
-    classDef det fill:#1e3d2f,stroke:#22c55e,color:#dcfce7
-    classDef gen fill:#3b1e5f,stroke:#a855f7,color:#f3e8ff
-    class ACQ,PROJ,ASM,GUARD det
-    class GEN gen
-```
-
-Everything except generation is deterministic, so an unexpected answer can be investigated by
-re-projecting and comparing digests.
-
-### Four rules the projection holds
-
-1. **Fixed priority, never ranking.** Extractors run in a declared order with declared caps. No
-   relevance score exists anywhere in TraceIQ and none is invented.
-2. **Nothing is invented.** A fact restates one edge or one field the context already carried. Where
-   the graph recorded an edge whose other end it could not name, the fact is simply absent.
-3. **A cap is never silent.** Every part reports what it kept against its exact total, and those
-   omissions reach the prompt *and* the user.
-4. **Byte-identical output.** The same context and budget produce the same facts and the same prompt.
-
-### The grounding guard
-
-This is where "grounded only in the repository" becomes *checkable*. Every graph identifier carries a
-fixed prefix, so for a given projection the permitted set is **closed and known** — any
-identifier-shaped token in an answer outside that set is a fabrication, decided deterministically with
-no model involved.
-
-| Verdict | Meaning |
-|---|---|
-| `grounded` | At least one valid citation, nothing fabricated |
-| `ungrounded` | Named an identifier or fact id that does not exist |
-| `unverifiable` | Nothing fabricated, but nothing cited — so nothing could be checked |
-
-An ungrounded answer is **shown**, with its verdict and the fabrications named. Withholding it would
-hide the evidence of the failure.
-
-*What the guard cannot do:* catch a wrong claim about a real identifier. It catches invented symbols,
-which is the failure that destroys trust fastest, and it does not pretend to be more than that.
-
-### Provider-agnostic
-
-`RepositoryAnswerer(contextSource, model)` — constructor injection is the entire configuration
-surface. No registry, no vendor setting. Ollama is the first provider and lives in a separate package
-downstream of the abstraction, so non-leakage is structural rather than conventional.
-
-Reachable without changing `@traceiq/ai`: llama.cpp, LM Studio, vLLM, Anthropic, OpenAI.
-
----
-
-## Repository Chat
-
-Ask questions in plain language. Every answer shows its evidence *before* its prose.
-
-A real session, captured during development — so its figures are that day's graph, not what a fresh
-scan of the current tree reports:
-
-```
-> How large is this repository and what limits the analysis?
-
-64 facts · 1,920 tokens · tier standard · c0a8bdfbb1fe2e3f
-  externalPackages: showing 15 of 51
-  cycles: showing 15 of 18
-
-The repository contains 228 files and 3,148 declarations [f2, f3]. The analysis has
-several limitations that affect its comprehensiveness:
-
-- Call Coverage: the call graph binds names rather than symbols, so a callee containing
-  another call produces no edge; every call-graph figure is a lower bound [f8].
-- Unresolved Relationships: many relationships the pipeline could not resolve are absent
-  from the graph, making any count of references a lower bound [f22].
-
-verdict grounded · qwen2.5:7b-instruct · 2005 prompt / 197 output tokens
-  [f2]  repository contains 228 files                @traceiq/explorer
-  [f3]  repository contains 3148 declarations        @traceiq/explorer
-  [f8]  analysis limitation call-coverage-partial…   @traceiq/context
-```
-
-Available in all three interfaces:
+Add chat by naming a model the provider holds. Without it the API starts and reports
+`chat disabled`:
 
 ```bash
-# CLI — interactive, streaming, coloured citations, Ctrl+C cancels one answer
-node apps/cli/bin/traceiq.js chat --model qwen2.5:7b-instruct
-node apps/cli/bin/traceiq.js chat --model qwen2.5:7b-instruct \
-  --subject 'impact:sym:packages/types/src/node-id.ts#NodeId'
-
-# REST — one JSON answer, or server-sent events
-curl -X POST localhost:3000/chat -H 'content-type: application/json' \
-  -d '{"question":"What would break if I changed this?",
-       "subject":{"kind":"impact","id":"sym:src/svc.ts#run"}}'
-
-curl -N -X POST localhost:3000/chat/stream -H 'content-type: application/json' \
-  -d '{"question":"How large is this repository?","subject":{"kind":"repository"}}'
+TRACEIQ_DB=.traceiq/graph.db \
+TRACEIQ_MODEL=qwen2.5:7b-instruct \
+node apps/api/bin/traceiq-api.js
 ```
 
-**The web app** at `/chat` adds a conversation sidebar, streaming with markdown rendering, subject
-selection through the search endpoint, a grounding badge, an omission summary, token usage, Stop,
-Retry and Clear.
+**Terminal 2 — the web app on port 3001**
 
-### Two things chat will not do
+```bash
+pnpm --filter @traceiq/web dev
+```
 
-**It will not search for you.** Turning free text into a subject is repository search — that belongs
-to the Explorer, and doing it inside the AI path would put repository intelligence there. The web app
-resolves a subject through `GET /search` and sends the result; the CLI takes a prefixed identifier;
-the API refuses a bare string.
+In development the web app proxies `/api/*` to `http://127.0.0.1:3000` by default, so no
+configuration is needed when the API is running as above. Open <http://localhost:3001>.
 
-**It has never seen your source code.** No layer below the AI serves file contents. Facts are
-identifiers, relationships, counts and the limitations of the analysis. A test asserts that no source
-text reaches a prompt.
+> **Both the dev server and the Docker `web` service use port 3001.** Running them together leaves
+> the dev server unable to bind it. Stop the container first — `docker compose stop web` — or set
+> `WEB_PORT` to something else for the stack.
 
----
+**Terminal 3 (optional) — Ollama**, if you are not running the Docker stack:
 
-## Technologies
+```bash
+ollama serve
+ollama pull qwen2.5:7b-instruct
+```
 
-<table>
-<tr><td valign="top" width="50%">
+### Rebuild after a change
 
-**Engine**
-
-| | |
-|---|---|
-| TypeScript | 7.0 · strict, project references |
-| ts-morph | 28 · TypeScript Compiler API |
-| better-sqlite3 | 13 · one database per repository |
-| fast-glob | 3 · repository walk |
-
-**Interfaces**
-
-| | |
-|---|---|
-| Express | 5 · REST API |
-| Next.js | 15 · App Router |
-| React | 19 |
-| Tailwind CSS | 4 · CSS-first config |
-
-</td><td valign="top" width="50%">
-
-**Web app**
-
-| | |
-|---|---|
-| shadcn/ui | copy-in, over Radix |
-| TanStack Query | 5 · server state |
-| Zustand | 5 · UI state |
-| React Flow | 12 · graph rendering |
-| Monaco | payload inspection |
-
-**AI · tooling**
-
-| | |
-|---|---|
-| Ollama | the first provider |
-| Vitest | 4 · 2,128 tests |
-| pnpm | 11 · workspaces |
-| Docker Compose | 5 services |
-
-</td></tr>
-</table>
-
-**The AI layer has zero external runtime dependencies.** No SDK, no tokeniser library, no markdown
-library, no HTTP client — Node's own `fetch` and streams are enough.
-
-The engine is nearly as lean: every package below the web app depends on **four** external runtime
-packages in total — `better-sqlite3`, `ts-morph`, `fast-glob`, `express`. The web app is where the
-dependencies live, as a frontend's are.
+`pnpm build` is incremental. The API and CLI run from `dist/`, so a source change needs a rebuild;
+the web app's dev server hot-reloads on its own.
 
 ---
 
 ## Testing
 
 ```bash
-pnpm test              # 2,128 tests across 84 files
-pnpm test:backend      # 1,868
-pnpm test:web          #   260
+pnpm test              # everything: backend then web
+pnpm test:backend      # the Node packages and apps
+pnpm test:web          # the web app, in jsdom
+pnpm test:watch        # backend, watching
+
+pnpm build             # tsc -b — the workspace typecheck and build
+pnpm typecheck:tests   # typechecks every test file
+pnpm typecheck:web     # the web app
+pnpm build:web         # a production Next build
 ```
 
-| Layer | Approach |
-|---|---|
-| **Unit** | Every package against fabricated inputs — no graph, no database, no compiler in the file. If a package works from fakes, it provably reaches nothing. |
-| **Integration** | Each capability also runs over a **real scanned repository** through the pipeline, so a passing unit test cannot be an artefact of the fakes. |
-| **Boundary** | Architecture rules asserted mechanically against source *and* build output: no forbidden import, no vendor name in published types, no control byte in a source file. |
-| **HTTP** | A real server on an ephemeral port driven with `fetch` — routing, validation, SSE framing, status codes, error translation. |
-| **Component** | The web app's accessible tree (`getByRole`, `aria-*`, `alert`, `status`), not class names. Only `fetch` is stubbed; every layer above it is production code. |
-| **Determinism** | The same input produces byte-identical output — graphs, contexts, projections, prompts. |
-| **Live, opt-in** | One suite against a real Ollama, skipped unless `TRACEIQ_OLLAMA_LIVE=1`. Never in CI. |
+There is **no lint script and no ESLint configuration**. Correctness is enforced by `tsc` under
+`strict`, `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`, plus the test suite.
 
-**Deliberately not tested:** whether a given model writes a good answer. That is model evaluation, it
-needs labelled data, and a test that asserted it would be asserting a hope.
+The suite is large and layered: unit tests against fabricated inputs, integration tests over a real
+scanned repository, boundary tests asserting architectural rules mechanically against both source
+and build output, HTTP tests against a real server on an ephemeral port, component tests against the
+web app's accessible tree, and determinism tests asserting byte-identical output for identical input.
 
-Validated against itself throughout — 330 files, 4,009 declarations, 16,845 edges.
+One suite talks to a real Ollama and is skipped unless both `TRACEIQ_OLLAMA_LIVE=1` and
+`TRACEIQ_OLLAMA_MODEL` are set. It never runs in CI.
+
+**Deliberately not tested:** whether a given model writes a *good* answer. That is model evaluation,
+it needs labelled data, and a test asserting it would be asserting a hope.
 
 ---
 
-## Roadmap
+## Docker cheat sheet
 
-**v1.0.0 — shipped.** The engine, three interfaces, the AI layer, Repository Chat, and a one-command
-deployment.
+Run all of these from the repository root.
 
-<details open>
-<summary><b>Delivered</b></summary>
+```bash
+# Start / stop
+docker compose up -d                       # start everything, detached
+docker compose up                          # start in the foreground, logs on stdout
+docker compose down                        # stop and remove containers; volumes survive
+docker compose down -v                     # ⚠️  also deletes the graph and the models
 
-Repository Scanner · Project Host · IR Builder · Resolver · Framework Extractor · Call Graph · Graph
-Builder · Graph Store · Graph API · Query Engine · Explain Symbol · Impact Analysis · Repository
-Health · Repository Explorer · Repository Navigation · Pipeline · CLI · REST API · Web Frontend ·
-Context Builder · AI Layer · Repository Chat · Release Engineering
+# Status and logs
+docker compose ps
+docker compose logs -f api
+docker compose logs -f web
+docker compose logs ollama-pull            # the model download
+docker compose logs seed                   # the first-run scan
 
-</details>
+# Restart or stop one service without touching the rest
+docker compose restart api
+docker compose stop web                    # free port 3001 for a local dev server
+docker compose start web
+docker compose up -d --no-deps api         # start/replace only api, skipping the ollama chain
 
-**Next, in rough order of value:**
+# Rebuild after changing code
+docker compose build api
+docker compose build web
+docker compose build                       # both
+docker compose up -d --build               # rebuild and restart in one step
 
-| | |
+# Re-analyse the mounted repository
+docker compose run --rm -e TRACEIQ_SCAN_FORCE=1 seed
+
+# The model
+docker compose exec ollama ollama list
+docker compose exec ollama ollama pull qwen2.5:7b-instruct
+
+# Health
+curl http://localhost:3000/ping
+curl http://localhost:3000/version
+curl http://localhost:3000/healthz
+```
+
+**Why `--no-deps` matters.** `docker compose up -d api` follows `depends_on`, which waits on
+`ollama` becoming healthy and `ollama-pull` completing — minutes if a model is downloading.
+`--no-deps` starts only the service you named. Note that `up` never triggers a rescan on its own:
+`seed` checks for an existing graph and leaves it alone.
+
+---
+
+## Troubleshooting
+
+### The API container keeps restarting, or exits immediately
+
+Read its logs first:
+
+```bash
+docker compose logs api | tail -30
+```
+
+| Log line | Cause | Fix |
+|---|---|---|
+| `model provider unavailable` | `TRACEIQ_MODEL` is set but Ollama is not reachable | `docker compose up -d ollama`, wait for healthy, then `docker compose up -d --no-deps api` |
+| `model-not-found` | The provider does not hold that model | `docker compose exec ollama ollama pull <model>`, or fix the tag in `.env` |
+| `unknown provider` | `TRACEIQ_PROVIDER` is not `ollama` | `ollama` is the only provider implemented |
+| `uses schema version N, but this build expects M` | The graph in the volume was written by an older build of TraceIQ | Reset the graph volume only — see [the graph volume](#reset-the-graph-only) below. Do not use `down -v`; it deletes the model as well |
+
+### The model is still downloading
+
+`ollama-pull` blocks the API on purpose. Watch it, and wait:
+
+```bash
+docker compose logs -f ollama-pull
+```
+
+### Chat says `ai-not-configured`
+
+`TRACEIQ_MODEL` is empty — the default. Set it in `.env` and run `docker compose up -d` again. See
+[The model](#the-model).
+
+### The dashboard says no repository has been scanned
+
+```bash
+curl http://localhost:3000/version        # "scanned": false confirms it
+docker compose logs seed                  # why the first-run scan did not complete
+docker compose run --rm -e TRACEIQ_SCAN_FORCE=1 seed
+```
+
+### The graph is stale, or shows the wrong repository
+
+The graph holds whatever was analysed last — including a GitHub repository analysed through the UI.
+To go back to the mounted path:
+
+```bash
+docker compose run --rm -e TRACEIQ_SCAN_FORCE=1 seed
+```
+
+### Reset the graph only
+
+Throws away the graph and keeps the downloaded model. On the next `up`, `seed` finds no graph and
+re-scans the mounted repository automatically:
+
+```bash
+docker compose down
+docker volume rm traceiq_traceiq-graph
+docker compose up -d
+```
+
+The volume is named `traceiq_traceiq-graph` because Compose prefixes the project name; confirm it
+with `docker volume ls`.
+
+### A GitHub analysis fails
+
+| Error code | Meaning |
 |---|---|
-| **Answer evaluation** | The one thing no test asserts. Needs a labelled question set; would make model and prompt changes measurable rather than felt. |
-| **A graph revision identifier** | The read API exposes none, so staleness cannot be detected exactly. A small additive change that would let a conversation know its facts had moved. |
-| **Conversation persistence** | The types are in place. The real question is what happens to a stored conversation after a rescan — likely: mark turns stale rather than silently replay them. |
-| **More languages** | The graph vocabulary is language-independent by design; the IR builder is not. Python or Go would be a second IR builder, not a second engine. |
-| **More frameworks** | Route and role extraction currently understands Express conventions. NestJS and Fastify are additive. |
-| **More providers** | The contract battery already exists, so a second provider inherits the whole standard. |
-| **Images in CI** | `docker build` in the workflow — release engineering found three defects that only a real build surfaces. |
-| **Incremental scanning** | Rescanning is whole-repository. Identity is location-derived, so a rename reads as a delete plus a create. |
+| `repository-too-large` | The clone crossed `TRACEIQ_MAX_CLONE_MB` (2048 by default) |
+| `analysis-timeout` | The clone exceeded `TRACEIQ_CLONE_TIMEOUT_MS` (ten minutes by default) |
+| a git error | Private repositories are not supported; only public HTTPS GitHub URLs are accepted |
+
+Raise the limits in `.env` and restart the API.
+
+### Port already in use
+
+Change the host port and restart. All three are configurable:
+
+```dotenv
+WEB_PORT=4001
+API_PORT=4000
+OLLAMA_PORT=21434
+```
+
+Then `docker compose up -d` to recreate the containers with the new mappings. These change only the
+**host** ports; inside the Compose network the services still talk to each other on `3000`, `3001`
+and `11434`, so nothing needs rebuilding.
+
+`TRACEIQ_API_URL` is a **build-time** value for the web image — if you change it, rebuild with
+`docker compose build web`. Setting it on a running container has no effect, because Next compiles
+its rewrites into the build.
+
+### Answers are very slow
+
+Prompt evaluation on a CPU-only 7B container was measured at about 46 tokens per second, so a
+4,500-token prompt is roughly a ninety-second wait before the first word. Options: lower
+`TRACEIQ_MODEL_CONTEXT` (fewer facts, shorter prompt, faster), use a smaller model, or give Docker
+more memory. The UI names the stage it is waiting on so a long wait is never a blank screen.
+
+### Code changes are not showing up
+
+Docker images are built, not mounted. Rebuild:
+
+```bash
+docker compose build api web && docker compose up -d
+```
+
+### Stop everything safely
+
+```bash
+docker compose down          # keeps the graph and the models
+```
+
+---
+
+## Project structure
+
+```
+apps/
+  api/          REST API — Express, SSE, generated OpenAPI, out-of-process analysis workers
+  web/          Next.js app — Overview, Explorer, Architecture, Impact, Search, Ask TraceIQ
+  cli/          traceiq — scan, query and an interactive chat REPL
+
+packages/
+  types/        The closed vocabularies: relationships, roles, confidence, artefact terms
+  shared/       Node identity construction, shared by every layer
+  scanner/      Walks the repository: files, languages, roles, manifests, technology regions
+  technology/   Detects frameworks, runtimes and infrastructure, with the files that prove each
+  artifact/     Reads non-code artefacts — workflows, containers, schemas, docs, scripts
+  project-host/ Bounded TypeScript program construction
+  ir/           Language-independent intermediate representation of declarations
+  resolver/     Binds references through the type checker; records what it could not bind
+  call-graph/   Call edges, resolved and unresolved
+  framework/    Routes, roles and environment variables from framework conventions
+  tree-sitter/  The grammar host shared by the non-compiler analysers
+  python/ java/ go/   Tree-sitter analysers
+  analyzer/     Runs every analyser in isolation, so one failure costs only its own regions
+  graph-api/    The graph's read model and interface — no SQL, no driver
+  graph/        Builds and stores the graph; owns the schema and every SQL statement
+  query/        Traversals over the graph
+  explain/      Everything recorded about one declaration
+  impact/       What a change could reach
+  health/       Coupling, cycles, roles, findings
+  explorer/     Overview, files, packages, dependencies, hotspots, artefact views, search
+  navigation/   The trees the web app renders
+  pipeline/     The write path: scan → analyse → build → store
+  analysis/     Clone-and-scan orchestration for a GitHub URL
+  context/      Composes capability results into one deterministic repository context
+  ai/           Projection, planning, prompting, grounding, verification. Names no vendor
+  ai-ollama/    The Ollama provider — the only place a vendor is named
+  bench/        Ground-truth measurement harness
+
+docs/
+  progress.md       The full engineering record — every milestone, defect and measurement
+  04-graph-spec.md  The graph specification
+```
+
+Most packages carry their own `README.md` describing purpose, boundaries and limitations.
+
+---
+
+## How this differs from pasting a repository into a chat window
+
+|  | Prompt-stuffing | TraceIQ |
+|---|---|---|
+| **What the model sees** | As much source as fits | Numbered facts derived from a graph |
+| **Context size** | Grows with the repository, then truncates | Bounded by a token budget, with every cap reported |
+| **Verifiability** | A plausible sentence | A citation that resolves to a fact, its confidence and its file |
+| **Repeatability** | Varies run to run | The graph and the projection are deterministic; identical input gives identical facts |
+| **Cost of a second question** | The whole repository again | The graph is already built; only the projection changes |
+| **Non-code files** | Whatever fits in the window | Read structurally, with declared relationships |
+| **When evidence is missing** | Fluent invention | "The analysis did not identify it" |
+
+Grounding **reduces** unsupported claims; it does not eliminate them. See
+[Limitations](#limitations).
+
+---
+
+## Limitations
+
+Stated plainly, because a tool that hides its edges is harder to trust than one that names them.
+
+**Static analysis has a ceiling.** TraceIQ reads code; it does not run it. Dynamic dispatch,
+reflection, runtime configuration and anything decided at execution time are outside what it can
+establish. Some relationships are therefore recorded as `INFERRED` or `AMBIGUOUS`, and every one of
+them says so.
+
+**Artefact readers are shallow by design.** None is a conforming parser. YAML anchors and aliases
+are not expanded, flow sequences are not split, and a templated file is read as the template rather
+than as what it renders to. Docker build arguments are not substituted. Compose `extends`, profiles
+and override files are not resolved. A schema's columns and foreign keys are not read, so
+relationships *between* entities are not established. Markdown prose is not interpreted — the
+headings say what a document covers, not what it says. Shell control flow is not followed.
+
+**Unsupported formats degrade gracefully rather than silently.** Ansible, Helm before rendering,
+Kustomize, Bazel, CMake, Gradle DSL, systemd units, nginx configuration, OpenAPI and JSON Schema *as
+schemas*, protobuf, notebooks and every binary format have no reader. Each is still recorded with
+its family, its language and its position, and carries a boundary sentence saying no reader exists.
+
+**Reference resolution resolves to files.** A path naming a directory — a `tsconfig` project
+reference, a build context — stays unresolved, as does a path into a build output that is not in the
+repository. Those are reported as unresolved references rather than dropped.
+
+**Repository classification is a judgement.** The repository *type* is derived from routes,
+manifests and role annotations, and it can be wrong — a collection of sample applications with real
+routes may be described as an application. The directory-map *category* (`codebase`, `monorepo`,
+`collection`, `infrastructure`, `umbrella`) is derived independently for this reason.
+
+**Grounding is not a proof system.** It checks that every name an answer uses exists in the facts it
+was given, and that a small set of specific claim shapes are licensed. It cannot detect a wrong claim
+about a real relationship — an answer saying `[f12]` proves X when it proves Y passes. One corrective
+pass runs at most.
+
+**Answer quality depends on the model and the machine.** A small model produces weaker answers, and
+CPU-only inference is slow. TraceIQ reports the verdict rather than hiding it: a weak answer is
+labelled, not laundered.
+
+**Rescanning is whole-repository.** There is no incremental analysis, and node identity is derived
+from location, so a rename reads as a delete plus a create.
+
+---
+
+## Privacy
+
+With the default Docker setup, **repository analysis and inference both happen on your machine**.
+Ollama runs as a container in the stack, the model is downloaded from Ollama's registry to a local
+volume, and prompts go to `http://ollama:11434` on the Compose network. No repository content is
+sent to a hosted model API.
+
+Two things do leave your machine, and both are explicit:
+
+- **Pulling a model** downloads it from Ollama's registry.
+- **Analysing a GitHub URL** clones that repository over HTTPS from GitHub.
+
+If you point `TRACEIQ_OLLAMA_URL` at a remote provider, evidence goes there instead. That is your
+configuration, not the default.
+
+Note also that only *facts* reach a prompt — identifiers, counts, relationships and short evidence
+strings — never file contents. A test asserts it directly: it answers a question about a repository
+whose source it knows, then checks that no line of that source appears in the prompt. The one
+deliberate exclusion further down is environment variable **values**, which are never read into the
+graph at all.
+
+---
+
+## Configuration reference
+
+Every variable has a working default; `.env` is optional. Copy the template only to change
+something:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Default | What it does |
+|---|---|---|
+| `TRACEIQ_MODEL` | *(empty)* | The model that answers. Empty disables chat and nothing else. `qwen2.5:7b-instruct` is verified. |
+| `TRACEIQ_MODEL_CONTEXT` | `16384` | The context window the model is run with, and the budget the prompt is sized against. Raising it costs memory and time-to-first-token. |
+| `TRACEIQ_PROVIDER` | `ollama` | The only provider implemented. |
+| `TRACEIQ_SCAN_PATH` | `.` | The repository to mount and scan, as a path **on the host**. Mounted read-only. |
+| `WEB_PORT` | `3001` | Host port for the web app. |
+| `API_PORT` | `3000` | Host port for the REST API. |
+| `OLLAMA_PORT` | `11434` | Host port for Ollama. |
+| `TRACEIQ_API_URL` | `http://api:3000` | Where the browser's `/api/*` calls are forwarded. **Build-time** — rebuild the web image after changing it. |
+| `TRACEIQ_WORKSPACE_ROOT` | *(system temp)* | Where GitHub clones are written before being scanned. |
+| `TRACEIQ_CLONE_TIMEOUT_MS` | `600000` | How long a clone may take. |
+| `TRACEIQ_MAX_CLONE_MB` | `2048` | The largest repository that may be cloned. |
+
+The API also reads `TRACEIQ_DB` (graph path), `TRACEIQ_OLLAMA_URL` (provider address),
+`TRACEIQ_ANALYSIS_CONCURRENCY`, `TRACEIQ_ANALYSIS_TIMEOUT_MS` and `TRACEIQ_WORKER_HEAP_MB`. The
+Compose file sets the first two for you.
 
 ---
 
@@ -680,27 +956,25 @@ Context Builder · AI Layer · Repository Chat · Release Engineering
 
 | | |
 |---|---|
-| **`docs/progress.md`** | The full engineering record — every milestone, every defect found and fixed, every measurement, every decision and why |
-| **`packages/*/README.md`** | Per-package purpose, boundaries, performance, limitations |
-| **`apps/*/README.md`** | Interface reference for the API, CLI and web app |
-| **`/openapi.json`** | Generated from the endpoint table, so it cannot drift from the routes |
-| **`.env.example`** | Every configuration variable |
+| [`docs/progress.md`](docs/progress.md) | The full engineering record — every milestone, every defect found and fixed, every measurement and decision |
+| [`docs/04-graph-spec.md`](docs/04-graph-spec.md) | The graph specification: node kinds, relationships, confidence, provenance |
+| `packages/*/README.md` | Per-package purpose, boundaries and limitations |
+| [`apps/api/README.md`](apps/api/README.md) · [`apps/web/README.md`](apps/web/README.md) · [`apps/cli/README.md`](apps/cli/README.md) | Interface reference |
+| <http://localhost:3000/openapi.json> | Generated from the endpoint table, so it cannot drift from the routes |
+| [`.env.example`](.env.example) | Every configuration variable, with the reasoning behind each default |
 
 ---
 
 ## License
 
 **Not yet chosen.** There is no `LICENSE` file and no `license` field in `package.json`, so the
-default applies: all rights reserved, and no permission is granted to use, copy, modify or distribute
-this code.
-
-If TraceIQ is meant to be open source, add a `LICENSE` file and a `license` field. That is the owner's
-decision to make rather than one to infer, so nothing has been assumed here.
+default applies: all rights reserved, and no permission is granted to use, copy, modify or
+distribute this code.
 
 ---
 
 <div align="center">
 
-**TraceIQ** — static analysis only. Every value shown exists in the repository graph.
+**TraceIQ** — every value shown exists in the repository graph.
 
 </div>
