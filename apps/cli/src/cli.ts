@@ -327,7 +327,7 @@ function renderProfile(profile: { readonly graphApiCalls: number }): string {
 export function renderHelp(): string {
   return sections(
     heading('traceiq'),
-    'Repository intelligence for TypeScript. Scan a repository, then ask it questions.',
+    'Repository intelligence. Scan a repository, then ask it questions.',
     heading('Commands'),
     table(
       [{ header: 'command' }, { header: 'description' }],

@@ -155,6 +155,7 @@ describe('historyOf', () => {
             question: 'q1',
             subject: REPOSITORY_SUBJECT,
             text: 'a1',
+            status: 'grounded',
             verdict: 'grounded',
             citations: [
               { factId: 'f1', subject: 'sym:stale.ts#Gone', predicate: 'is-a', object: 'Method', confidence: 'CERTAIN', provenance: '@traceiq/explain' },
@@ -163,6 +164,7 @@ describe('historyOf', () => {
             unsupportedTerms: [],
             attempts: 1,
             corrections: [],
+            recovery: null,
             diagnostics: [],
             unknownCitations: [],
             grounding: { kind: 'repository', subject: null, factCount: 1, coreCount: 1, intent: 'overview', tier: 'standard', tokens: 10, promptTokens: null, digest: 'd', omissions: [] },

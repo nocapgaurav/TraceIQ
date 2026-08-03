@@ -46,6 +46,7 @@ function answer(overrides: Record<string, unknown> = {}): Record<string, unknown
     question: 'How many files?',
     subject: { kind: 'repository' },
     text: 'It has **228** files [f2].',
+    status: 'grounded',
     verdict: 'grounded',
     citations: [
       {
@@ -64,6 +65,7 @@ function answer(overrides: Record<string, unknown> = {}): Record<string, unknown
     grounding: GROUNDING,
     attempts: 1,
     corrections: [],
+    recovery: null,
     model: 'test:1b',
     stopReason: 'complete',
     usage: { promptTokens: 2002, outputTokens: 13 },
@@ -180,13 +182,24 @@ describe('asking', () => {
     expect(within(transcript).getByText('How many files?')).toBeInTheDocument();
   });
 
-  it('shows the projection summary and its omissions before any prose', async () => {
+  it('keeps the retrieval diagnostics available but collapsed, not dominating the answer', async () => {
+    /*
+     * This asserted that a full-width amber panel headed "These lists were incomplete" was on screen.
+     *
+     * It appeared above every answer — on any repository worth asking about, some fact family is always
+     * capped — and it was the largest, brightest element in a normal conversation, reporting a routine
+     * property of a bounded budget rather than a problem with the answer. Every figure it carried is still
+     * here, inside one disclosure control, along with the retrieval detail it never had.
+     */
     stub(SUCCESS);
     renderWithQuery(<ChatPage />);
     await ask();
 
-    expect(await screen.findByText('64')).toBeInTheDocument();
-    expect(screen.getByText(/These lists were incomplete/)).toBeInTheDocument();
+    const details = await screen.findByText('Retrieval details');
+
+    expect(details).toBeInTheDocument();
+    // Closed by default: the summary is rendered, the body is inside a `<details>` that is not open.
+    expect(details.closest('details')?.open).toBe(false);
     expect(screen.getByText(/showing 15 of 18/)).toBeInTheDocument();
   });
 
@@ -207,7 +220,7 @@ describe('asking', () => {
     renderWithQuery(<ChatPage />);
     await ask();
 
-    expect(await screen.findByText('grounded')).toBeInTheDocument();
+    expect(await screen.findByText('Grounded')).toBeInTheDocument();
     expect(screen.getByText('test:1b')).toBeInTheDocument();
     expect(screen.getByText('2002 prompt / 13 output tokens')).toBeInTheDocument();
   });
@@ -270,7 +283,7 @@ describe('asking', () => {
     renderWithQuery(<ChatPage />);
     await ask('first?');
     await waitFor(() => {
-      expect(screen.getByText('grounded')).toBeInTheDocument();
+      expect(screen.getByText('Grounded')).toBeInTheDocument();
     });
 
     await ask('second?');
@@ -303,19 +316,33 @@ describe('a corrected answer', () => {
       frame('grounding', GROUNDING),
       frame('delta', { text: 'The repository is well documented.' }),
       frame('restart', { reasons: ['presence-as-quality: nothing measures documentation'] }),
-      frame('status', { phase: 'correcting' }),
+      frame('status', { phase: 'recovering' }),
       frame('delta', { text: 'It has **228** files [f2].' }),
       frame('complete', {
         ...answer(),
+        status: 'grounded-after-recovery',
         attempts: 2,
         corrections: ['presence-as-quality: nothing measures documentation'],
+        recovery: {
+          parts: ['key-artifacts', 'onboarding'],
+          reasons: ['presence-as-quality: nothing measures documentation'],
+          addedFacts: 6,
+          addedTokens: 140,
+          removedStatements: 0,
+        },
       }),
     ]);
 
     renderWithQuery(<ChatPage />);
     await ask();
 
-    expect(await screen.findByText('rewritten once')).toBeInTheDocument();
+    /*
+     * The badge said `rewritten once`, which named a mechanism that no longer exists and told a reader
+     * nothing about whether to trust the answer. The status says both: it verified, and it took a second
+     * retrieval to get there.
+     */
+    expect(await screen.findByText('Grounded after evidence recovery')).toBeInTheDocument();
+    expect(screen.getByText(/additional evidence retrieved/)).toBeInTheDocument();
     expect(screen.queryByText(/well documented/)).not.toBeInTheDocument();
     // The rewritten answer, which the fixture renders with a bold count. Several nodes carry the number —
     // the prose and the grounding summary — so the assertion is that at least one does.
@@ -323,16 +350,20 @@ describe('a corrected answer', () => {
   });
 });
 
-describe('an ungrounded answer', () => {
-  it('is shown, with the verdict and the fabrication named', async () => {
-    // Withholding it would hide the evidence of the failure.
+describe('an answer whose claims the facts did not establish', () => {
+  it('shows what survived, says statements were removed, and names each one', async () => {
+    /*
+     * The server no longer returns unsupported prose, so this fixture is what it now sends: the text with
+     * the offending sentence gone, `limited-evidence`, and the diagnostics that say what went and why.
+     */
     stub([
       frame('grounding', GROUNDING),
       frame('delta', { text: 'It calls sym:invented.ts#Nope.' }),
       frame('complete', {
         ...answer(),
-        text: 'It calls sym:invented.ts#Nope.',
-        verdict: 'ungrounded',
+        text: 'It has 228 files [f2].',
+        status: 'limited-evidence',
+        verdict: 'grounded',
         fabricatedIdentifiers: ['sym:invented.ts#Nope'],
         diagnostics: [
           {
@@ -349,10 +380,10 @@ describe('an ungrounded answer', () => {
     renderWithQuery(<ChatPage />);
     await ask();
 
-    expect(await screen.findByText('ungrounded')).toBeInTheDocument();
-    // The reason, not only the rejected string: a reader has to be able to tell an invention from a
-    // verifier that was too strict about how a real name was written.
-    expect(screen.getByText(/could not be checked against the facts/)).toBeInTheDocument();
+    expect(await screen.findByText('Limited evidence')).toBeInTheDocument();
+    // The sentence that named the invention is not on screen; the reason it went is.
+    expect(screen.queryByText(/It calls sym:invented.ts#Nope/)).not.toBeInTheDocument();
+    expect(screen.getByText(/statement the facts do not establish was removed/)).toBeInTheDocument();
     expect(screen.getByText('sym:invented.ts#Nope')).toBeInTheDocument();
     expect(screen.getByText(/no fact carried this identifier/)).toBeInTheDocument();
   });
@@ -363,8 +394,8 @@ describe('an ungrounded answer', () => {
       frame('delta', { text: 'The dialog is in ModalDialog.js.' }),
       frame('complete', {
         ...answer(),
-        text: 'The dialog is in ModalDialog.js.',
-        verdict: 'ungrounded',
+        text: 'It has 228 files [f2].',
+        status: 'limited-evidence',
         unsupportedTerms: ['ModalDialog.js'],
         diagnostics: [
           {
@@ -387,13 +418,13 @@ describe('an ungrounded answer', () => {
   it('marks an uncited answer unverifiable rather than passing it off', async () => {
     stub([
       frame('grounding', GROUNDING),
-      frame('complete', { ...answer(), verdict: 'unverifiable', citations: [] }),
+      frame('complete', { ...answer(), status: 'unverifiable', verdict: 'unverifiable', citations: [] }),
     ]);
 
     renderWithQuery(<ChatPage />);
     await ask();
 
-    expect(await screen.findByText('unverifiable')).toBeInTheDocument();
+    expect(await screen.findByText('Unverifiable')).toBeInTheDocument();
   });
 });
 
@@ -490,7 +521,7 @@ describe('stop, retry and clear', () => {
     renderWithQuery(<ChatPage />);
     await ask('why?');
     await waitFor(() => {
-      expect(screen.getByText('grounded')).toBeInTheDocument();
+      expect(screen.getByText('Grounded')).toBeInTheDocument();
     });
 
     await userEvent.click(screen.getByRole('button', { name: /Retry/ }));
@@ -514,7 +545,7 @@ describe('stop, retry and clear', () => {
     renderWithQuery(<ChatPage />);
     await ask();
     await waitFor(() => {
-      expect(screen.getByText('grounded')).toBeInTheDocument();
+      expect(screen.getByText('Grounded')).toBeInTheDocument();
     });
 
     await userEvent.click(screen.getByRole('button', { name: /Clear/ }));
@@ -540,7 +571,7 @@ describe('the sidebar', () => {
     renderWithQuery(<ChatPage />);
     await ask('first question');
     await waitFor(() => {
-      expect(screen.getByText('grounded')).toBeInTheDocument();
+      expect(screen.getByText('Grounded')).toBeInTheDocument();
     });
 
     const list = await screen.findByLabelText('Conversations');
@@ -558,7 +589,7 @@ describe('the sidebar', () => {
     renderWithQuery(<ChatPage />);
     await ask('doomed question');
     await waitFor(() => {
-      expect(screen.getByText('grounded')).toBeInTheDocument();
+      expect(screen.getByText('Grounded')).toBeInTheDocument();
     });
 
     await userEvent.click(await screen.findByRole('button', { name: 'Delete doomed question' }));
@@ -590,7 +621,7 @@ describe('a question handed over from another page', () => {
 
     // The answer streamed and rendered, so the whole pipeline ran — not just the request.
     expect(await screen.findByText('228')).toBeInTheDocument();
-    expect(within(transcript).getByText('grounded')).toBeInTheDocument();
+    expect(within(transcript).getByText('Grounded')).toBeInTheDocument();
   });
 
   /**

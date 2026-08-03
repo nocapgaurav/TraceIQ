@@ -24,7 +24,18 @@ export interface Turn {
   readonly answer: string;
   /** The facts the answer referred to, resolved — so a consumer can show the evidence. */
   readonly citations: readonly Citation[];
-  readonly verdict: GroundingVerdict;
+  /**
+   * How the turn was labelled: the guard's verdict, or `limited-evidence` where statements were removed.
+   *
+   * **The second value exists because the first stopped being reachable.** `openIn` marks a question as
+   * still owed an answer when the guard rejected the one it got, and it read `ungrounded` — a verdict the
+   * pipeline no longer returns, because a claim the facts do not license is removed before an answer is
+   * shown. `limited-evidence` is where that outcome went, so a session that used to know it had left a
+   * question open would otherwise have quietly stopped knowing it.
+   *
+   * Written as a literal rather than imported from `answer.ts`, which imports this module.
+   */
+  readonly verdict: GroundingVerdict | 'limited-evidence';
   /** Identity of the facts that grounded this turn. Two equal digests ground identically. */
   readonly projectionDigest: string;
   /**

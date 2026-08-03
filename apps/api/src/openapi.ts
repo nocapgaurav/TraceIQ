@@ -141,7 +141,7 @@ function streamResponsesFor(errors: readonly ErrorCode[]): Record<string, unknow
             // `restart` is shown because a client that ignores it renders a rejected answer until
             // `complete` arrives. It appears at most once per answer, immediately before the one bounded
             // corrective generation, and means: discard the prose so far.
-            'event: open\ndata: {"model":"qwen2.5:7b-instruct"}\n\nevent: grounding\ndata: {"kind":"symbol","factCount":166,"tier":"standard","tokens":5995,"digest":"52a4aca4a122a3e1","omissions":[]}\n\nevent: delta\ndata: {"text":"It is a method "}\n\nevent: restart\ndata: {"reasons":["execution-order: the facts carry no workflow…"]}\n\nevent: status\ndata: {"phase":"correcting"}\n\nevent: delta\ndata: {"text":"It is a method "}\n\nevent: complete\ndata: {"verdict":"grounded","attempts":2,"citations":[…]}\n\n',
+            'event: open\ndata: {"model":"qwen2.5:7b-instruct"}\n\nevent: grounding\ndata: {"kind":"symbol","factCount":166,"tier":"standard","tokens":5995,"digest":"52a4aca4a122a3e1","omissions":[]}\n\nevent: delta\ndata: {"text":"It is a method "}\n\nevent: restart\ndata: {"reasons":["execution-order: the facts carry no workflow…"]}\n\nevent: status\ndata: {"phase":"recovering"}\n\nevent: delta\ndata: {"text":"It is a method "}\n\nevent: complete\ndata: {"status":"grounded-after-recovery","verdict":"grounded","attempts":2,"citations":[…]}\n\n',
         },
       },
     },

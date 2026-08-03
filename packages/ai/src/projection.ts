@@ -6,13 +6,14 @@ import {
   dependencyNameOf,
   factLine,
   isEcosystemDependency,
+  pathAliases,
   type ContextProjection,
   type Fact,
   type FactConfidence,
   type Omission,
   type Predicate,
 } from './facts.js';
-import { INTENT_PARTS, type QuestionIntent } from './intent.js';
+import { EVIDENCE_POLICY, INTENT_PARTS, type QuestionIntent } from './intent.js';
 import type { FactAllocation, FactGroup } from './plan.js';
 import { responsibilityOf, summariseArchitecture, type TechnologyRef } from './architecture.js';
 import { deriveProfile, type RepositoryProfile } from './profile.js';
@@ -156,6 +157,30 @@ const CORE_REGIONS: Readonly<Record<BudgetTier, number>> = { minimal: 2, standar
  * not worth caching; too large and the intent has no room to change anything, which is the feature.
  */
 const CORE_SHARE = 0.6;
+
+/**
+ * What the core's denominator must set aside for guidance it cannot see.
+ *
+ * **`CORE_SHARE` was measured against the wrong denominator, and on the tier the product actually runs
+ * at, that error consumed the question.** It applies to `TIER − coreReserved`, which deliberately
+ * excludes the question and the guidance the question steers — that exclusion is what keeps the prefix
+ * byte-identical between two questions about one repository. But the *real* fact budget is
+ * `TIER − reserved`, and the two differ by exactly the question guidance. Measured on TraceIQ at the
+ * `standard` tier: tier 3,400, question-independent reservation 1,436, total reservation 1,880. The core
+ * was therefore allowed `(3400 − 1436) × 0.6 = 1,178` tokens out of a real fact budget of **1,520** —
+ * three fifths on paper, 78% in fact — and the supplement that carries everything the question asked for
+ * was left 342 tokens: nine facts, of which the priority floor could seat four families of nine.
+ *
+ * Subtracting a *fixed* allowance restores the honest denominator without costing the property the core
+ * exists for: it is a constant share of the tier, so it is the same for every question and the prefix
+ * stays stable. It is also self-limiting — a caller that reserves nothing at all is inspecting a
+ * projection rather than building a prompt, and on a repository small enough to fit the ceiling never
+ * binds either way.
+ *
+ * Thirteen percent is the measured cost of question guidance at `standard`: 444 tokens across the
+ * battery, against 442 here.
+ */
+const QUESTION_GUIDANCE_SHARE = 0.13;
 
 function draft(
   subject: string,
@@ -476,7 +501,18 @@ const EXTRACTORS: readonly Extractor[] = [
       }
 
       return families.map((family) => ({
-        names: [family.kind],
+        /*
+         * The example paths are declared, not only printed.
+         *
+         * **A fact that shows a name and does not declare it is a trap.** This line renders `e.g.
+         * README.md, docker-compose.yml`, the model reads those as the repository's own words and writes
+         * them back, and the grounding guard — whose permitted set is built from what extractors
+         * *declare* — reported both as names no fact carried. The answer was correct and was marked
+         * ungrounded for quoting the prompt. Whatever a fact puts in front of a model is a name the model
+         * may use.
+         */
+        names: [family.kind, ...family.examples],
+        identities: family.examples.map((path) => `file:${path}`),
         ...draft(
           'repository',
           'artifact-inventory',
@@ -614,6 +650,43 @@ const EXTRACTORS: readonly Extractor[] = [
 
       const drafts: Draft[] = [];
       const overview = context.primary.value.overview;
+      const identity = deriveIdentity(context);
+
+      /*
+       * The identity's own route leads, step for step, and that alignment is the fix rather than a tidy-up.
+       *
+       * **The planner's route and this part read the same evidence and used to derive it twice, in
+       * different orders.** `navigationFor` takes the first four of `identity.onboarding`, which is
+       * documentation first by construction; this loop walked the artefact digests in *digest* order, so on
+       * TraceIQ the per-part cap was spent on `script-target build, declared by the manifest at
+       * file:package.json` and the four READMEs never reached the prompt. The guidance then said "start
+       * here: README.md" — and the answer that followed that instruction was reported as naming four files
+       * the repository does not contain. Whatever the pipeline puts in front of a model has to be in the
+       * facts, and the way to guarantee that is for one derivation to feed both.
+       *
+       * A `file:` identity is declared only for the two kinds whose target is a path the artefact reader
+       * actually opened. A control entry may be a route and a package boundary is a directory; asserting a
+       * file identity for either would put an identifier in the permitted set that the graph does not hold.
+       */
+      const PATH_KINDS: ReadonlySet<string> = new Set(['documentation', 'manifest-entry-point']);
+
+      for (const step of identity.onboarding) {
+        const path = PATH_KINDS.has(step.kind);
+
+        drafts.push({
+          names: [step.target],
+          ...(path ? { identities: [`file:${step.target}`] } : {}),
+          ...draft(
+            path ? `file:${step.target}` : 'repository',
+            'onboarding',
+            path ? step.why : `${step.target} — ${step.why}`,
+            '@traceiq/artifact',
+            // A route or an unimported unit is structural evidence about where control enters; a document
+            // and a manifest entry are the repository saying so itself.
+            path ? 'CERTAIN' : 'INFERRED',
+          ),
+        });
+      }
 
       for (const digest of overview.keyArtifacts?.entries ?? []) {
         if (digest.kind === 'documentation') {
@@ -669,8 +742,6 @@ const EXTRACTORS: readonly Extractor[] = [
           });
         }
       }
-
-      const identity = deriveIdentity(context);
 
       if (identity.entryPoints !== null) {
         for (const entry of identity.entryPoints.value.slice(0, 4)) {
@@ -2098,7 +2169,73 @@ export interface ProjectionOptions {
    * the shares working; a token total that fell would be the bug, and is what the sweep prevents.
    */
   readonly allocation?: FactAllocation;
+  /**
+   * Fact parts one bounded evidence-recovery pass asked for, ahead of everything else.
+   *
+   * **Set only on the second projection of an answer whose first attempt failed verification, and only
+   * with the parts that carry the *kind* of fact the failed claims needed.** See `recoveryFor`. Passing
+   * it raises those parts to the front of the priority floor and lifts their per-part limit; it changes
+   * no budget, so a recovery projection costs the same tier as the first and buys a different
+   * composition rather than a larger prompt.
+   */
+  readonly recovery?: readonly string[];
+  /**
+   * Names the **question guidance will print**, so an answer that obeys its instructions is not accused
+   * of inventing them.
+   *
+   * **The general form of a defect that had been fixed twice, one printing site at a time.** The permitted
+   * set is built from what the *facts* declare, and the guidance is a second thing the model reads: the
+   * planner's route says "start here: `apps/web/README.md`, then read …", and if the budget seated three
+   * of those four onboarding facts, an answer that followed the instruction exactly was reported as naming
+   * a file the repository does not contain. The same shape produced the artefact inventory's example paths
+   * and, before that, `ModalDialog.js`. Whatever this pipeline puts in front of a model is a name the model
+   * may use.
+   *
+   * **It widens the permitted names and never the identifiers**, and every entry is a graph-derived value
+   * the planner read out of `RepositoryIdentity` — not free text, and not anything a model wrote. A name
+   * admitted here can be *mentioned*; it still cannot be *cited*, because no fact carries it, and the
+   * citation rule is what adjudicates a claim.
+   */
+  readonly names?: readonly string[];
 }
+
+/**
+ * What share of the supplement the priority floor may spend before any family competes for the rest.
+ *
+ * **The number that turns an ordering into a guarantee.** With shares alone, a part sorted first inside a
+ * budget group takes the whole group's share and the part sorted second takes nothing — measured on
+ * TraceIQ as `key-artifacts: 0 of 43` on an architecture question whose group-mate had already spent the
+ * 15% the architecture group was given. Just over half the supplement is enough for every priority family
+ * to be represented on the largest repositories in the corpus, and it is a *ceiling* rather than a
+ * reservation: a family with no facts spends nothing and the allocated pass gets the room back.
+ */
+const PRIORITY_FLOOR = 0.75;
+
+/**
+ * How many facts one priority family may take from the floor pass.
+ *
+ * Deliberately a fact count rather than a token share. A floor exists to guarantee that a family is
+ * *represented*, and representation is a number of lines; expressing it in tokens would give a family
+ * whose lines are short six entries and a family whose lines are long one, for the same spend.
+ */
+const FLOOR_FACTS: Readonly<Record<BudgetTier, number>> = { minimal: 2, standard: 6, full: 14 };
+
+/** The same, for a family one evidence-recovery pass specifically asked for. */
+const RECOVERY_FACTS: Readonly<Record<BudgetTier, number>> = { minimal: 3, standard: 10, full: 22 };
+
+/**
+ * How many facts a part the intent marked *supporting* may contribute.
+ *
+ * **The retrieval half of "prominence is not importance".** A ranking answers "what does most of the
+ * repository point at"; it is evidence behind an answer and never the answer to a repository-wide
+ * question. Before this, an architecture question on TraceIQ spent ten of its supplement facts on hotspot
+ * rankings and none on the artefacts that wire the system together — and the model duly wrote about the
+ * most-referenced declaration. Capping the family is what stops the budget deciding the answer.
+ *
+ * Not zero, and that matters: a repository whose only evidence *is* a ranking should still show one, and
+ * the `hotspots` intent — where the ranking genuinely is the answer — marks nothing as supporting at all.
+ */
+const SUPPORTING_CAP: Readonly<Record<BudgetTier, number>> = { minimal: 1, standard: 3, full: 8 };
 
 /**
  * Which of the four groups each part belongs to.
@@ -2204,6 +2341,15 @@ export function project(context: RepositoryContext, options: ProjectionOptions):
     ceiling: number,
     core: boolean,
     allocation?: FactAllocation,
+    /**
+     * An upper bound on how many more facts a part may contribute. Absent parts keep their tier cap.
+     *
+     * Evaluated per extractor rather than once, so a caller can express a bound that is **cumulative
+     * across passes** by reading what the tally already holds. That is what a cap on a supporting family
+     * has to be: three calls each admitting three hotspot facts is nine hotspot facts, which is the
+     * monopoly the cap exists to prevent, reached by a different route.
+     */
+    limitOf?: (part: string) => number,
   ): void => {
     /** Spend per group, and the room each may have. Both empty where no allocation was given. */
     const groupSpent = new Map<FactGroup, number>();
@@ -2236,7 +2382,7 @@ export function project(context: RepositoryContext, options: ProjectionOptions):
       }
 
       const caps = core ? (extractor.coreCaps ?? extractor.caps) : extractor.caps;
-      const capped = drafts.slice(0, caps[options.tier]);
+      const capped = drafts.slice(0, Math.min(caps[options.tier], limitOf?.(extractor.part) ?? Number.POSITIVE_INFINITY));
       const group = GROUP_OF[extractor.part] ?? 'supporting';
       const room = allocation === undefined ? Number.POSITIVE_INFINITY : Math.floor(share * allocation[group]);
 
@@ -2299,7 +2445,14 @@ export function project(context: RepositoryContext, options: ProjectionOptions):
   //
   // The ceiling comes from the **question-independent** reservation, so two questions about one
   // repository admit the same core facts and render the same prefix. See `coreReserved`.
-  const coreBudget = TIER_TOKENS[options.tier] - (options.coreReserved ?? options.reserved ?? 0);
+  // The allowance is subtracted only where a caller actually reserved for guidance. A caller that
+  // reserved nothing is inspecting a projection rather than pricing a prompt, and charging it for
+  // guidance it did not send would make the inspection disagree with the thing it inspects.
+  const stated = options.coreReserved ?? options.reserved ?? 0;
+  const coreBudget =
+    TIER_TOKENS[options.tier] -
+    stated -
+    (stated === 0 ? 0 : Math.floor(TIER_TOKENS[options.tier] * QUESTION_GUIDANCE_SHARE));
 
   // Never larger than what is actually left: a core that overran the real budget would leave the
   // supplement negative and silently drop every question-specific fact.
@@ -2319,8 +2472,113 @@ export function project(context: RepositoryContext, options: ProjectionOptions):
   // own shape already set, so a technology question about a huge repository still gets its packages
   // before its hotspots — and divided between the four groups where the plan said how.
   const supplement = orderedFor(intent, profile, options.parts ?? []);
+  const policy = EVIDENCE_POLICY[intent];
 
-  run(supplement, budget, false, options.allocation);
+  /**
+   * How many facts a part may contribute once the floor has run.
+   *
+   * Only the supporting families are limited, and only for the intents that named them: a ranking may
+   * support a repository-wide answer and may not be one. Everything else keeps its tier cap.
+   */
+  /** How many facts a part has already contributed, across every pass so far. */
+  const already = (part: string): number => tally.get(part)?.kept ?? 0;
+
+  const capped = (part: string): number =>
+    /*
+     * Repository contexts only, and the restriction is not a carve-out.
+     *
+     * "A ranking is evidence behind an answer, never the answer" is a claim about ranking *a repository*.
+     * On a resolved subject the same parts mean something else entirely: `incomingCalls` on a symbol
+     * context is the list of that declaration's callers, which is not prominence — it is the answer to
+     * what the caller asked. Capping it there would starve the one context where it is the subject.
+     */
+    context.primary.type === 'repository' && policy.supporting.includes(part)
+      ? Math.max(0, SUPPORTING_CAP[options.tier] - already(part))
+      : Number.POSITIVE_INFINITY;
+
+  /*
+   * Pass two: the priority floor.
+   *
+   * **A bounded amount of every family the question is answered *from*, before any family competes for
+   * the rest.** This is the mechanism that makes the composition of a prompt a property of the question
+   * rather than of extractor order — and it is what the group shares alone could not do, because two
+   * parts in one group are ordered against each other and the first one spends the share.
+   *
+   * A family with nothing to offer costs nothing: the extractor returns no drafts and the pass moves on,
+   * so a repository with no artefacts does not have a fifth of its budget held open for them. That is
+   * also why the floor is not diversity for its own sake — nothing is manufactured, and a repository with
+   * one meaningful family still spends everything on that family.
+   */
+  const priority = [
+    ...(options.recovery ?? []),
+    /*
+     * The plan's own parts lead the floor, ahead of the intent's — the same precedence `orderedFor`
+     * applies, for the same reason.
+     *
+     * The plan reads the question; the intent reads a keyword. "What tests should I read first?" and
+     * "Where should I start?" are both `locate`, whose policy leads with `onboarding`, and only the plan
+     * knows that the first of them wants test files. A section also survives `plannedSections` only where
+     * the identity carries its evidence, so every part here backs a paragraph the answer was explicitly
+     * asked for — without them a section is promised in the guidance and left with no fact to write it
+     * from, which is precisely the shape of gap a model fills by itself.
+     */
+    ...(options.parts ?? []),
+    ...policy.priority,
+  ].filter((part, index, all) => all.indexOf(part) === index);
+
+  if (priority.length > 0) {
+    const recovered = new Set(options.recovery ?? []);
+    const extractorsFor = (part: string): readonly Extractor[] =>
+      supplement.filter((extractor) => extractor.part === part);
+
+    /*
+     * Round one: one fact from every family, before any family gets a second.
+     *
+     * **Coverage first, depth second, and the order is the whole of the diversity requirement.** Dividing
+     * a floor into equal rooms and filling them in order still starved the families at the back:
+     * measured on TraceIQ, nine architecture families sharing 348 tokens gave each about 38, and a
+     * `declares` line describing a compose file costs eighty — so `key-artifacts` reached zero of
+     * forty-three for the third time, now for an arithmetical reason rather than an ordering one.
+     *
+     * **Bounded by the whole supplement rather than by the floor**, and that is deliberate: the bound that
+     * matters is one line per family, which is bounded by the length of the policy — nine families plus
+     * whatever the plan's sections rest on, deduplicated, so a dozen or so lines. Holding this round to a
+     * fraction of the budget would put the last families back where they started, which is the failure.
+     *
+     * Nothing is manufactured: a family with no facts contributes none, and a repository with one
+     * meaningful family still spends everything else on that family below.
+     */
+    for (const part of priority) {
+      run(extractorsFor(part), budget, false, undefined, () => Math.max(0, 1 - already(part)));
+    }
+
+    /*
+     * Round two: depth, in fair rooms out of what is left.
+     *
+     * The ceiling is computed *after* coverage, so the share is of the remainder rather than of a budget
+     * the first round has already spent from. Each family's room is what is left divided by how many
+     * families have not yet run, so a family with nothing to add hands its room to the ones behind it and
+     * a family with a hundred facts cannot take theirs.
+     */
+    const floorCeiling = Math.min(budget, spent + Math.floor(Math.max(0, budget - spent) * PRIORITY_FLOOR));
+    let remaining = priority.length;
+
+    for (const part of priority) {
+      const room = Math.floor(Math.max(0, floorCeiling - spent) / remaining);
+
+      remaining -= 1;
+
+      if (room <= 0) {
+        continue;
+      }
+
+      run(extractorsFor(part), spent + room, false, undefined, () =>
+        Math.max(0, (recovered.has(part) ? RECOVERY_FACTS[options.tier] : FLOOR_FACTS[options.tier]) - already(part)),
+      );
+    }
+  }
+
+  run(supplement, budget, false, options.allocation, capped);
 
   /*
    * Pass three: whatever the shares refused, while the budget lasts.
@@ -2335,7 +2593,10 @@ export function project(context: RepositoryContext, options: ProjectionOptions):
    * repository large enough for the budget to bind.
    */
   if (options.allocation !== undefined && spent < budget) {
-    run(supplement, budget, false);
+    // The supporting cap survives the sweep. It is a statement about what may constitute an answer to
+    // this question, not about what the shares could afford — so room left over is not a reason to fill
+    // the prompt with a ranking the question did not ask for.
+    run(supplement, budget, false, undefined, capped);
   }
 
   const omissions: Omission[] = [...tally.entries()]
@@ -2365,7 +2626,7 @@ export function project(context: RepositoryContext, options: ProjectionOptions):
     coreCount,
     intent,
     identifiers,
-    terms: termsFrom(facts, [...claimed, ...represented]),
+    terms: termsFrom(facts, [...claimed, ...represented, ...(options.names ?? [])]),
     omissions,
     tier: options.tier,
     profile,
@@ -2575,6 +2836,14 @@ function termsFrom(facts: readonly Fact[], claimed: readonly string[]): Readonly
     if (tail !== undefined && tail !== name) {
       add(tail);
     }
+
+    // A declared name that is a repository path also admits the directories above it, for the reason
+    // `pathAliases` gives: a package the answer names is a directory whose files the graph holds.
+    if (name.includes('/') && !name.includes(':') && !name.startsWith('@')) {
+      for (const alias of pathAliases(name)) {
+        add(alias);
+      }
+    }
   }
 
   for (const fact of facts) {
@@ -2622,19 +2891,19 @@ function termsFrom(facts: readonly Fact[], claimed: readonly string[]): Readonly
       const [path, chain] = body.split('#');
 
       if (path !== undefined) {
-        add(path);
-
         /*
-         * The file's own name, which is how prose refers to it.
+         * The path, its basename and every directory that contains it.
          *
-         * Caught in the product rather than in review: asked to explain React's architecture, the
-         * model wrote a correct, well-cited answer naming `ModalDialog.js`, `ProfilerContext.js` and
-         * `InspectedElementContext.js`, and the guard marked all three as terms no fact carried — for
-         * three files whose full paths were sitting in the identifiers it had just been given. Nobody
-         * writing about a file calls it `packages/react-devtools-shared/src/…/ModalDialog.js` in a
-         * sentence, and a verifier that demands they do is wrong about a right answer.
+         * Caught in the product rather than in review, twice. Asked to explain React's architecture the
+         * model named `ModalDialog.js` and the guard rejected it, for a file whose full path was sitting
+         * in the identifiers it had just been given; asked to explain TraceIQ's, the model named
+         * `packages/graph-api` and the guard rejected that, for a directory four of whose files were in
+         * the same facts. Nobody writing about a file calls it by its whole path, and nobody writing
+         * about a package calls it by one file inside it. See `pathAliases`.
          */
-        add(path.split('/').at(-1) ?? '');
+        for (const alias of pathAliases(path)) {
+          add(alias);
+        }
       }
 
       if (chain !== undefined) {

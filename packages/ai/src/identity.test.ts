@@ -316,12 +316,23 @@ describe('what this question needs', () => {
     expect(plan('Explain the architecture.').lead).not.toBe('orientation');
   });
 
-  it('leads a service with a workflow and asks for the routes that make it legible', () => {
+  it('answers a repository-wide architecture question as architecture, and still carries a workflow', () => {
+    /*
+     * This asserted `workflow` and asserting that was the bug.
+     *
+     * LinkForge is an application, applications lead with a workflow, and "explain the architecture" had
+     * no lead of its own — so the broadest question there is received the request path of one feature. A
+     * repository-level question gets a repository-level shape whatever kind of repository it is asked
+     * about; the workflow is still carried, because how the divisions meet is what a workflow shows.
+     */
     const architecture = plan('Explain the architecture.');
 
-    expect(architecture.lead).toBe('workflow');
+    expect(architecture.lead).toBe('architecture');
     expect(architecture.workflows.length).toBeGreaterThan(0);
     expect(architecture.parts).toContain('routes');
+    expect(architecture.sections).toContainEqual(
+      expect.objectContaining({ title: 'what this analysis did not establish' }),
+    );
   });
 
   it('reads a question about what matters as a ranking question', () => {
@@ -409,7 +420,18 @@ describe('the identity reaches the prompt, and stays citable there', () => {
 
     expect(guidance).toContain('What the reader needs:');
     expect(guidance).toContain('they are what this repository does');
-    expect(guidance).toContain('Spend the most space on these');
+    /*
+     * It read `Spend the most space on these`, and that instruction was the failure it was testing for.
+     *
+     * The list is ranked by fan-in, so telling a model to give the most space to the highest-ranked unit
+     * is telling it that the most-referenced unit is the most important one — the exact claim the
+     * entailment guard then rejects as `prominence-as-importance`. The list is still given, and still in
+     * rank order; what it now asks for is that each name be described from a fact rather than from its
+     * place in the list.
+     */
+    expect(guidance).toContain('Name these, in this order');
+    expect(guidance).toContain('a measurement of how much of the repository points at each');
+    expect(guidance).not.toContain('Spend the most space');
   });
 
   it('emits the purpose, the workflows and the ranking as citable facts', () => {

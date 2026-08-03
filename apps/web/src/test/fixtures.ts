@@ -1,9 +1,7 @@
 import type {
   ArchitectureNavigation,
-  CycleReport,
   GraphEdge,
   GraphNode,
-  HealthReport,
   HotspotReport,
   ImpactAnalysis,
   Listing,
@@ -255,61 +253,6 @@ export const ARCHITECTURE: ArchitectureNavigation = {
     { name: 'packages/core', dependsOn: listing([]), dependedOnBy: listing([{ name: 'packages/api', edges: 4 }]) },
     { name: 'packages/api', dependsOn: listing([{ name: 'packages/core', edges: 4 }]), dependedOnBy: listing([]) },
   ]),
-  limitations: [],
-};
-
-export const HEALTH: HealthReport = {
-  summary: { files: 228, declarations: 3148, graph: { nodes: 3428, edges: 12911, unresolvedReferences: 11418 } },
-  metrics: METRICS,
-  callGraphHealth: {
-    callEdges: 3200,
-    unresolvedCalls: 11346,
-    coverage: 0.22,
-    unresolvedByReason: { 'root-not-bound': 8000, 'root-type-unknown': 3346 },
-    recursive: { count: 2, nodes: [] },
-    cycles: [{ nodes: [node({ id: FIND })], relationshipType: 'CALLS' }],
-    declarationsInCycles: 20,
-    clusters: { count: 100, largest: 40, singletons: 12 },
-    entryPoints: 5,
-    maxCallDepth: 4,
-  },
-  dependencyHealth: {
-    mostReferenced: [],
-    mostCoupledFiles: [],
-    isolated: { count: 904 },
-    withoutIncoming: { count: 1200 },
-    withoutOutgoing: { count: 1500 },
-  },
-  routing: { routes: 0, byMethod: {}, orphanRoutes: [], duplicateRegistrations: [], unresolvedHandlers: 0 },
-  environment: { variables: 1, used: [{ node: node({ id: 'env:JWT_SECRET', kind: 'EnvironmentVariable' }), reads: 2 }], neverRead: [] },
-  findings: [
-    {
-      code: 'declaration-isolated',
-      category: 'connectivity',
-      nodes: [node({ id: FIND })],
-      nodeCount: 904,
-      truncated: true,
-      evidence: { metric: 'edges', value: 0 },
-      confidence: 'CERTAIN',
-    },
-  ],
-  limitations: [{ code: 'capped-lists', detail: 'each list carries at most a fixed number of entries', affected: null }],
-};
-
-export const CYCLES: CycleReport = {
-  importCycles: listing([]),
-  callCycles: listing([
-    {
-      kind: 'call',
-      relationshipTypes: ['CALLS'],
-      nodes: [node({ id: FIND }), node({ id: CALLER })],
-      edges: listing([edge({ id: 'e1' })]),
-    },
-  ]),
-  referenceCycles: listing([]),
-  inheritanceCycles: listing([]),
-  totals: { import: 0, call: 1, reference: 0, inheritance: 0 },
-  largest: null,
   limitations: [],
 };
 

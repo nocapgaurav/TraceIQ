@@ -17,8 +17,6 @@ import type {
   Overview,
   PackageSummary,
   PackageView,
-  RouteExplanationView,
-  RouteSummary,
   SearchResults,
   SymbolView,
   VersionInfo,
@@ -42,8 +40,6 @@ export const queryKeys = {
   file: (path: string) => ['file', path] as const,
   symbol: (id: string) => ['symbol', id] as const,
   impact: (id: string) => ['impact', id] as const,
-  routes: () => ['routes'] as const,
-  route: (method: string, path: string) => ['route', method, path] as const,
   health: () => ['health'] as const,
   search: (text: string, kind: string, match: string) => ['search', text, kind, match] as const,
   dependencies: (subject: string) => ['dependencies', subject] as const,
@@ -119,20 +115,6 @@ export function useImpact(id: string | null): UseQueryResult<ImpactAnalysis, Err
     queryKey: queryKeys.impact(id ?? ''),
     queryFn: () => repositoryService.impact(id ?? ''),
     enabled: id !== null && id !== '',
-    retry: shouldRetry,
-    ...IMMUTABLE,
-  });
-}
-
-export function useRoutes(): UseQueryResult<Listing<RouteSummary>, Error> {
-  return useQuery({ queryKey: queryKeys.routes(), queryFn: repositoryService.routes, ...IMMUTABLE });
-}
-
-export function useRoute(method: string | null, path: string | null): UseQueryResult<RouteExplanationView, Error> {
-  return useQuery({
-    queryKey: queryKeys.route(method ?? '', path ?? ''),
-    queryFn: () => repositoryService.route(method ?? '', path ?? ''),
-    enabled: method !== null && method !== '' && path !== null && path !== '',
     retry: shouldRetry,
     ...IMMUTABLE,
   });

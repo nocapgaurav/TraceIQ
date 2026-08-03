@@ -53,7 +53,8 @@ const ANSWER = {
   question: 'q',
   subject: { kind: 'repository' },
   text: 'It has 228 files [f2].',
-  verdict: 'grounded',
+  status: 'grounded',
+    verdict: 'grounded',
   citations: [
     { factId: 'f2', subject: 'repository', predicate: 'contains', object: '228 files', confidence: 'CERTAIN', provenance: '@traceiq/explorer' },
   ],

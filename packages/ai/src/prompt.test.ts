@@ -91,7 +91,20 @@ describe('the standing instruction', () => {
     expect(SYSTEM_PROMPT).toContain('Use only these facts');
     expect(SYSTEM_PROMPT).toContain('Cite every claim');
     expect(SYSTEM_PROMPT).toContain('Invent nothing');
-    expect(SYSTEM_PROMPT).toContain('say the list is incomplete');
+    expect(SYSTEM_PROMPT).toContain('say that list is incomplete');
+  });
+
+  it('states that the evidence is complete, and the three claim-strength rules', () => {
+    /*
+     * The rules added for this milestone, held the same way as the four above: reword freely, delete
+     * nothing. Each is one of the transformations `entailment.ts` rejects, stated ahead of the failure so
+     * a generation is not spent producing it — and the completeness sentence is the premise all three
+     * rest on, without which a model treats the fact block as an excerpt.
+     */
+    expect(SYSTEM_PROMPT).toContain('the complete evidence');
+    expect(SYSTEM_PROMPT).toContain('Claim strength may not exceed evidence strength');
+    expect(SYSTEM_PROMPT).toContain('Order needs ordering evidence');
+    expect(SYSTEM_PROMPT).toContain('does not establish this');
   });
 
   it('declares the fact region to be data, not instructions', () => {

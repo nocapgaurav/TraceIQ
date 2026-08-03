@@ -213,6 +213,47 @@ describe('secret management is not an authentication flow', () => {
   });
 });
 
+describe('prominence is not architectural centrality', () => {
+  /*
+   * **The three sentences below came out of one live answer, and none of the first version's patterns held
+   * any of them.** Asked to explain TraceIQ's architecture, the model wrote that a package "sits at a
+   * critical intersection", "acts as a bridge between the persistence layer and the rendering layer" and
+   * "underpins the rest of the system" — the same claim as "is the core of", in words the rule did not
+   * know. The middle one is the most dangerous: it asserts a relationship between two named layers that no
+   * edge in the projection records, which is a centrality claim with a direction.
+   *
+   * What licenses any of them is a fact putting *this thing* at the middle of something. A fan-in count is
+   * not on that list and cannot be, because it is the measurement being conflated.
+   */
+  it.each([
+    'The `.ci/scripts` directory sits at a critical intersection of the repository [f1].',
+    'It acts as a bridge between the persistence layer and the rendering layer [f1].',
+    '`.ci/scripts/set_secret.py` underpins the rest of the system [f1].',
+    '`.ci/scripts` is the backbone of this repository [f1].',
+    'It is the key component of the build [f1].',
+    'This module is business-critical [f1].',
+  ])('rejects %j', (sentence) => {
+    expect(claims(sentence)).toContain('prominence-as-importance');
+  });
+
+  it('accepts the same claim hedged, which is what an inference honestly sounds like', () => {
+    expect(claims('It appears to act as a bridge between the two layers [f1].')).toEqual([]);
+  });
+
+  it('accepts it flat on a repository whose facts put the thing at the centre of something', () => {
+    // `guarded()` records a route and a middleware chain, so a fact does place a declaration in the middle
+    // of something and the claim is the model reading the graph rather than filling a gap in it.
+    expect(claims('`requireAuth` is the core of the login flow [f1].', GUARDED)).toEqual([]);
+  });
+
+  it('leaves the literal word alone where it is not making the claim', () => {
+    // A guard that fired on the noun rather than on the construction would be unusable: "the bridge
+    // pattern" and "a core dependency" are ordinary prose. Each alternative in the rule is anchored.
+    expect(claims('The repository holds 12 declarations under `.ci/scripts` [f1].')).toEqual([]);
+    expect(claims('There is a directory named core in the tree [f1].')).toEqual([]);
+  });
+});
+
 describe('a declared technology is not an observed behaviour', () => {
   it('rejects a dependency restated as a responsibility', () => {
     expect(claims('Redis caches the redirect lookup [f1].', CI_ONLY)).toContain('presence-as-behaviour');
@@ -295,6 +336,10 @@ describe('the guard keeps its existing behaviour', () => {
   it.each([
     // Every one of these is a sentence a live run produced while answering honestly. A guard that fails
     // the wording the pipeline asked for is worse than no guard.
+    // The pipeline's own absence wording, composed by `sufficiencyOf` and handed to the model as the
+    // answer to give. The guard rejected it on a live run, which is the guard removing the sentence it
+    // asked for — the failure mode that teaches a reader the verdict means nothing.
+    'The repository does read secret-shaped configuration, which is credential storage rather than an authentication flow [f1].',
     'The repository contains several CI/CD scripts, but no route or middleware for authentication was found during analysis [f1].',
     'No caching mechanism was detected in the analyzed regions or manifests [f1].',
     'The tests could not be determined from the analysis [f1].',

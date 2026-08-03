@@ -1,4 +1,13 @@
-export { RepositoryAnswerer, type Answer, type AnswerRequest } from './answer.js';
+export {
+  ANSWER_STATUSES,
+  RepositoryAnswerer,
+  type Answer,
+  type AnswerRequest,
+  type AnswerStatus,
+  type RecoveryReport,
+} from './answer.js';
+export { NO_RECOVERY, recoveryFor, type RecoveryPlan } from './recovery.js';
+export { finalise, isUnsound, type Finalisation } from './finalize.js';
 export {
   BUDGET_TIERS,
   CHARS_PER_TOKEN,
@@ -25,6 +34,7 @@ export {
   IDENTIFIER_PREFIXES,
   PREDICATES,
   factLine,
+  pathAliases,
   trimIdentifier,
   type Citation,
   type ContextProjection,
@@ -73,8 +83,10 @@ export {
   type PromptInput,
 } from './prompt.js';
 export {
+  EVIDENCE_POLICY,
   INTENTS,
   INTENT_PARTS,
+  type EvidencePolicy,
   QUESTION_SCOPES,
   focusOf,
   intentOf,
@@ -156,6 +168,8 @@ export {
   CLAIM_KINDS,
   CLAIM_STRENGTHS,
   checkEntailment,
+  licencesFor,
+  sentences,
   type ClaimFinding,
   type ClaimKind,
   type ClaimStrength,

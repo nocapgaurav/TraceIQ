@@ -114,18 +114,29 @@ generating.
 
 ### What is on screen, and in what order
 
-The order follows the order the evidence arrives in:
+**A normal conversation shows four things: the question, the answer, its status and its citations.**
+Everything else is behind a disclosure triangle, and moving it there was a deliberate correction. The
+omission panel used to be a full-width amber box headed "These lists were incomplete when the answer was
+written", above *every* answer — on any repository worth asking about some fact family is always capped —
+so the largest, brightest element on the page reported a routine property of a bounded budget. A warning
+that fires every time is a warning a reader learns to skip.
 
-1. **Projection summary** — fact count, tokens, tier, digest. From the first `grounding` frame, which the API
-   sends *before any prose*, so a reader sees what an answer may rest on before reading it.
-2. **Omission summary** — `kept` against an exact `total` per capped part. A cap is never silent here either.
-3. **The answer**, streaming, with a caret while tokens arrive.
-4. **Grounding badge** — `grounded`, `ungrounded` or `unverifiable`. Never softened: `unverifiable` is not a
-   pass, it means nothing was cited so nothing could be checked.
-5. **Fabrications**, named individually when the verdict is `ungrounded`.
-6. **Citations**, each carrying the whole fact and the capability that established it, with identifiers
+In order:
+
+1. **The answer**, streaming, with a caret while tokens arrive.
+2. **Status badge** — `Grounded`, `Grounded after evidence recovery`, `Limited evidence` or
+   `Unverifiable`. Never softened, and there is no `ungrounded`: a claim the facts do not license is
+   removed before the answer reaches the browser, and `Limited evidence` is that removal reported.
+3. **Model, stop reason and token usage**, exactly as the API reported them.
+4. **Citations**, each carrying the whole fact and the capability that established it, with identifiers
    linking to their own pages.
-7. **Model, stop reason and token usage**, exactly as the API reported them.
+5. **Removed statements**, collapsed — one explained line per rejected identifier, name or claim: what it
+   was checked against, and the nearest thing the facts did carry. Collapsed because it describes text
+   that is no longer on screen.
+6. **Retrieval details**, collapsed — fact count, tier, digest, the prompt's token breakdown, `kept`
+   against an exact `total` for every capped part, and what an evidence-recovery pass went back for. The
+   summary line is rendered from the first `grounding` frame, which the API sends *before any prose*, so a
+   reader who wants to see what an answer may rest on can open it before reading the answer.
 
 ### Subject selection
 

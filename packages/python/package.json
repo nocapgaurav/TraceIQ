@@ -15,7 +15,6 @@
     "@traceiq/analyzer": "workspace:*",
     "@traceiq/call-graph": "workspace:*",
     "@traceiq/framework": "workspace:*",
-    "@traceiq/graph-api": "workspace:*",
     "@traceiq/ir": "workspace:*",
     "@traceiq/resolver": "workspace:*",
     "@traceiq/scanner": "workspace:*",

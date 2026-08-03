@@ -236,8 +236,12 @@ describe('answering over a real repository', () => {
 
     const answer = await collect(answerer.answer({ question: 'q', subject: { kind: 'symbol', id: FIND } }));
 
-    expect(answer.verdict).toBe('ungrounded');
-    expect(answer.fabricatedIdentifiers).toEqual(['sym:packages/core/src/nowhere.ts#absent']);
+    // The invention is diagnosed and the sentence that carried it is not returned. See `finalise`.
+    expect(answer.status).toBe('limited-evidence');
+    expect(answer.text).not.toContain('sym:packages/core/src/nowhere.ts#absent');
+    expect(
+      answer.diagnostics.some((entry) => entry.subject === 'sym:packages/core/src/nowhere.ts#absent'),
+    ).toBe(true);
   });
 
   it('raises subject-not-found for a declaration the real graph does not hold', async () => {

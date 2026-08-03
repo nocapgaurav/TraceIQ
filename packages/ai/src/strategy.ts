@@ -465,22 +465,29 @@ export function repositoryGuidance(profile: RepositoryProfile, identity?: Reposi
     lines.push(`  Domains it is organised around: ${profile.domains.slice(0, 6).map((claim) => claim.domain).join(', ')}.`);
   }
 
-  lines.push(
-    '',
-    'How to explain it:',
-    `  ${DEPTH_RULES[depthOf(profile, 'whole')].instruction}`,
-  );
+  /*
+   * What this kind of repository makes a *mistake*, and nothing about what to cover.
+   *
+   * **The cover list was a second answer-shaping policy, and it disagreed with the first.** It named the
+   * order a repository of this *type* should be explained in — a library's public API, a service's request
+   * path — while `questionGuidance` names the order *this question* needs, checked section by section
+   * against the evidence the identity actually carries. A model reading both was told to open with the
+   * public API and to open with what the repository is divided into, and it averaged them. The depth rule
+   * was duplicated outright: `questionGuidance` closes with the same sentence.
+   *
+   * The prohibitions stay, because they are a different kind of statement. "A library has no request flow"
+   * is a fact about this repository that no section list implies, it is one line, and it is the shape of
+   * error a model makes unprompted. Removing the rest saved 172 of 611 tokens on TraceIQ — a ninth of the
+   * whole fact budget at the tier the product runs at — and removed the contradiction.
+   */
+  const avoid = strategyFor({ profile, scope: 'whole', intent: 'overview' }).avoid;
 
-  const strategy = strategyFor({ profile, scope: 'whole', intent: 'overview' });
+  if (avoid.length > 0) {
+    lines.push('', 'Wrong for this repository:');
 
-  lines.push(`  ${strategy.opening}`, '  Then cover, in this order:');
-
-  for (const item of strategy.cover) {
-    lines.push(`    - ${item}`);
-  }
-
-  for (const item of strategy.avoid) {
-    lines.push(`  Do not: ${item.replace(/^do not /, '')}`);
+    for (const item of avoid) {
+      lines.push(`  ${item.replace(/^do not /, 'Do not ')}.`);
+    }
   }
 
   /*
@@ -503,12 +510,11 @@ export function repositoryGuidance(profile: RepositoryProfile, identity?: Reposi
   lines.push(
     '',
     'On every repository-level statement:',
-    '  The most analysed directory, the highest-ranked component, a CI directory and a hotspot are not this',
-    '  repository’s architectural centre, purpose or starting point unless a repository-level fact says so —',
-    '  what it exists',
-    '  to do, a capability, a request flow, a workflow, a route it serves, an entry point. A fan-in or a file',
-    '  count says only that something is structurally prominent, which is what you may say about it. Where',
-    '  the facts do not settle what the repository is, say so rather than promoting the best-measured part.',
+    '  A fan-in, a file count or a rank says one thing: that something is structurally prominent. It is not',
+    '  this repository’s centre, core, purpose or starting point unless a repository-level fact says so — a',
+    '  capability, a request flow, a workflow, a route it serves, an entry point, or what it exists to do.',
+    '  Where the facts do not settle what the repository is, say that rather than promoting the',
+    '  best-measured part of it.',
   );
 
   return lines.join('\n');
@@ -638,9 +644,21 @@ export function questionGuidance(strategy: ExplanationStrategy, plan?: AnswerPla
         lines.push(`  ${step.stage}: ${step.target} — ${step.why}`);
       }
     } else if (plan.components.length > 0 && plan.sufficiency.verdict === 'established') {
+      /*
+       * **"Spend the most space on these" was the prominence-as-importance failure written as an
+       * instruction**, and it sat one layer above the guard that rejects the same conflation in prose.
+       *
+       * The stars are a fan-in measurement. Telling a model to give the most space to the highest-starred
+       * unit is telling it that the most-referenced unit is the most important one — which is the sentence
+       * `entailment.ts` then rejects, and the model was following orders when it wrote it. Two things
+       * change: the list is offered as *what to name* rather than as what to emphasise, and the
+       * measurement is labelled as a measurement in the same breath.
+       */
       lines.push(
         '',
-        'Spend the most space on these, in this order. The stars are how much of the repository points at each:',
+        'Name these, in this order. The stars are a measurement of how much of the repository points at each,',
+        'and nothing more: say what a fact establishes each one is for, and where no fact does, say that instead',
+        'of inferring a responsibility from its rank.',
       );
 
       /*

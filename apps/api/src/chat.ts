@@ -74,10 +74,29 @@ export interface WirePromptTokens {
   readonly conversation: number;
 }
 
+/** What one bounded evidence-recovery pass retrieved, and what it cost. */
+export interface WireRecovery {
+  readonly parts: readonly string[];
+  readonly reasons: readonly string[];
+  readonly addedFacts: number;
+  readonly addedTokens: number;
+  readonly removedStatements: number;
+}
+
 export interface WireAnswer {
   readonly question: string;
   readonly subject: ContextRequest;
   readonly text: string;
+  /**
+   * What is being shown, and how it got here: `grounded`, `grounded-after-recovery`, `limited-evidence`
+   * or `unverifiable`.
+   *
+   * **The field a client renders.** It is never `ungrounded`, because an answer whose claims the facts do
+   * not license has had them removed before it reaches this boundary — see `finalise` in the AI layer.
+   * `limited-evidence` is that removal, reported.
+   */
+  readonly status: string;
+  /** The guard's verdict on the text as returned. `grounded` or `unverifiable` by construction. */
   readonly verdict: string;
   readonly citations: readonly WireCitation[];
   /** Identifiers the answer named that no fact contained. Empty unless the verdict is `ungrounded`. */
@@ -95,8 +114,10 @@ export interface WireAnswer {
    * because it is the field that makes the "at most one correction" bound observable from outside.
    */
   readonly attempts: number;
-  /** Why the correction ran, in the diagnostics' own words. Empty where none did. */
+  /** What the first attempt got wrong, in the diagnostics' own words. Empty where it got nothing wrong. */
   readonly corrections: readonly string[];
+  /** What the one bounded recovery pass retrieved. `null` where none ran. */
+  readonly recovery: WireRecovery | null;
   readonly model: string;
   readonly stopReason: string;
   readonly usage: { readonly promptTokens: number | null; readonly outputTokens: number | null };
@@ -143,6 +164,7 @@ export function wireAnswer(answer: Answer): WireAnswer {
     question: answer.question,
     subject: answer.subject,
     text: answer.text,
+    status: answer.status,
     verdict: answer.verdict,
     citations: answer.citations.map((citation) => ({
       factId: citation.factId,
@@ -159,6 +181,16 @@ export function wireAnswer(answer: Answer): WireAnswer {
     grounding: wireGrounding(answer.grounding),
     attempts: answer.attempts,
     corrections: answer.corrections,
+    recovery:
+      answer.recovery === null
+        ? null
+        : {
+            parts: answer.recovery.parts,
+            reasons: answer.recovery.reasons,
+            addedFacts: answer.recovery.addedFacts,
+            addedTokens: answer.recovery.addedTokens,
+            removedStatements: answer.recovery.removedStatements,
+          },
     model: answer.model,
     stopReason: answer.stopReason,
     usage: answer.usage,

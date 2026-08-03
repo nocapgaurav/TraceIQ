@@ -42,6 +42,8 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/types/package.json           packages/types/
 COPY packages/shared/package.json          packages/shared/
 COPY packages/scanner/package.json         packages/scanner/
+COPY packages/technology/package.json      packages/technology/
+COPY packages/artifact/package.json        packages/artifact/
 COPY packages/project-host/package.json    packages/project-host/
 COPY packages/ir/package.json              packages/ir/
 COPY packages/resolver/package.json        packages/resolver/
@@ -49,6 +51,11 @@ COPY packages/graph-api/package.json       packages/graph-api/
 COPY packages/graph/package.json           packages/graph/
 COPY packages/call-graph/package.json      packages/call-graph/
 COPY packages/framework/package.json       packages/framework/
+COPY packages/tree-sitter/package.json     packages/tree-sitter/
+COPY packages/python/package.json          packages/python/
+COPY packages/java/package.json            packages/java/
+COPY packages/go/package.json              packages/go/
+COPY packages/analyzer/package.json        packages/analyzer/
 COPY packages/query/package.json           packages/query/
 COPY packages/explain/package.json         packages/explain/
 COPY packages/impact/package.json          packages/impact/
@@ -56,9 +63,11 @@ COPY packages/health/package.json          packages/health/
 COPY packages/explorer/package.json        packages/explorer/
 COPY packages/navigation/package.json      packages/navigation/
 COPY packages/pipeline/package.json        packages/pipeline/
+COPY packages/analysis/package.json        packages/analysis/
 COPY packages/context/package.json         packages/context/
 COPY packages/ai/package.json              packages/ai/
 COPY packages/ai-ollama/package.json       packages/ai-ollama/
+COPY packages/bench/package.json           packages/bench/
 COPY apps/api/package.json                 apps/api/
 COPY apps/cli/package.json                 apps/cli/
 COPY apps/web/package.json                 apps/web/

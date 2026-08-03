@@ -66,7 +66,16 @@ describe('event order', () => {
 
     // `awaiting-model` is the one that matters: it is the 89-second gap measured on the reference
     // stack, and it must be announced *before* the model is called rather than after it answers.
-    expect(phases).toEqual(['acquiring-context', 'projecting', 'awaiting-model', 'generating', 'verifying']);
+    expect(phases).toEqual([
+      'acquiring-context',
+      'projecting',
+      'awaiting-model',
+      'generating',
+      'verifying',
+      // Microseconds on an answer that verified, and named anyway: it is the stage that may change text a
+      // consumer has already streamed, so a `restart` after it is explained rather than sudden.
+      'finalising',
+    ]);
 
     const awaiting = events.findIndex((event) => event.type === 'status' && event.phase === 'awaiting-model');
     const firstDelta = events.findIndex((event) => event.type === 'delta');
@@ -212,7 +221,16 @@ describe('citations', () => {
     expect(answer.citations[0]?.fact.provenance).toMatch(/^@traceiq\//);
   });
 
-  it('returns an ungrounded answer rather than withholding it, naming the fabrication', async () => {
+  it('removes an invented identifier rather than returning the sentence that named it', async () => {
+    /*
+     * This asserted that the sentence came back with an `ungrounded` badge on it.
+     *
+     * Returning it was defended as "withholding would hide the evidence of the failure" — but the evidence
+     * of the failure is the diagnostic, which names the identifier, what it was checked against and what
+     * the facts did carry that was close. The *sentence* is not evidence of anything: it is a false
+     * statement about the repository, presented to a reader who has been told to distrust it and given no
+     * way to tell which part. Safe finalisation removes it and says so.
+     */
     const answerer = new RepositoryAnswerer(
       new FakeContextSource(symbolContext()),
       new ScriptedModel({ text: 'It calls sym:invented.ts#Nope [f1].' }),
@@ -220,10 +238,10 @@ describe('citations', () => {
 
     const answer = await collect(answerer.answer({ question: 'q', subject: SUBJECT_REQUEST }));
 
-    // Withholding would hide the evidence of the failure. A caller that wants to suppress it has the verdict.
-    expect(answer.verdict).toBe('ungrounded');
-    expect(answer.fabricatedIdentifiers).toEqual(['sym:invented.ts#Nope']);
-    expect(answer.text).toContain('sym:invented.ts#Nope');
+    expect(answer.status).toBe('limited-evidence');
+    expect(answer.text).not.toContain('sym:invented.ts#Nope');
+    // The finding is still reported in full, which is where the evidence of the failure belongs.
+    expect(answer.diagnostics.some((entry) => entry.subject === 'sym:invented.ts#Nope')).toBe(true);
   });
 
   it('marks an uncited answer unverifiable', async () => {
@@ -346,7 +364,6 @@ describe('failures', () => {
         capabilities: new Set(['system-prompt'] as const),
       }),
       tokens: { count: (text: string) => Math.ceil(text.length / 3.6) },
-      // eslint-disable-next-line @typescript-eslint/require-await
       async *generate(request: { messages: readonly { content: string }[] }) {
         prompts.push(request.messages.at(-1)?.content ?? '');
 
@@ -461,7 +478,6 @@ describe('token usage', () => {
       // One token per four characters, the same ratio `estimatingCounter` uses. A one-token-per-character
       // counter was reserving four times what any real tokeniser would and left no room for facts.
       tokens: { count: (text: string) => Math.ceil(text.length / 4) },
-      // eslint-disable-next-line @typescript-eslint/require-await
       async *generate() {
         yield { type: 'start', model: 'm' } as const;
         yield { type: 'delta', text: 'ok [f1]' } as const;

@@ -5,12 +5,16 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "dependencies": {
     "@traceiq/analyzer": "workspace:*",
     "@traceiq/call-graph": "workspace:*",
     "@traceiq/framework": "workspace:*",
-    "@traceiq/graph-api": "workspace:*",
     "@traceiq/ir": "workspace:*",
     "@traceiq/resolver": "workspace:*",
     "@traceiq/scanner": "workspace:*",
@@ -18,5 +22,7 @@
     "@traceiq/tree-sitter": "workspace:*",
     "@traceiq/types": "workspace:*"
   },
-  "devDependencies": { "@types/node": "^26.1.2" }
+  "devDependencies": {
+    "@types/node": "^26.1.2"
+  }
 }

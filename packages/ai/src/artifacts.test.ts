@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { checkEntailment } from './entailment.js';
 import { deriveIdentity } from './identity.js';
-import { intentOf, INTENT_PARTS } from './intent.js';
+import { EVIDENCE_POLICY, intentOf, INTENT_PARTS } from './intent.js';
 import { planFor } from './plan.js';
 import { project } from './projection.js';
 import { repositoryGuidance } from './strategy.js';
@@ -211,11 +211,14 @@ describe('a question about deployment reaches deployment evidence first', () => 
     expect(INTENT_PARTS.architecture).toContain('key-artifacts');
   });
 
-  it('routes a locating question to onboarding evidence before any ranking', () => {
-    const parts = INTENT_PARTS.locate;
+  it('routes a locating question to onboarding evidence and demotes the ranking out of the lead', () => {
+    const policy = EVIDENCE_POLICY.locate;
 
-    expect(parts[0]).toBe('onboarding');
-    expect(parts.indexOf('onboarding')).toBeLessThan(parts.indexOf('hotspots'));
+    expect(policy.priority[0]).toBe('onboarding');
+    // Stronger than the ordering this used to assert. A ranking sorted last still takes whatever budget
+    // the parts above it leave, which on TraceIQ was ten facts; naming it *supporting* caps it instead.
+    expect(policy.priority).not.toContain('hotspots');
+    expect(policy.supporting).toContain('hotspots');
   });
 });
 
@@ -284,7 +287,7 @@ describe('the repository-first constraint', () => {
   const guidance = repositoryGuidance(deriveProfile(repositoryContext()), deriveIdentity(repositoryContext()));
 
   it('is stated for every repository, and names no repository', () => {
-    expect(guidance).toContain('architectural centre');
+    expect(guidance).toMatch(/not\s+this repository’s centre, core, purpose or starting point/);
     expect(guidance).toMatch(/fan-in/i);
     // Generic by construction: a constraint that named a repository would be the special-casing this
     // milestone forbids.

@@ -407,8 +407,20 @@ function areasOf(context: RepositoryContext): readonly RepositoryArea[] {
      * one-file area called `LICENSE` in the middle of the repository's map. A top-level entry is a file
      * when it has an extension or is one of the extensionless names the convention spells in capitals.
      */
-    const looksLikeFile = !entry.name.includes('/') && (/\.[a-z0-9]+$/i.test(entry.name) || /^[A-Z][A-Z0-9_.-]*$/.test(entry.name));
-    const key = looksLikeFile ? '' : name;
+    /*
+     * A root entry holding one file and nothing analysable folds into the root as well.
+     *
+     * The two patterns above catch `LICENSE` and `config.yml` and miss `.DS_Store`, `.npmrc` and every
+     * other dot-prefixed root file — whose only dot is the first character, so neither an extension test
+     * nor a capitals test sees one. Rather than enumerate the conventions, this asks what an area *is*:
+     * a place with something in it. One file and no declarations is not a part of a repository anyone
+     * navigates to, and it was reaching the map, the guidance and the prompt as `.DS_Store (production, 1
+     * files)`. A genuine one-file directory is still counted, in the root aggregate.
+     */
+    const trivial = !entry.name.includes('/') && entry.files <= 1 && entry.declarations === 0;
+    const looksLikeFile =
+      !entry.name.includes('/') && (/\.[a-z0-9]+$/i.test(entry.name) || /^[A-Z][A-Z0-9_.-]*$/.test(entry.name));
+    const key = looksLikeFile || trivial ? '' : name;
     const sum = held.get(key) ?? { files: 0, declarations: 0 };
 
     sum.files += entry.files;

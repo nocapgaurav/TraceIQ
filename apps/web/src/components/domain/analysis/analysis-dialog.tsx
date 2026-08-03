@@ -66,7 +66,6 @@ export function AnalysisDialog({
       analysis.reset();
     }
     // `analysis.reset` is stable; depending on the whole object would reset on every render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const submit = (value: string): void => {

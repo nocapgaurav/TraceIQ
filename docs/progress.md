@@ -3,6 +3,317 @@
 Milestones are referred to by name rather than number, since the engineering
 contract does not restate the roadmap.
 
+## Answer Quality — retrieval decides the answer, and rewriting cannot create evidence
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web` clean;
+**2,963 backend + 385 web** tests passing; Docker stack rebuilt and verified end to end. Retrieval
+measured on **8 repositories of 5 structural styles**; answers generated live through
+`qwen2.5:7b-instruct`.
+
+### One sentence of cause
+
+Three independent defects produced answers that read as confident architecture and were not: a
+repository-wide question could be narrowed by the *word that classified it*, an evidence family could be
+priced out of the only question it answers by a family that merely sorted first, and an answer that failed
+verification was handed back to the model with **the same facts** and asked to say something better.
+
+### Failure 1 — a broad question narrowed to a locally prominent name
+
+Asked to *explain the architecture*, TraceIQ answered about a module. `subsystemsOf` contributes each
+package's last path segment, TraceIQ ships `packages/explain`, and the question opens with `Explain` — so
+`focusOf` resolved a focus of `explain`, `scopeOf` returned `aspect`, the plan was `subsystem` at `focused`
+depth, and 70% of the evidence budget went to components. The same mechanism took `How does deployment
+work?` to a directory called `deployment`.
+
+`QUESTION_VOCABULARY` had been extended by hand each time one of its words turned out to also be a
+directory name. The general form is that **a word doing a job in the question cannot also be its subject**,
+and there are two such jobs:
+
+- **An intent's own concepts.** `deployment`, `caching` and `pipeline` classify a question. Only the
+  *selected* intent's concepts are excluded, which is what keeps "where is caching implemented?" — a
+  *locating* question — focused on caching.
+- **An asking verb**, but only where it is used as one. `explain`, `describe`, `walk`, `review` and
+  `analyse` are all ordinary package names; a determiner in front of one says it is being used as a noun,
+  so *"how does the explain package work"* still narrows and *"Explain the architecture"* does not.
+
+Named technologies are exempt on both counts: `redis` selects the caching intent *and* names a thing, and
+the distinction is declared on the policy rather than inferred.
+
+Two consequences followed. `architecture` became an `AnswerLead` of its own — a library's default lead is
+its public API and a service's is a request path, so the broadest question there is was previously answered
+in the shape of a question nobody asked. And a `workflow` intent was added, because "walk me through one
+important workflow" says `workflow`, which is also what a CI file is called, so every narration request had
+been reaching the deployment policy.
+
+### Failure 2 — a family priced out of its own question
+
+Measured on TraceIQ, one architecture question: `key-artifacts: 0 of 43`, `hotspots: 10 of 120`. Both parts
+sit in the `architecture` and `components` budget groups respectively, the group share is spent by whichever
+extractor sorts first, and the family that could answer the question got nothing. An onboarding question
+reached `onboarding: 0` — the part that exists to answer it — because the plan's parts are applied ahead of
+the intent's and the orientation plan named `packages` first.
+
+Four changes, and the order they run in is the design:
+
+| | |
+|---|---|
+| **`EVIDENCE_POLICY`** | One table per intent: the families it is answered *from*, the families that may only *support* it, and the concepts that select it. It replaces `INTENT_PARTS`, which is now derived from it — an intent's retrieval preference is written once. |
+| **Coverage round** | One fact from every family in the policy, plus every part the plan's surviving sections rest on, before any family takes a second. Bounded by one line per family. |
+| **Depth round** | Fair rooms out of the remainder: what is left divided by how many families have not run, so an empty family hands its room forward and a hundred-fact family cannot take theirs. |
+| **Supporting cap** | Three facts at `standard`, **cumulative across passes**, for families the intent marks supporting. Not zero: the `hotspots` intent marks nothing supporting, because there a ranking *is* the answer. |
+
+A fifth change was a measurement error rather than a policy one. `CORE_SHARE` is applied to
+`TIER − coreReserved`, which excludes the question guidance so the prompt prefix stays stable — but the real
+fact budget is `TIER − reserved`. At `standard`: tier 3,400, question-independent reservation 1,436, total
+reservation 1,880, so the core was allowed 1,178 tokens of a **1,520**-token budget. Three fifths on paper,
+78% in fact, and the supplement that carries everything the question asked for had 342 tokens. A fixed
+allowance of 13% of the tier — the measured cost of question guidance — restores the denominator without
+making the core question-dependent.
+
+Guidance was trimmed 611 → 418 tokens per repository by deleting a *duplicate answer-shaping policy*: the
+type-level cover list told a model to open with a library's public API while the plan's sections told it to
+open with what the repository is divided into, and the depth rule was printed twice.
+
+### Failure 3 — rewriting cannot create evidence
+
+The UI showed `ungrounded`, `rewritten once`, and an answer that was still ungrounded. The corrective pass
+sent the model its rejected answer and *the same projection*, which for a sentence rejected as unsupported
+has two honest outcomes and both are bad: say less, or say the same thing in words the guard does not
+recognise.
+
+The reason a claim is rejected is that **no fact of the licensing kind was in the projection** — and whether
+the graph holds one is a different question from whether the budget reached it. So a rejection is now
+translated into a retrieval request:
+
+```
+intent → retrieve → generate → verify
+  grounded            → return
+  nothing to retrieve → finalise
+  otherwise           → recover → regenerate → verify → finalise
+```
+
+`recoveryFor` reads the same tables the guard adjudicates with. A rejected claim names its kind, the kind
+names the predicates that would license it, and a predicate names the parts that emit it; a rejected
+identifier names its prefix, and a prefix names the parts that carry identifiers of that kind. Bounded three
+ways: at most six parts, the same tier and budget as the first projection, and one regeneration —
+structurally, in a branch guarded by the attempt count.
+
+**Where nothing could be retrieved, nothing is spent.** `presence-as-quality` and `absence-as-nonexistence`
+are licensed by no fact in any projection, so those answers skip the second generation entirely and go
+straight to finalisation, which removes the sentence in microseconds.
+
+### Safe finalisation
+
+`finalise` is deterministic and specifically not another generation — the model has by that point been wrong
+twice about what its evidence supports. Sentence by sentence, split exactly as `entailment.ts` splits:
+
+- a sentence the entailment guard rejected is **removed**;
+- a sentence naming an identifier or term no fact carried is **removed**;
+- a sentence whose only fault is an unresolvable citation **keeps the sentence and loses the citation** — a
+  `[f97]` in a projection of forty facts is a miscount, and dropping a true sentence for it would be the
+  over-correction this module guards against.
+
+Removal is monotone, so the retained text verifies; it is re-checked rather than assumed, and a defensive
+branch returns nothing at all if it somehow does not. Paragraph structure survives; nothing is rewritten or
+re-ordered.
+
+The user-facing vocabulary changed with it. `Answer.status` is `grounded`, `grounded-after-recovery`,
+`limited-evidence` or `unverifiable` — **there is no `ungrounded`**, and its absence is the guarantee. The
+report-level `GroundingVerdict` is unchanged and still describes a text.
+
+### Prominence is not importance — the places it still was
+
+| where | what it said | what it says now |
+|---|---|---|
+| `questionGuidance` | "Spend the most space on these. The stars are how much of the repository points at each" | "Name these, in this order. The stars are a measurement… say what a fact establishes each one is for" |
+| `LEAD_SECTIONS.orientation` | "what to inspect once the shape is clear — the declarations everything else points at", evidence `hotspots` | evidence `onboarding`, `routes`, `key-artifacts`; `requires: onboarding` |
+| `partsFor.orientation` | `packages, architecture-summary, regions` | `onboarding, key-artifacts, packages, architecture-summary, regions` |
+| `componentsFor` | the architecture lead led with `identity.critical`, the fan-in ranking | leads with `identity.units` |
+| `EVIDENCE_POLICY` | — | `hotspots` is supporting on every intent but its own |
+
+The first row is the one worth stating plainly: the instruction told the model that the most-referenced unit
+deserved the most space, and `entailment.ts` then rejected the sentence it wrote. It was following orders.
+
+`prominence-as-importance` was widened against three sentences from one live answer — "sits at a critical
+intersection", "acts as a bridge between the persistence layer and the rendering layer", "underpins the rest
+of the system". The middle one is the worst: it asserts a relationship between two named layers that no edge
+records, which is a centrality claim with a direction. Each addition is anchored — a bridge must be
+*between* something — so ordinary prose using the word is not adjudicated.
+
+### Identifier vocabulary — the guard was wrong about right answers
+
+Seven names were rejected in one correct answer. Four were **directories of files the projection had just
+shown the model**: the facts carried `sym:packages/graph-api/src/graph-api.ts#GraphApi`, the answer said the
+repository has a package called `packages/graph-api`, and the permitted set held whole paths and basenames
+and no directories. `pathAliases` is one canonicalisation used everywhere: the path, its basename, and every
+directory containing it. Every alias is a *prefix* of something the graph holds, which is what keeps it from
+being fuzzy matching — `packages/graph-apis` is a prefix of nothing.
+
+The other three were a general defect with three instances: **whatever the pipeline shows a model is a name
+the model may use.**
+
+- The artefact inventory *printed* `e.g. README.md, docker-compose.yml` and declared neither. It declares
+  them now.
+- The `onboarding` extractor walked artefact digests in digest order while `navigationFor` reads
+  `identity.onboarding`, which is documentation-first. On TraceIQ the cap was spent on `script-target build,
+  declared by the manifest at file:package.json` and the four READMEs never reached the prompt — while the
+  guidance said *"start here: README.md"*. The extractor is now built from `identity.onboarding` step for
+  step, so one derivation feeds both.
+- `ProjectionOptions.names` closes the class: the names the guidance will print — the route's targets and
+  the ranked components, all read out of `RepositoryIdentity` — join the permitted *names*. Never the
+  identifiers, and a name admitted this way can be mentioned but not cited, because no fact carries it.
+
+`DISCLAIMING` gained `rather than a …` after the guard rejected a sentence **the pipeline had written
+itself**: `sufficiencyOf` composes "credential storage rather than an authentication flow", the guidance
+hands it to the model as the answer to give, and the secrets rule fired on the word `authentication`.
+
+### Generation prompt
+
+Three rules added, stated as instructions because the guard can only reject a sentence after a whole
+generation has produced it, and one premise they all rest on: **the facts are the complete evidence**, so a
+gap in them is a gap in what can be said. Without that sentence a small instruction model reads the block as
+an excerpt and completes it from what is normally true of a repository shaped like this one — which is
+exactly where "acts as a bridge between the persistence layer and the rendering layer" came from.
+
+Each rule names the *evidence* a claim would need rather than banning a wording: a list of forbidden phrases
+teaches a model to paraphrase the claim rather than drop it. The instruction was compressed elsewhere to pay
+for them — 596 tokens, against 560 before and a 600-token ceiling the suite enforces.
+
+### Chat UI
+
+The amber `These lists were incomplete when the answer was written` panel appeared above **every** answer,
+because on any repository worth asking about some family is always capped. It is now inside a collapsed
+`Retrieval details` control with everything it carried plus the prompt breakdown and the recovery report. A
+normal conversation shows the question, the answer, its status and its citations. The `rewritten once` badge
+is gone — `Grounded after evidence recovery` says the same thing about a mechanism that exists. Diagnostics
+are collapsed under "N statements the facts do not establish were removed", because they describe text that
+is no longer on screen.
+
+### Validation
+
+Retrieval measured across 8 repositories and 13 questions each — 104 pairs.
+
+| repository | style | files | prompt tokens | plan | project |
+|---|---|---|---|---|---|
+| TraceIQ | TypeScript monorepo, Docker, internal packages | 664 | 3,344–3,398 | 2.1 ms | 7.1 ms |
+| `pallets/flask` | conventional library | 236 | 3,357–3,400 | 2.3 ms | 8.1 ms |
+| `expressjs/express` | conventional library | 213 | 3,319–3,400 | 6.6 ms | 6.4 ms |
+| `apache/commons-lang` | Java library | 712 | 3,357–3,399 | 1.4 ms | 3.0 ms |
+| `colinhacks/zod` | monorepo | 580 | 3,330–3,399 | 1.7 ms | 4.5 ms |
+| Spring PetClinic | service | 131 | 3,298–3,399 | 1.4 ms | 6.0 ms |
+| CI-heavy fixture | 15 workflows, 15 scripts, no source | 32 | 3,366–3,395 | 1.3 ms | 2.5 ms |
+| Compose-heavy fixture | 10 stacks of compose + Dockerfile + README | 31 | 3,366–3,397 | 1.2 ms | 2.5 ms |
+
+- **Zero starved families.** No question on any repository left a family its own policy leads with at zero
+  facts while that family had facts to give.
+- **Supporting families capped everywhere**, at 1–4 facts of up to 120 available.
+- **Absence held.** `How does authentication work?` and `How does caching work?` returned `absent` or
+  `undetermined` on 7 of 8; PetClinic returned `established`, correctly, because it has security.
+- **Every architecture question got the `architecture` lead**, every onboarding variant the `orientation`
+  lead, including the ungrammatical one a real user typed.
+
+Live, through `qwen2.5:7b-instruct` on TraceIQ and Flask:
+
+| question | before | after |
+|---|---|---|
+| Explain the architecture | a module-level explanation of `packages/explain`; "critical intersection"; "bridge between the persistence layer and the rendering layer"; verifier rejected several claims | repository-level: areas, packages, apps, the compose order, and *"The analysis did not establish specific responsibilities for several packages"* — `grounded`, one attempt, 9 citations |
+| where should i start | recommendations the graph did not establish; test helpers ranked as starting points | README.md → apps/api/README.md → apps/cli/README.md → apps/web/README.md, each cited to the documentation fact that establishes it — `grounded`, one attempt, 9 citations |
+| How does authentication work? | `ungrounded`, `rewritten once`, still ungrounded | two sentences reporting absence — `grounded`, one attempt |
+| How does caching work? | (same shape) | one sentence reporting absence — `grounded`, one attempt |
+
+Latency: 30–36 s for an absence answer, 62–135 s for a full one, on CPU. A recovery pass adds one
+generation and only where one runs.
+
+### Limitations
+
+**The claim rules are still not a prover.** Eleven patterns over eight kinds, each written against a real
+sentence. A wrong claim about a real relationship still passes, and prose the rules cannot classify is left
+alone deliberately — a validator that fires on sentences it does not understand is one somebody turns off.
+
+**Formatting is not enforceable.** The instruction forbids bullet lists and a 7B model writes them anyway.
+Nothing here adjudicates layout, and nothing should: the verifier's authority comes from being right about
+claims.
+
+**One recovery pass, and it may fetch nothing.** Where the graph genuinely does not hold the licensing fact,
+the second projection differs and the claim still fails — the answer is then shortened rather than fixed.
+That is the correct outcome and it is also the common one for `secrets-as-authentication`.
+
+**`ProjectionOptions.names` widens the permitted names.** A route target or a ranked component may be
+*mentioned* without a fact behind it. It cannot be cited, and an uncited claim is what the citation rule
+adjudicates — but the naming guard is one step less strict than it was, in exchange for not rejecting
+answers that followed the pipeline's own instructions.
+
+**The supporting cap is a number.** Three facts at `standard` is a judgement about what "supporting" means,
+validated across eight repositories and not derived from anything.
+
+**Sentence-level removal can leave a seam.** A paragraph that loses its middle sentence still reads as a
+paragraph, but the transition it contained goes with it. Nothing rewrites the join, deliberately.
+
+## Cleanup and Stabilisation — deleting only what is unreachable
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web` clean;
+**2,903 backend + 385 web** tests passing; Docker stack rebuilt and verified end to end.
+
+No behaviour changed. 35 files touched, 174 insertions against 2,848 deletions.
+
+### What was deleted, and the rule that decided it
+
+The rule was **unreachable or obsolete, never merely low-usage**. A symbol with one caller stays; a symbol
+with none, and no test, goes. Every candidate was confirmed by reading the consuming file rather than by
+trusting a grep count, which mattered because the first detector pass produced roughly 288 candidates and
+most were false positives: `.test.ts` files carry fixture *source* inside template literals, so
+`^export class UserRepo` matched inside a backtick string and looked like a dead export of the analyser
+package.
+
+| Removed | Why it was unreachable |
+|---|---|
+| `.integration/` (3 files, 2,131 lines) | Accessibility-tree dumps from a manual browser session. Referenced by nothing, asserted by nothing. |
+| `apps/web/src/components/ui/separator.tsx` | `Separator` was never rendered. The only `separator` identifiers in the app were unrelated local variables. |
+| `analysisErrorStatus` (`apps/api/src/analysis.ts`) | An HTTP-status mapper for analysis error codes that no route called; the errors are mapped at the endpoint layer. |
+| `changedUnits` (`packages/pipeline`) | Documented as groundwork for subset rebuilds that do not exist. The `units` field it read stays — that one *is* recorded deliberately. |
+| `ecosystemsOf` (`packages/scanner`), `termsOf` (`packages/ai`) | No caller anywhere, including tests. |
+| `impactSummary`, `BuildParts` (`packages/context`) | An identity function, and a shape no function took or returned. |
+| `Fabrications` (`apps/web` chat) | Superseded by `Diagnostics`, which explains each rejection instead of listing names. |
+| `CardDescription`, `DialogTrigger` | Re-exports nothing imported. |
+| `useRoutes`, `useRoute` and their query keys | The web app has no routes page. `repositoryService.routes`/`.route` stay — the service tests cover them and the API serves them. |
+| `layoutWidth`, `verdictOf`, `HEALTH`/`CYCLES` fixtures | No caller; the health page those fixtures anticipated has no test. |
+| 20 dependency entries across 9 `package.json` files | Declared but never imported — including 7 devDependencies in `packages/ai` and 7 in `packages/context` left over from when those packages built their own graphs in tests. |
+| 5 `eslint-disable-next-line` directives | There is no ESLint configuration and no ESLint dependency in the repository, so each directive was a comment addressed to a tool that never runs. |
+
+### What was kept despite looking unused
+
+`@types/*`, `tailwindcss`, `jsdom`, `typescript`, `react-dom`, the `tree-sitter-*` grammars,
+`@monaco-editor/react` and `@tailwindcss/postcss` all appear unreferenced to an import-graph audit and are
+all required: the grammars are loaded through `require.resolve(GRAMMARS[grammar])`, Tailwind arrives via
+`@import 'tailwindcss'` in a stylesheet and a PostCSS plugin, Monaco is a dynamic import, and the rest are
+consumed by tooling rather than by code.
+
+### Two real defects found by cleaning
+
+`tsconfig.tests.json` was missing project references for `analyzer`, `analysis`, `java`, `go` and
+`tree-sitter`, so the test project only typechecked because the main build had already emitted their
+declaration files. It now declares what it depends on and passes from a clean state (`tsc -b --clean`
+followed by a full build).
+
+Both Dockerfiles pre-copy every workspace manifest before `pnpm install` so the install layer is cached
+against dependency changes rather than source changes — and nine manifests were missing from the list
+(`analysis`, `analyzer`, `artifact`, `bench`, `go`, `java`, `python`, `technology`, `tree-sitter`). The
+build still worked, because a later `COPY packages/ packages/` supplied them, but the cache key was
+incomplete: editing one of those nine manifests would not have invalidated the install layer. Five of the
+nine were edited by this very cleanup, which is how it surfaced. Both lists are now complete and both
+images rebuild and run.
+
+### Documentation corrected to match the code
+
+The CLI's own description claimed "Repository intelligence for TypeScript", which stopped being true when
+the tree-sitter analysers landed. `.env.example` described `TRACEIQ_SCAN_PATH` as pointing at "any
+TypeScript repository with a tsconfig.json". `apps/web/README.md` still documented the removed
+`Fabrications` panel. The main README was refactored — 980 lines to 912, 23 top-level sections to 19 — by merging the
+duplicated model/verification/cheat-sheet material, folding the prompt-stuffing comparison into
+*How it works*, and moving every CLI instruction into a *Development* section that states plainly that the
+CLI is unpublished and runs from the built workspace. Every command in it was re-run against a live stack;
+the `/ping` example now explains that `graphApiCalls` is a per-process counter rather than always `0`.
+
 ## Universal Repository Understanding — a file with no declarations is not a file with no purpose
 
 **Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web` clean;

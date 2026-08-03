@@ -58,14 +58,22 @@ export const ANSWER_PHASES = [
   'generating',
   'verifying',
   /**
-   * The first answer made a claim its facts do not license, and one bounded rewrite is being generated.
+   * The first answer made a claim its facts do not license, so the evidence is being reselected around the
+   * kinds of fact those claims needed, and the answer generated once more.
    *
    * **A named phase because it is the only stage that can double an answer's latency**, and a user watching
-   * a spinner for three minutes deserves to know that the second half of the wait is a correction rather
-   * than a hang. It happens at most once per answer — see `RepositoryAnswerer.answer` — so a consumer that
-   * sees it twice is looking at a defect.
+   * a spinner for three minutes deserves to know that the second half of the wait is deliberate. It happens
+   * at most once per answer — see `RepositoryAnswerer.answer` — so a consumer that sees it twice is looking
+   * at a defect.
    */
-  'correcting',
+  'recovering',
+  /**
+   * Verification has finished and whatever it rejected is being removed.
+   *
+   * Microseconds, and named anyway: it is the stage that can change the text a consumer has already
+   * streamed, so a `restart` arriving after it is explained rather than sudden.
+   */
+  'finalising',
 ] as const;
 
 export type AnswerPhase = (typeof ANSWER_PHASES)[number];

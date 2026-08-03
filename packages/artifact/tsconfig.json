@@ -3,5 +3,5 @@
   "compilerOptions": { "rootDir": "src", "outDir": "dist", "types": ["node"] },
   "include": ["src"],
   "exclude": ["**/*.test.ts", "**/*.test-helper.ts"],
-  "references": [{ "path": "../scanner" }, { "path": "../types" }]
+  "references": [{ "path": "../types" }]
 }

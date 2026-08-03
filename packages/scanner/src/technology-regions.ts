@@ -1,4 +1,4 @@
-import type { Ecosystem, LanguageName } from './languages.js';
+import type { LanguageName } from './languages.js';
 import type { LanguageCount, ManifestFile, RepositoryFile, TechnologyRegion } from './types.js';
 
 /**
@@ -169,11 +169,6 @@ function directoryOf(repoRelativePath: string): string {
   const index = repoRelativePath.lastIndexOf('/');
 
   return index === -1 ? '' : repoRelativePath.slice(0, index);
-}
-
-/** Ecosystems present anywhere, for the repository-level summary. */
-export function ecosystemsOf(regions: readonly TechnologyRegion[]): readonly Ecosystem[] {
-  return [...new Set(regions.flatMap((region) => region.ecosystems))].sort();
 }
 
 /** Language totals across the whole repository, by file count descending. */

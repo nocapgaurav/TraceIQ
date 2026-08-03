@@ -143,15 +143,28 @@ function strategyOf(context: RepositoryContext, question: string): ReturnType<ty
 describe('the same question is answered differently by different repositories', () => {
   const question = 'Explain the architecture.';
 
-  it('tells a service to trace a request and a framework not to', () => {
+  it('tells a framework what would be wrong for it, and tells a service nothing of the kind', () => {
+    /*
+     * This asserted that the repository guidance carried a *cover list* per type — "how a request moves
+     * from the route to persistence" for a service, "extension points" for a framework.
+     *
+     * It was a second answer-shaping policy beside the plan's section list, and the two disagreed: asked
+     * to explain TraceIQ's architecture, a model was told both to open with the public API (the library
+     * cover list) and to open with what the repository is divided into (the architecture sections). The
+     * shape of an answer belongs to the plan, which checks every section against the evidence the identity
+     * carries. What stays here is what the *type* alone establishes and no section list implies: the
+     * shapes of answer that are simply wrong for this repository.
+     */
     const forService = repositoryGuidance(deriveProfile(service()));
     const forFramework = repositoryGuidance(deriveProfile(framework()));
 
-    expect(forService).toContain('how a request moves from the route to persistence');
-    expect(forFramework).toContain('extension points');
-    // The instruction that used to be given to every repository, and is wrong for this one.
-    expect(forFramework).toContain('Do not: describe a request flow');
-    expect(forService).not.toContain('extension points');
+    expect(forFramework).toContain('Do not describe a request flow');
+    expect(forFramework).toContain('Wrong for this repository');
+    // A service has a request flow, so nothing forbids describing one.
+    expect(forService).not.toContain('Do not describe a request flow');
+    // Neither carries a cover list any more: that is the plan's, and it is checked against the evidence.
+    expect(forService).not.toContain('Then cover, in this order');
+    expect(forFramework).not.toContain('Then cover, in this order');
   });
 
   it('gives them different depths, because one fits an answer and the other does not', () => {

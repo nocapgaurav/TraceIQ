@@ -21,14 +21,7 @@
     "@traceiq/types": "workspace:*"
   },
   "devDependencies": {
-    "@traceiq/call-graph": "workspace:*",
-    "@traceiq/framework": "workspace:*",
-    "@traceiq/graph": "workspace:*",
-    "@traceiq/ir": "workspace:*",
     "@traceiq/pipeline": "workspace:*",
-    "@traceiq/project-host": "workspace:*",
-    "@traceiq/resolver": "workspace:*",
-    "@traceiq/scanner": "workspace:*",
     "@types/node": "^26.1.2"
   }
 }

@@ -1,4 +1,4 @@
-import type { AnalysisErrorCode, AnalysisJob } from '@traceiq/analysis';
+import type { AnalysisJob } from '@traceiq/analysis';
 
 import { ApiError, badRequest, missingParameter } from './errors.js';
 
@@ -81,27 +81,6 @@ export function wireJob(job: AnalysisJob): WireJob {
   };
 }
 
-/**
- * An analysis code as an HTTP error.
- *
- * Used only where a *request* fails — asking for a job that does not exist. A failed analysis is
- * reported inside a 200, because the request to read it succeeded.
- */
-export function analysisErrorStatus(code: AnalysisErrorCode): number {
-  switch (code) {
-    case 'invalid-url':
-      return 400;
-    case 'repository-not-found':
-    case 'repository-private':
-      return 404;
-    case 'repository-too-large':
-      return 413;
-    case 'analysis-timeout':
-      return 504;
-    default:
-      return 502;
-  }
-}
 
 export function unknownAnalysis(id: string): ApiError {
   return new ApiError(

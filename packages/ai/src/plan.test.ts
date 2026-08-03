@@ -648,9 +648,19 @@ describe('a conversation is not restarted every turn', () => {
 describe('how sure the planner is', () => {
   it.each([
     ['Explain the url module.', 'certain'],
-    // `caching` is a domain this repository demonstrably has — Redis and a REDIS_URL — so the question
-    // named something real rather than merely carrying a responsibility keyword.
-    ['Explain caching.', 'certain'],
+    /*
+     * This read `certain` on the grounds that `caching` is a domain the repository demonstrably has.
+     *
+     * It is — and the word is still the one that *classified the question*, which is a different fact
+     * about it. Every question carrying a responsibility keyword scored `certain` on any repository whose
+     * profile derived a domain of that name, which made the field say "the reader named a subsystem" when
+     * what had happened was "the reader named a kind of question". `likely` is the accurate reading: the
+     * question matched an explicit responsibility intent, and the caching policy routes its evidence.
+     */
+    ['Explain caching.', 'likely'],
+    // A named technology still narrows, and still reads `certain`: `redis` names a thing rather than a
+    // kind of question, which is exactly the distinction the frame guard draws.
+    ['Explain Redis.', 'certain'],
     ['Where should I start?', 'likely'],
     // A responsibility intent whose keyword is not also the name of a subsystem: the question is about
     // deployment without having named anything the repository contains.

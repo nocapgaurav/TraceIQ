@@ -2,19 +2,11 @@
 
 import { AlertCircle, Loader2 } from 'lucide-react';
 
-import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import type { ChatTurn } from '@/store/chat-store';
 import type { ChatPhase } from '@/types/api';
 
-import {
-  AnswerFooter,
-  Citations,
-  Diagnostics,
-  GroundingBadge,
-  OmissionSummary,
-  ProjectionSummary,
-} from './grounding';
+import { AnswerFooter, Citations, Diagnostics, GroundingBadge, RetrievalDetails } from './grounding';
 import { Markdown } from './markdown';
 
 /**
@@ -34,13 +26,6 @@ export function Turn({ turn }: { readonly turn: ChatTurn }) {
       </div>
 
       <div className="flex flex-col gap-2">
-        {turn.grounding === null ? null : (
-          <>
-            <ProjectionSummary grounding={turn.grounding} />
-            <OmissionSummary omissions={turn.grounding.omissions} />
-          </>
-        )}
-
         {turn.text === '' && turn.status === 'streaming' ? <Progress phase={turn.phase} /> : null}
 
         {turn.text === '' ? null : (
@@ -61,40 +46,43 @@ export function Turn({ turn }: { readonly turn: ChatTurn }) {
 
         {turn.answer === null ? null : (
           <div className="flex flex-col gap-2">
+            {/*
+              Status, then citations, then everything else behind a disclosure triangle.
+
+              **What a normal conversation shows is the question, the answer, its status and its
+              citations**, and that ordering is the change. The status badge already carries the whole
+              story — `Grounded after evidence recovery` says a second retrieval ran, so the separate
+              "rewritten once" badge beside it was saying the same thing in developer vocabulary, about a
+              mechanism that no longer exists. An unknown citation is likewise no longer a badge: it is
+              stripped from the sentence that carried it and reported in the diagnostics below.
+            */}
             <div className="flex flex-wrap items-center gap-2">
-              <GroundingBadge verdict={turn.answer.verdict} />
-              {turn.answer.attempts > 1 ? (
-                /*
-                 * That the first answer was rejected is information about this answer, and it is shown whether
-                 * or not the rewrite worked — a reader who watched the text disappear is owed the reason, and
-                 * one who did not is owed the fact that the model's first instinct did not verify.
-                 */
-                <Badge
-                  variant="warning"
-                  title={turn.answer.corrections.join('; ')}
-                >
-                  rewritten once
-                </Badge>
-              ) : null}
-              {turn.answer.unknownCitations.length > 0 ? (
-                <Badge variant="danger" title="cited a fact id that was never shown to the model">
-                  {turn.answer.unknownCitations.length} unknown citation
-                  {turn.answer.unknownCitations.length === 1 ? '' : 's'}
-                </Badge>
-              ) : null}
+              <GroundingBadge status={turn.answer.status} />
               <AnswerFooter answer={turn.answer} className="ml-auto" />
             </div>
 
+            <Citations citations={turn.answer.citations} />
+
             {/*
-              One explained list rather than two bare ones. `Diagnostics` covers both fabricated
-              identifiers and unsupported names, and says for each what it was checked against and what
-              the facts did carry that was close — which is what distinguishes an invention from a
-              verifier that was too strict about how a name is written.
+              One explained list rather than two bare ones. `Diagnostics` covers fabricated identifiers,
+              unsupported names and rejected claims, and says for each what it was checked against and what
+              the facts did carry that was close — which is what distinguishes an invention from a verifier
+              that was too strict about how a name is written. Collapsed, because it describes statements
+              that are no longer on screen.
             */}
             <Diagnostics diagnostics={turn.answer.diagnostics} />
-            <Citations citations={turn.answer.citations} />
+            <RetrievalDetails grounding={turn.answer.grounding} recovery={turn.answer.recovery} />
           </div>
         )}
+
+        {/*
+          While the answer is still arriving there is no `answer` to read the retrieval from, and the first
+          `grounding` frame precedes any prose — so a reader who wants to see what the answer is permitted
+          to rest on can open it before reading the answer.
+        */}
+        {turn.answer === null && turn.grounding !== null ? (
+          <RetrievalDetails grounding={turn.grounding} />
+        ) : null}
       </div>
     </article>
   );
@@ -119,8 +107,10 @@ const PHASE_LABEL: Readonly<Record<ChatPhase, string>> = {
   generating: 'Writing the answer…',
   verifying: 'Verifying citations…',
   // The one stage that can double the wait, so it says what it is rather than reusing "Writing the
-  // answer…" — a reader who watched the text disappear needs to know the second wait is deliberate.
-  correcting: 'The answer made an unsupported claim — rewriting it from the same facts…',
+  // answer…" — a reader who watched the text disappear needs to know the second wait is deliberate, and
+  // that what is being fetched is evidence rather than a second opinion.
+  recovering: 'The answer went beyond its evidence — retrieving the facts it needed and answering again…',
+  finalising: 'Removing anything the facts do not establish…',
 };
 
 function Progress({ phase }: { readonly phase: ChatPhase | null }) {

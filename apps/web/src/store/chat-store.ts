@@ -2,7 +2,7 @@
 
 import { create } from 'zustand';
 
-import type { ChatAnswer, ChatGrounding, ChatPhase, ChatSubject, ChatVerdict } from '@/types/api';
+import type { ChatAnswer, ChatGrounding, ChatPhase, ChatSubject } from '@/types/api';
 
 /**
  * Conversations, in memory for the session.
@@ -33,11 +33,11 @@ export interface ChatTurn {
    */
   readonly phase: ChatPhase | null;
   /**
-   * Why this answer was rewritten, where verification rejected the first attempt.
+   * Why the prose on screen was replaced, where verification rejected it.
    *
    * Held on the turn rather than read off `answer` because it arrives *before* the answer does — on the
    * `restart` frame, at the moment the rejected prose is cleared — and a reader watching the text vanish is
-   * owed the reason immediately rather than when the rewrite finishes.
+   * owed the reason immediately rather than when the replacement finishes.
    */
   readonly corrections: readonly string[];
   readonly error: { readonly code: string; readonly detail: string; readonly hint: string } | null;
@@ -247,8 +247,4 @@ export function historyOf(conversation: Conversation): readonly { question: stri
   return conversation.turns
     .filter((turn) => turn.status === 'complete' && turn.text !== '')
     .map((turn) => ({ question: turn.question, answer: turn.text }));
-}
-
-export function verdictOf(turn: ChatTurn): ChatVerdict | null {
-  return turn.answer?.verdict ?? null;
 }

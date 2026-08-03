@@ -12,41 +12,60 @@ import type {
   ChatCitation,
   ChatDiagnostic,
   ChatGrounding,
-  ChatOmission,
-  ChatVerdict,
+  ChatRecovery,
+  ChatStatus,
 } from '@/types/api';
 
 /**
- * Whether an answer stayed inside the facts it was given.
+ * What the reader is being shown, and how it got here.
  *
- * Never softened and never hidden. `unverifiable` is not a pass: it means the answer cited nothing, so there
- * was nothing to check it against — a distinction a reader has to be able to see at a glance.
+ * **Never softened and never hidden, and there is no `ungrounded`.** An answer whose claims the facts do
+ * not license has had them removed before it reaches this component, so the badge that used to say
+ * "ungrounded" beside a page of unsupported prose has nothing left to describe. What replaces it is
+ * `limited evidence`: the same honesty, about an answer a reader can actually trust every sentence of.
+ *
+ * `unverifiable` is still not a pass — it means the answer cited nothing, so there was nothing to check.
  */
-const VERDICT: Readonly<
-  Record<ChatVerdict, { readonly label: string; readonly detail: string; readonly variant: 'default' | 'warning' | 'danger'; readonly Icon: typeof CheckCircle2 }>
+const STATUS: Readonly<
+  Record<
+    ChatStatus,
+    {
+      readonly label: string;
+      readonly detail: string;
+      readonly variant: 'default' | 'warning' | 'danger';
+      readonly Icon: typeof CheckCircle2;
+    }
+  >
 > = {
   grounded: {
-    label: 'grounded',
-    detail: 'every identifier named exists in the graph, and at least one fact was cited',
+    label: 'Grounded',
+    detail: 'every identifier named exists in the graph, and every claim is cited',
     variant: 'default',
     Icon: CheckCircle2,
   },
-  ungrounded: {
-    label: 'ungrounded',
-    detail: 'the answer named something the repository does not contain',
-    variant: 'danger',
+  'grounded-after-recovery': {
+    label: 'Grounded after evidence recovery',
+    detail:
+      'the first answer made a claim the evidence did not establish; more evidence of that kind was retrieved and the answer verified',
+    variant: 'default',
+    Icon: CheckCircle2,
+  },
+  'limited-evidence': {
+    label: 'Limited evidence',
+    detail: 'statements the repository graph does not establish were removed; what is shown is what it does establish',
+    variant: 'warning',
     Icon: AlertTriangle,
   },
   unverifiable: {
-    label: 'unverifiable',
+    label: 'Unverifiable',
     detail: 'nothing was cited, so nothing in this answer could be checked',
     variant: 'warning',
     Icon: HelpCircle,
   },
 };
 
-export function GroundingBadge({ verdict }: { readonly verdict: ChatVerdict }) {
-  const { label, detail, variant, Icon } = VERDICT[verdict];
+export function GroundingBadge({ status }: { readonly status: ChatStatus }) {
+  const { label, detail, variant, Icon } = STATUS[status];
 
   return (
     <Badge variant={variant} title={detail} className="gap-1">
@@ -57,84 +76,100 @@ export function GroundingBadge({ verdict }: { readonly verdict: ChatVerdict }) {
 }
 
 /**
- * What the model was shown.
+ * What the model was shown, and what was left out of it.
  *
- * Rendered from the first `grounding` frame, which arrives before any prose — so a reader sees the evidence
- * an answer is allowed to rest on before reading the answer.
- */
-export function ProjectionSummary({ grounding }: { readonly grounding: ChatGrounding }) {
-  return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-      <span
-        title={`${count(grounding.coreCount)} of these are the repository core, shown to the model for every question; the rest were selected for this one`}
-      >
-        <span className="tabular-nums">{count(grounding.factCount)}</span> facts
-        {grounding.coreCount > 0 && grounding.coreCount < grounding.factCount ? (
-          <span className="text-muted-foreground/70"> ({count(grounding.coreCount)} core)</span>
-        ) : null}
-      </span>
-      <span
-        title={
-          grounding.promptTokens === null
-            ? 'prompt tokens the facts cost'
-            : `whole prompt ${count(grounding.promptTokens.total)} tokens — instructions ${count(
-                grounding.promptTokens.system + grounding.promptTokens.reminder,
-              )}, repository core ${count(grounding.promptTokens.core)}, selected for this question ${count(
-                grounding.promptTokens.supplement,
-              )}, question ${count(grounding.promptTokens.question)}`
-        }
-      >
-        <span className="tabular-nums">{count(grounding.tokens)}</span> tokens
-        {grounding.promptTokens === null ? null : (
-          <span className="text-muted-foreground/70"> of {count(grounding.promptTokens.total)} in the prompt</span>
-        )}
-      </span>
-      {/*
-        What the question was taken to be about. Shown because it is the one place the system makes a
-        judgement a reader might disagree with — and if it reads "technology" beside an architecture
-        question, that is worth being able to see rather than having to infer from the answer.
-      */}
-      {grounding.intent === 'overview' ? null : <span>reading for {grounding.intent}</span>}
-      <span>tier {grounding.tier}</span>
-      <span className="font-mono" title="identity of the facts that grounded this answer">
-        {grounding.digest}
-      </span>
-      {grounding.subject === null ? null : (
-        <span className="truncate font-mono" title={grounding.subject}>
-          {grounding.subject}
-        </span>
-      )}
-    </div>
-  );
-}
-
-/**
- * What a cap left out.
+ * **One collapsed control rather than a summary line plus a warning panel.** The panel it replaces was a
+ * full-width amber box headed "These lists were incomplete when the answer was written", listing every
+ * capped fact family — and it appeared above *every* answer, because on any repository worth asking about
+ * something is always capped. It was the largest, brightest element in a normal conversation, and what it
+ * was reporting is a routine property of a bounded budget rather than a problem with the answer. A reader
+ * came to ignore it, which is the worst possible state for a warning to be in.
  *
- * The API reports `kept` against an exact `total` precisely so a cap is never silent, and an answer built on
- * forty of nine hundred dependents that did not say so would be a lie by omission. Shown in the same tone
- * as every other warning in the app.
+ * Nothing is removed: every figure the panel carried is inside, plus the retrieval detail it never had.
+ * What changes is that a normal conversation shows the question, the answer, its status and its citations,
+ * and the diagnostics are one click away for the reader who wants them.
  */
-export function OmissionSummary({ omissions }: { readonly omissions: readonly ChatOmission[] }) {
-  if (omissions.length === 0) {
-    return null;
-  }
+export function RetrievalDetails({
+  grounding,
+  recovery,
+}: {
+  readonly grounding: ChatGrounding;
+  readonly recovery?: ChatRecovery | null;
+}) {
+  const { promptTokens, omissions } = grounding;
 
   return (
-    <div className="rounded-md border border-warning/40 bg-warning/5 p-2">
-      <p className="flex items-center gap-1.5 text-[11px] font-medium text-warning">
+    <details className="rounded-md border border-border">
+      <summary className="flex cursor-pointer select-none flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1.5 text-[11px] text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <Info className="h-3 w-3" aria-hidden />
-        These lists were incomplete when the answer was written
-      </p>
-      <ul className="mt-1 flex flex-col gap-0.5">
-        {omissions.map((omission) => (
-          <li key={omission.part} className="text-[11px] text-muted-foreground">
-            <span className="font-mono">{omission.part}</span>: showing {count(omission.kept)} of{' '}
-            {count(omission.total)}
-          </li>
-        ))}
-      </ul>
-    </div>
+        <span className="font-medium">Retrieval details</span>
+        <span className="text-muted-foreground/70">
+          <span className="tabular-nums">{count(grounding.factCount)}</span> facts ·{' '}
+          <span className="tabular-nums">{count(grounding.tokens)}</span> tokens · tier {grounding.tier}
+          {grounding.intent === 'overview' ? '' : ` · reading for ${grounding.intent}`}
+        </span>
+        {/*
+          Recovery is mentioned in the summary rather than only inside, because it is the one thing here
+          that describes *this* answer rather than the budget: it is why the answer took twice as long.
+        */}
+        {recovery ? (
+          <span className="text-muted-foreground/70">· additional evidence retrieved</span>
+        ) : null}
+      </summary>
+
+      <div className="flex flex-col gap-2 border-t border-border px-2 py-2 text-[11px] text-muted-foreground">
+        <p>
+          <span className="tabular-nums">{count(grounding.coreCount)}</span> of the facts are the repository
+          core, shown to the model for every question; the rest were selected for this one.
+          {promptTokens === null
+            ? null
+            : ` The whole prompt was ${count(promptTokens.total)} tokens — instructions ${count(
+                promptTokens.system + promptTokens.reminder,
+              )}, repository core ${count(promptTokens.core)}, selected for this question ${count(
+                promptTokens.supplement,
+              )}, question ${count(promptTokens.question)}.`}
+        </p>
+
+        {recovery ? (
+          <p>
+            Verification rejected part of the first answer, so the evidence was reselected around{' '}
+            <span className="font-mono">{recovery.parts.join(', ')}</span> — {count(recovery.addedFacts)} facts
+            the first attempt did not have, for {recovery.addedTokens >= 0 ? '+' : ''}
+            {count(recovery.addedTokens)} tokens.
+            {recovery.removedStatements > 0
+              ? ` ${count(recovery.removedStatements)} statement${
+                  recovery.removedStatements === 1 ? '' : 's'
+                } the facts still did not establish ${recovery.removedStatements === 1 ? 'was' : 'were'} removed.`
+              : ''}
+          </p>
+        ) : null}
+
+        {omissions.length === 0 ? null : (
+          <div>
+            <p className="font-medium text-foreground">Capped by the budget — these lists are incomplete</p>
+            <ul className="mt-0.5 flex flex-col gap-0.5">
+              {omissions.map((omission) => (
+                <li key={omission.part}>
+                  <span className="font-mono">{omission.part}</span>: showing {count(omission.kept)} of{' '}
+                  {count(omission.total)}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <p className="flex flex-wrap gap-x-3">
+          <span className="font-mono" title="identity of the facts that grounded this answer">
+            {grounding.digest}
+          </span>
+          {grounding.subject === null ? null : (
+            <span className="truncate font-mono" title={grounding.subject}>
+              {grounding.subject}
+            </span>
+          )}
+        </p>
+      </div>
+    </details>
   );
 }
 
@@ -208,13 +243,22 @@ export function Diagnostics({ diagnostics }: { readonly diagnostics: readonly Ch
     return null;
   }
 
+  /*
+   * Collapsed, and the heading now says what *happened* rather than what failed.
+   *
+   * These are statements the pipeline removed, so the reader is not being warned about text in front of
+   * them — they are being told why the answer is shorter than it might have been. That is worth one line
+   * and a disclosure triangle, not a red panel: an alert about content that is no longer on screen reads
+   * as an alert about the content that is.
+   */
   return (
-    <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-2">
-      <p className="flex items-center gap-1.5 text-[11px] font-medium text-destructive">
+    <details className="rounded-md border border-warning/40 bg-warning/5">
+      <summary className="flex cursor-pointer select-none items-center gap-1.5 px-2 py-1.5 text-[11px] font-medium text-warning focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <AlertTriangle className="h-3 w-3" aria-hidden />
-        {reportable.length} claim{reportable.length === 1 ? '' : 's'} could not be checked against the facts
-      </p>
-      <ul className="mt-1 flex flex-col gap-1.5">
+        {reportable.length} statement{reportable.length === 1 ? '' : 's'} the facts do not establish{' '}
+        {reportable.length === 1 ? 'was' : 'were'} removed
+      </summary>
+      <ul className="flex flex-col gap-1.5 border-t border-warning/40 px-2 py-2">
         {reportable.map((entry) => (
           <li key={`${entry.kind}:${entry.subject}`} className="text-[11px]">
             <span className="font-mono text-foreground">{entry.subject}</span>
@@ -229,36 +273,7 @@ export function Diagnostics({ diagnostics }: { readonly diagnostics: readonly Ch
           </li>
         ))}
       </ul>
-    </div>
-  );
-}
-
-export function Fabrications({
-  identifiers,
-  heading = 'Named, but not present in the repository',
-}: {
-  readonly identifiers: readonly string[];
-  /** What kind of claim these were. Defaults to the identifier case, which is the stronger accusation. */
-  readonly heading?: string;
-}) {
-  if (identifiers.length === 0) {
-    return null;
-  }
-
-  return (
-    <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-2">
-      <p className="flex items-center gap-1.5 text-[11px] font-medium text-destructive">
-        <AlertTriangle className="h-3 w-3" aria-hidden />
-        {heading}
-      </p>
-      <ul className="mt-1 flex flex-col gap-0.5">
-        {identifiers.map((identifier) => (
-          <li key={identifier} className="font-mono text-[11px] text-muted-foreground">
-            {identifier}
-          </li>
-        ))}
-      </ul>
-    </div>
+    </details>
   );
 }
 

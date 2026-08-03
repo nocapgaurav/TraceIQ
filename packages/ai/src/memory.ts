@@ -326,10 +326,14 @@ function levelOf(turns: readonly Turn[], topics: number): Audience {
  * **Only where the guard actually rejected one.** A turn the caller could not label arrives as
  * `unverifiable`, which means "this client did not tell us" rather than "this failed", and treating the
  * two alike would mark every question in a session open on any caller that does not record verdicts.
+ *
+ * `limited-evidence` joins `ungrounded` because that is where the outcome went: the pipeline no longer
+ * returns an answer whose claims the facts reject — it removes them — so a session that watched only for
+ * `ungrounded` would have stopped noticing that a question had been half-answered.
  */
 function openIn(turns: readonly Turn[]): readonly string[] {
   return turns
-    .filter((turn) => turn.verdict === 'ungrounded')
+    .filter((turn) => turn.verdict === 'ungrounded' || turn.verdict === 'limited-evidence')
     .map((turn) => clip(turn.question))
     .slice(-OPEN_LIMIT);
 }

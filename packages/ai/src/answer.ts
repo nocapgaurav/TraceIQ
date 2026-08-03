@@ -9,12 +9,14 @@ import type { LanguageModel, TokenUsage } from './model.js';
 import { focusOf, intentOf, scopeOf } from './intent.js';
 import {
   assemble,
-  correctionFor,
   fixedReservedTokens,
   promptBreakdown,
+  recoveryInstruction,
   reservedTokens,
   type PromptBreakdown,
 } from './prompt.js';
+import { finalise } from './finalize.js';
+import { NO_RECOVERY, recoveryFor, type RecoveryPlan } from './recovery.js';
 import { project, subjectOf } from './projection.js';
 import { deriveProfile, subsystemsOf } from './profile.js';
 import { deriveIdentity, type RepositoryIdentity } from './identity.js';
@@ -55,12 +57,67 @@ export interface AnswerRequest {
   readonly maxOutputTokens?: number;
 }
 
+/**
+ * What a reader is being shown, in one word.
+ *
+ * **Four values rather than the guard's three, and the difference is what the pipeline now guarantees.**
+ * `GroundingVerdict` describes a *text*: whether these words are supported by these facts. It has an
+ * `ungrounded` value because a text can be unsupported. An `AnswerStatus` describes what is *returned*,
+ * and unsupported prose is no longer returned — safe finalisation removes it — so there is no
+ * `ungrounded` here and its absence is the guarantee rather than an omission.
+ */
+export const ANSWER_STATUSES = [
+  /** Verified on the first attempt. Everything shown is supported and cited. */
+  'grounded',
+  /**
+   * The first attempt made a claim its evidence did not license; targeted retrieval found the evidence,
+   * and the second attempt verified.
+   *
+   * Reported separately from `grounded` because it is the same guarantee reached at twice the cost, and a
+   * reader watching a slow answer is owed the reason. It is not a warning about the text.
+   */
+  'grounded-after-recovery',
+  /**
+   * Verification still failed after recovery, so the unsupported statements were removed.
+   *
+   * What is shown is what survived, and it verifies. What is *not* shown is reported in the diagnostics.
+   * This is the honest outcome for a question the graph half-answers, and it is a first-class result
+   * rather than a failure: a shorter true answer is the product working.
+   */
+  'limited-evidence',
+  /** Nothing was fabricated and nothing was cited either, so no claim could be checked. */
+  'unverifiable',
+] as const;
+
+export type AnswerStatus = (typeof ANSWER_STATUSES)[number];
+
+/** What one bounded evidence-recovery pass did, where one ran. */
+export interface RecoveryReport {
+  /** Fact parts the retrieval was widened to. */
+  readonly parts: readonly string[];
+  /** Why each was asked for, in the verifier's own words. */
+  readonly reasons: readonly string[];
+  /** How many facts and prompt tokens the second projection carried that the first did not. */
+  readonly addedFacts: number;
+  readonly addedTokens: number;
+  /** Statements removed by safe finalisation because they still had no evidence. */
+  readonly removedStatements: number;
+}
+
 export interface Answer {
   readonly question: string;
   readonly subject: ContextRequest;
   readonly text: string;
   /** The facts the answer referred to, resolved, so a consumer can display the evidence. */
   readonly citations: readonly Citation[];
+  /**
+   * What is being shown, and how it got here. The field a consumer renders.
+   *
+   * Never `ungrounded`: an answer that could not be supported has had the unsupported part removed before
+   * it reaches here. See `ANSWER_STATUSES` and `finalise`.
+   */
+  readonly status: AnswerStatus;
+  /** The guard's verdict on the text as returned. `grounded` or `unverifiable` by construction. */
   readonly verdict: GroundingVerdict;
   /** Identifiers the answer named that no fact contained. Empty unless the verdict is `ungrounded`. */
   readonly fabricatedIdentifiers: readonly string[];
@@ -80,13 +137,15 @@ export interface Answer {
    */
   readonly attempts: number;
   /**
-   * Why a correction ran, in the diagnostics' own words. Empty where none did.
+   * What the first attempt got wrong, in the diagnostics' own words. Empty where it got nothing wrong.
    *
-   * Kept even when the correction *succeeded*, because "this answer was rewritten once, for these reasons"
-   * is information about the model's first instinct that a reader of a repository assistant should have. It
-   * is not a warning: `verdict` says whether the answer that was returned is sound.
+   * Kept even when the second attempt succeeded, because "the model's first instinct did not verify, for
+   * these reasons" is information about this answer. It is not a warning: `status` says what is being
+   * shown.
    */
   readonly corrections: readonly string[];
+  /** What the one bounded recovery pass retrieved and what it cost. `null` where none ran. */
+  readonly recovery: RecoveryReport | null;
   readonly model: string;
   readonly stopReason: string;
   /**
@@ -187,6 +246,7 @@ export class RepositoryAnswerer {
       intent,
       parts: plan.parts,
       allocation: plan.allocation,
+      names: guidanceNames(plan),
     });
 
     if (projection.facts.length === 0) {
@@ -203,33 +263,43 @@ export class RepositoryAnswerer {
     let usage: TokenUsage = { promptTokens: null, outputTokens: null };
 
     /**
-     * The correction instruction, present only on the one rewrite an answer may receive.
+     * The regeneration instruction, present only on the one second attempt an answer may receive.
      *
      * Its being a single mutable variable rather than a list is the bound: the loop below sets it exactly
-     * once, in a branch guarded by `attempts === 1`, so there is no state in which a third generation can
+     * once, in a branch guarded by the attempt count, so there is no state in which a third generation can
      * be reached. That is deliberately stronger than a counter compared against a constant — a loop whose
      * termination depends on arithmetic is a loop somebody can widen by changing the arithmetic.
      */
-    let correction: string | undefined;
+    let regeneration: string | undefined;
     let attempts = 0;
     let corrections: readonly string[] = [];
-    /** The first attempt, kept so the better of the two can be returned. See `saferOf`. */
-    let first: { readonly text: string; readonly report: GroundingReport } | null = null;
+    let recovery: RecoveryPlan = NO_RECOVERY;
+    /** What the second projection carried that the first did not. Zero where no recovery ran. */
+    let addedFacts = 0;
+    let addedTokens = 0;
+    /** The first attempt, with the projection it was grounded against. See `saferOf`. */
+    let first: Candidate | null = null;
     let report: GroundingReport;
 
     /*
-     * retrieval → generation → verification → (one bounded correction) → verification → return.
+     * intent → retrieve → generate → verify → (one bounded evidence recovery) → verify → finalise.
      *
-     * **The outer loop runs at most twice and the second pass is not a retry.** A retry sends the same
-     * prompt again and hopes; this sends the same *facts* with the failed sentences named and the reason
-     * each failed, which is a different request. The distinction matters because the failure being
-     * corrected is not randomness — a model that wrote "authentication works through `set_secret.py`" will
-     * write it again from the same prompt, and will not write it again from a prompt that says that sentence
-     * was rejected because no fact records an authentication mechanism.
+     * **The second pass is a different retrieval, not a second try at the same one.** Its predecessor sent
+     * the model its own rejected answer and the *same facts*, and asked for something better — which for a
+     * sentence rejected as unsupported has two honest outcomes, both bad: say less, or say the same thing
+     * in words the guard does not recognise. Both were observed in production, and the UI reported the
+     * result as "rewritten once" and still ungrounded.
+     *
+     * The reason a claim is rejected is that **no fact of the licensing kind was in the projection**, and
+     * whether the graph holds one is a separate question from whether the budget reached it. So the
+     * failure is translated back into a retrieval request — see `recoveryFor` — the projection is rebuilt
+     * with those families lifted, at the same tier and against the same budget, and the model answers
+     * again from evidence it did not have. Where the failure is one retrieval cannot fix, no second pass
+     * runs at all.
      *
      * **It is not an agent loop, and the shape is what guarantees that.** There is no evaluation of whether
-     * another pass would help, no budget of attempts to spend, and no recursion: one correction, then the
-     * safer of the two answers, with the grounding warning intact if it is still unsound.
+     * another pass would help, no budget of attempts to spend, and no recursion: one recovery, then the
+     * safer of the two answers, then deterministic removal of whatever still does not verify.
      */
     for (;;) {
       attempts += 1;
@@ -248,7 +318,7 @@ export class RepositoryAnswerer {
           model: description,
           strategy,
           plan,
-          ...(correction === undefined ? {} : { correction }),
+          ...(regeneration === undefined ? {} : { recovery: regeneration }),
         };
 
         const messages = assemble(shared);
@@ -309,6 +379,7 @@ export class RepositoryAnswerer {
             intent,
             parts: plan.parts,
             allocation: plan.allocation,
+            names: guidanceNames(plan),
           });
         }
       }
@@ -317,26 +388,62 @@ export class RepositoryAnswerer {
 
       report = checkGrounding(text, projection);
 
-      // A sound answer returns immediately: a supported first pass must cost nothing extra, or the
-      // correction has made every answer slower to fix the ones that were wrong.
-      if (attempts > 1 || !worthCorrecting(report)) {
+      /*
+       * A sound answer returns immediately, and so does one nothing could be retrieved for.
+       *
+       * The first condition is the latency bound: a supported first pass must cost nothing extra, or
+       * recovery has made every answer slower in order to fix the ones that were wrong. The second is the
+       * one this milestone adds — a quality verdict and a claim of nonexistence are licensed by no fact in
+       * any projection, so a second retrieval would fetch nothing that could change the verdict and the
+       * whole generation would be spent proving that. Those answers go straight to finalisation, which
+       * removes the offending sentence in microseconds.
+       */
+      const plan_ = attempts > 1 ? NO_RECOVERY : recoveryFor(report);
+
+      if (attempts > 1 || plan_.parts.length === 0) {
         break;
       }
 
-      first = { text, report };
+      first = { text, report, projection, breakdown: lastBreakdown };
       corrections = reasonsFor(report);
+      recovery = plan_;
 
       // The first answer has already been streamed, so a consumer holding those deltas is holding prose
       // the pipeline has rejected. Telling it to discard is the only honest option.
       yield { type: 'restart', reasons: corrections };
-      yield { type: 'status', phase: 'correcting' };
+      yield { type: 'status', phase: 'recovering' };
 
-      correction = correctionFor({
-        answer: text,
+      /*
+       * The second projection: same context, same tier, same budget — different composition.
+       *
+       * **Bounded by construction rather than by a check.** `recovery` lifts the named families to the
+       * front of the priority floor and raises their per-family limit; it does not touch the tier, the
+       * reservation or the caps, so the prompt this produces is the same size as the one that failed. What
+       * changes is which facts are in it.
+       */
+      const before = new Set(projection.facts.map(tripleOf));
+      const previousTokens = projection.tokens;
+
+      projection = project(context, {
+        tier,
+        reserved,
+        coreReserved,
+        counter,
+        intent,
+        parts: plan.parts,
+        allocation: plan.allocation,
+        names: guidanceNames(plan),
+        recovery: recovery.parts,
+      });
+
+      addedFacts = projection.facts.filter((fact) => !before.has(tripleOf(fact))).length;
+      addedTokens = projection.tokens - previousTokens;
+
+      regeneration = recoveryInstruction({
         fabricated: report.fabricatedIdentifiers,
         unsupportedTerms: report.unsupportedTerms,
-        unknownCitations: report.unknownCitations,
-        claims: report.unsupportedClaims.map((finding) => ({
+        recovered: addedFacts > 0,
+        claims: recovery.claims.map((finding) => ({
           sentence: finding.sentence,
           kind: finding.kind,
           detail: finding.detail,
@@ -347,29 +454,73 @@ export class RepositoryAnswerer {
     /*
      * The safer of the two, where two exist.
      *
-     * A rewrite that still fails is not automatically an improvement, and a reader is owed whichever answer
-     * makes fewer unsupported claims. Where the original wins, it is re-streamed after a second `restart`
-     * so a consumer's screen and the returned answer agree — a `complete` carrying text a consumer never
-     * received would be a silent disagreement between the two.
+     * A second attempt that still fails is not automatically an improvement, and a reader is owed whichever
+     * answer makes fewer unsupported claims. Each candidate carries **its own projection**, because after
+     * evidence recovery the two were grounded against different fact sets — returning the first attempt's
+     * prose beside the second attempt's evidence list would show a reader citations for an answer that was
+     * not written from them.
+     *
+     * Where the first wins it is re-streamed after a `restart`, so a consumer's screen and the returned
+     * answer agree.
      */
     if (first !== null) {
-      const safer = saferOf(first, { text, report });
+      const safer = saferOf(first, { text, report, projection, breakdown: lastBreakdown });
 
       if (safer.text !== text) {
         yield {
           type: 'restart',
-          reasons: ['the rewrite made no fewer unsupported claims, so the original answer is returned'],
+          reasons: ['the second attempt made no fewer unsupported claims, so the first answer is returned'],
         };
         yield { type: 'delta', text: safer.text };
       }
 
       text = safer.text;
       report = safer.report;
+      projection = safer.projection;
+      lastBreakdown = safer.breakdown;
     }
 
-    // The answer is returned even when the guard rejects it, carrying the verdict and the fabrications.
-    // Withholding it would hide the evidence of the failure, and a caller that wants to suppress an
-    // ungrounded answer can — it has the verdict.
+    /*
+     * Safe finalisation: whatever still does not verify is removed, deterministically.
+     *
+     * **The rule this enforces is that unsupported prose is never returned.** Before it, a second failure
+     * produced the whole answer with an `ungrounded` badge and a diagnostics list of rejected strings, and
+     * left the reader to find the unsound sentences themselves. What survives here is decided by the
+     * verifier that rejected it, sentence by sentence, with no third model call — the model has by this
+     * point been wrong twice about what its evidence supports, and asking it a third time would produce a
+     * third thing to verify.
+     */
+    yield { type: 'status', phase: 'finalising' };
+
+    const finalised = finalise(text, report, projection);
+
+    if (finalised.text !== text) {
+      yield {
+        type: 'restart',
+        reasons: [
+          `${finalised.removedSentences} statement${finalised.removedSentences === 1 ? '' : 's'} the facts do not establish ${
+            finalised.removedSentences === 1 ? 'was' : 'were'
+          } removed`,
+        ],
+      };
+      yield { type: 'delta', text: finalised.text };
+    }
+
+    /*
+     * The faults are reported from the answer that had them, and the citations from the one returned.
+     *
+     * **Two reports, deliberately, because they answer two different questions.** `finalised.report`
+     * describes the text a reader is looking at: its citations, and the fact that nothing in it is
+     * unsupported. But a `limited-evidence` answer is shorter than what the model wrote, and a reader
+     * owed an explanation for that cannot get one from a report about the text that survived — it names
+     * no fabrication, because the sentence naming it was removed. Reading the faults from the rejected
+     * report is what keeps the removal visible instead of silent.
+     */
+    const rejected = report;
+
+    text = finalised.text;
+    report = finalised.report;
+
     yield {
       type: 'complete',
       answer: {
@@ -377,14 +528,25 @@ export class RepositoryAnswerer {
         subject: request.subject,
         text,
         citations: report.citations,
+        status: statusOf(report.verdict, attempts, finalised.reduced),
         verdict: report.verdict,
-        fabricatedIdentifiers: report.fabricatedIdentifiers,
-        unsupportedTerms: report.unsupportedTerms,
-        unknownCitations: report.unknownCitations,
-        diagnostics: report.diagnostics,
+        fabricatedIdentifiers: rejected.fabricatedIdentifiers,
+        unsupportedTerms: rejected.unsupportedTerms,
+        unknownCitations: rejected.unknownCitations,
+        diagnostics: rejected.diagnostics,
         grounding: summarise(projection, lastBreakdown, plan, state),
         attempts,
         corrections,
+        recovery:
+          recovery.parts.length === 0
+            ? null
+            : {
+                parts: recovery.parts,
+                reasons: recovery.reasons,
+                addedFacts,
+                addedTokens,
+                removedStatements: finalised.removedSentences,
+              },
         model: description.id,
         stopReason,
         usage,
@@ -404,6 +566,7 @@ export class RepositoryAnswerer {
       intent: intentOf(request.question),
       parts: plan.parts,
       allocation: plan.allocation,
+      names: guidanceNames(plan),
       tier: request.tier ?? tierForWindow(this.#model.describe().contextWindow),
       reserved: reservedTokens({
         question: request.question,
@@ -500,25 +663,68 @@ function strategyOf(context: RepositoryContext, question: string): ExplanationSt
 }
 
 /**
- * Whether a rejected answer is worth one rewrite.
+ * One generation's output, with everything needed to return it instead of the other one.
  *
- * **Only a failure the model can act on.** A fabricated identifier, a name no fact carries, a citation that
- * does not resolve and a sentence whose claim the facts do not license are all things the model wrote and
- * can write differently from the same evidence — so each is worth naming and asking again. `unverifiable` is
- * not: it means the answer cited nothing, which the reminder already asks for on every attempt, and
- * spending a whole second generation on a formatting habit would double the latency of every uncited answer
- * for no gain in what it claims.
+ * The projection is part of the candidate because evidence recovery replaces it: two attempts at one
+ * question are grounded against two different fact sets, and a returned answer must be reported beside the
+ * evidence it was actually written from.
  */
-function worthCorrecting(report: GroundingReport): boolean {
-  return (
-    report.fabricatedIdentifiers.length > 0 ||
-    report.unsupportedTerms.length > 0 ||
-    report.unknownCitations.length > 0 ||
-    report.unsupportedClaims.length > 0
-  );
+interface Candidate {
+  readonly text: string;
+  readonly report: GroundingReport;
+  readonly projection: ContextProjection;
+  readonly breakdown: PromptBreakdown | null;
 }
 
-/** The failures a correction is being asked to fix, in the diagnostics' own words. */
+/**
+ * What the reader is being shown, from what happened to get here.
+ *
+ * `ungrounded` is unreachable: `finalise` removed anything the report rejected, and the report here
+ * describes the text after that removal. A reduction is reported as `limited-evidence` whatever the
+ * surviving text verifies as — the fact that something was removed is the more important thing to say.
+ */
+function statusOf(verdict: GroundingVerdict, attempts: number, reduced: boolean): AnswerStatus {
+  if (reduced) {
+    return 'limited-evidence';
+  }
+
+  if (verdict === 'unverifiable') {
+    return 'unverifiable';
+  }
+
+  return attempts > 1 ? 'grounded-after-recovery' : 'grounded';
+}
+
+/**
+ * The names this plan's guidance will print, so the permitted set covers what the model is told to say.
+ *
+ * **The route and the ranking, and nothing else.** Both are the guidance naming specific things and
+ * instructing the model to name them back; both come out of `RepositoryIdentity`, which is derived from
+ * the graph, so neither can introduce a string the repository did not produce. Everything else the
+ * guidance prints — a section title, a need line, a depth rule — is prose about the answer rather than a
+ * name from the repository.
+ */
+function guidanceNames(plan: AnswerPlan): readonly string[] {
+  return [
+    ...plan.navigation.map((step) => step.target),
+    ...plan.components.map((component) => component.name),
+  ];
+}
+
+/**
+ * A fact as the triple that identifies it, for counting what one projection holds and another does not.
+ *
+ * The separator is written as an escape rather than as a literal byte: a raw NUL makes a source file
+ * binary to `grep`, which would silently defeat the boundary audits this package relies on — the same
+ * reasoning `digest` states, and the same mistake, caught by the same test.
+ */
+const SEPARATOR = '\u0000';
+
+function tripleOf(fact: { readonly subject: string; readonly predicate: string; readonly object: string }): string {
+  return [fact.subject, fact.predicate, fact.object].join(SEPARATOR);
+}
+
+/** The failures the second attempt is being asked to fix, in the diagnostics' own words. */
 function reasonsFor(report: GroundingReport): readonly string[] {
   return report.diagnostics
     .filter((entry) => entry.kind !== 'no-citations')
@@ -526,27 +732,27 @@ function reasonsFor(report: GroundingReport): readonly string[] {
 }
 
 /**
- * How much of the original an acceptable rewrite must keep.
+ * How much of the original an acceptable second attempt must keep.
  *
- * **The bound that stops a correction from becoming a truncation.** A rewrite has a trivially available way
- * to make zero unsupported claims: say almost nothing. That answer scores perfectly on every check in this
- * file and is worse for a reader than the flawed one it replaced — which is the failure §10 of the milestone
- * forbids in as many words. Two fifths is generous: a genuine correction of three sentences in a page loses
- * a few percent, and only a collapse into a summary trips it.
+ * **The bound that stops recovery from becoming a truncation.** A second attempt has a trivially available
+ * way to make zero unsupported claims: say almost nothing. That answer scores perfectly on every check in
+ * this file and is worse for a reader than the flawed one it replaced. Two fifths is generous: a genuine
+ * correction of three sentences in a page loses a few percent, and only a collapse into a summary trips it.
  */
 const DETAIL_FLOOR = 0.4;
 
 /**
  * Which of two answers is the safer thing to return.
  *
- * Two conditions, and the order matters. A rewrite that collapsed into a summary is rejected whatever it
- * scores, because a shorter answer is not a correction; among answers that kept their substance, the one
- * making fewer unsupported claims wins.
+ * Two conditions, and the order matters. A second attempt that collapsed into a summary is rejected
+ * whatever it scores, because a shorter answer is not a correction; among answers that kept their
+ * substance, the one making fewer unsupported claims wins.
  *
  * Failures are counted rather than judged, over the four categories the guard adjudicates. Ties go to the
- * **corrected** answer, because it was written knowing what had failed and the first was not.
+ * **second** answer, because it was written knowing what had failed and with the evidence recovery
+ * retrieved, and the first was written with neither.
  */
-function saferOf<T extends { readonly text: string; readonly report: GroundingReport }>(first: T, second: T): T {
+function saferOf<T extends Candidate>(first: T, second: T): T {
   const failures = (candidate: T): number =>
     candidate.report.fabricatedIdentifiers.length +
     candidate.report.unsupportedTerms.length +

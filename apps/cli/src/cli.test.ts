@@ -190,7 +190,6 @@ describe('formatting', () => {
       fields([['k', 'v']]),
     );
 
-    // eslint-disable-next-line no-control-regex
     expect(rendered).not.toMatch(/\[/);
     expect(rendered).toMatch(/^[\x20-\x7E\n]*$/);
   });

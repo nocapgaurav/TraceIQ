@@ -105,9 +105,18 @@ const HEDGE =
  * The forms below are the ways a report says "we looked and did not find it", including the passive
  * ("was not found", "were not detected") and the negated-noun form ("no route ... was found") that the
  * first version missed.
+ *
+ * **`rather than a …` was added after the guard rejected a sentence this pipeline had written itself.**
+ * `sufficiencyOf` composes the wording "the repository does read secret-shaped configuration, which is
+ * credential storage rather than an authentication flow", the guidance hands that to the model as the
+ * answer to give, and the model gave it — whereupon the secrets rule fired on the word `authentication`
+ * and the sentence was removed from the answer that had been asked for. The construction is a *denial*: it
+ * says what a thing is instead of, and drawing the distinction is the opposite of asserting the second
+ * half of it. Narrow by anchoring: the phrase must be followed by a short noun phrase, so it cannot match
+ * prose that merely contains the words.
  */
 const DISCLAIMING =
-  /\b(not (established|observed|recorded|detected|determined|confirmed|found|identified)|(was|were|is|are) not (established|observed|recorded|detected|determined|confirmed|found|identified)|does not (establish|record|show)|cannot (say|tell|establish|determine|be confirmed)|could not (be )?(determined?|established?|confirmed?|found)|no (evidence|fact|record)|no [\w\s]{1,40}(was|were) (found|detected|identified|established)|did not (identify|detect|find|establish|cover)|limitation of the analysis)\b/i;
+  /\b(not (established|observed|recorded|detected|determined|confirmed|found|identified)|(was|were|is|are) not (established|observed|recorded|detected|determined|confirmed|found|identified)|does not (establish|record|show)|cannot (say|tell|establish|determine|be confirmed)|could not (be )?(determined?|established?|confirmed?|found)|no (evidence|fact|record)|no [\w\s]{1,40}(was|were) (found|detected|identified|established)|did not (identify|detect|find|establish|cover)|limitation of the analysis|rather than an? [\w\s]{1,30}\b)/i;
 
 interface Rule {
   readonly kind: ClaimKind;
@@ -234,8 +243,22 @@ const RULES: readonly Rule[] = [
      * being conflated. Where none of those facts exists, the supportable wording is that the declaration
      * is structurally prominent in the graph — which is what the projection actually measured.
      */
+    /*
+     * Widened against three sentences a live run produced on TraceIQ, all in one answer.
+     *
+     * "sits at a critical intersection", "acts as a bridge between the persistence layer and the
+     * rendering layer" and "underpins the rest of the system" say exactly what "is the core of" says, in
+     * words the first version of this pattern did not hold — and the middle one is the most dangerous of
+     * the three, because it asserts a *relationship between two named layers* that no edge in the
+     * projection records. A mediation claim is a centrality claim with a direction: the licence it needs
+     * is the same one, a fact that puts this thing in the middle of something.
+     *
+     * The additions are all noun-phrase or verb forms of the same conflation, and each is anchored — a
+     * bridge must be *between* something, an intersection must be one the subject *sits at* — so ordinary
+     * prose using the word literally is not adjudicated.
+     */
     claim:
-      /\b(the (core|centre|center|heart|hub|nucleus|linchpin|architectural (centre|center|core))|(is|as) the (core|centre|center|heart) of|the most important (part|piece|component|module|file|declaration|class|function)|the central (component|module|piece|abstraction)|the main (component|abstraction)|architecturally central|the primary abstraction)\b/i,
+      /\b(the (core|centre|center|heart|hub|nucleus|linchpin|backbone|foundation|architectural (centre|center|core))|(is|as) the (core|centre|center|heart|backbone|foundation) of|the most important (part|piece|component|module|file|declaration|class|function)|the (central|key|main|primary) (component|module|piece|abstraction|building block)|architecturally central|the primary abstraction|(acts|serves) as (a|the) (bridge|hub|gateway|intermediary|glue)|bridges? (the gap )?between|mediates between|sits at (a|the|an) [\w\s-]{0,24}(intersection|centre|center|boundary|junction)|(critical|central) (intersection|junction)|underpins the|is critical to the|business[- ]critical|mission[- ]critical)\b/i,
     /*
      * `exists-to` is deliberately **not** a licence here, and removing it was a correction.
      *
@@ -464,6 +487,29 @@ function sentencesOf(answer: string): readonly string[] {
     .split(/(?<=[.!?])\s+(?=[A-Z`"'\[])/)
     .map((sentence) => sentence.trim())
     .filter((sentence) => sentence.length > 12);
+}
+
+/**
+ * The predicates that would license a claim of this kind.
+ *
+ * **Exported so evidence recovery can ask the question the guard asks, in reverse.** The guard asks "is
+ * there a fact of a kind that licenses this sentence?"; recovery asks "which kind of fact would have?"
+ * and goes back to the graph for it. Both must read the same table, or a recovery pass would fetch
+ * evidence the verifier does not accept — which is a slower way of failing twice.
+ *
+ * Empty for the two rules that are licensed by nothing: no wording of a quality verdict is supportable
+ * from a file listing, and no absence of evidence establishes nonexistence. Recovery correctly does
+ * nothing for those, because there is nothing to fetch.
+ */
+export function licencesFor(kind: ClaimKind): readonly Predicate[] {
+  const rule = RULES.find((candidate) => candidate.kind === kind);
+
+  return rule === undefined ? [] : [...rule.licensedBy, ...(rule.licensedByConcept ?? [])];
+}
+
+/** The answer as sentences, as every checker here reads it. Exported so finalisation splits identically. */
+export function sentences(answer: string): readonly string[] {
+  return sentencesOf(answer);
 }
 
 /** One finding as the line a diagnostic carries. */

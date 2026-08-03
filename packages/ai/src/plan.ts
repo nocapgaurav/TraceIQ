@@ -63,6 +63,16 @@ export const ANSWER_LEADS = [
   'components',
   /** One named subsystem and its place in the whole. */
   'subsystem',
+  /**
+   * The repository as a system: what it is, what it is divided into, and how the divisions meet.
+   *
+   * **Its absence was a measured failure and the most visible one in the set.** "Explain the architecture"
+   * had no lead of its own, so it fell through to whatever the repository's *type* leads with — a
+   * library's public surface, a service's request path — and received an answer shaped for a question
+   * nobody had asked. A repository-level question wants a repository-level answer whatever kind of
+   * repository it is about, and that is what this names.
+   */
+  'architecture',
   /** An ordered path through the repository for someone new to it. */
   'orientation',
   /**
@@ -335,10 +345,64 @@ const TYPE_LEAD: Readonly<Record<string, AnswerLead>> = {
  * architecture overview answers a question they did not ask. This is the clearest case of a question
  * whose need is invisible to intent classification, and it is why the planner exists.
  */
-const ORIENTATION = /\b(where (do|should|would) (i|we|you)|start|begin|beginner|new to|onboard|learn|first thing|get up to speed|orient|look at next|read next|explore next|what next|where next)\b/i;
+/*
+ * The `what … read` form was missing, and it is one of the two commonest ways the question is asked.
+ *
+ * "What should I read first?" matched nothing here — `first` on its own is far too broad to include — so
+ * it fell through to the locating lead and was answered with a file list rather than a path. The addition
+ * requires a first-person reader *and* a reading verb, which is what keeps it from swallowing "What tests
+ * should I read first?": that question names its subject between the two, so the phrase is not contiguous
+ * and the test-locating question keeps its own lead.
+ */
+const ORIENTATION =
+  /\b(where (do|should|would) (i|we|you)|(what|where) (should|do|would|can) (i|we|you) (read|open|look at|begin|start)|start|begin|beginner|new to|onboard|learn|first thing|get up to speed|orient|look at next|read next|explore next|what next|where next)\b/i;
 
-/** Questions asking which parts matter, which the importance ranking now answers directly. */
-const IMPORTANCE = /\b(most important|important|matters|key|critical|main|core|significant|biggest|central|focus on)\b/i;
+/**
+ * The lead an intent that names a *responsibility* asks for, whatever kind of repository it is asked of.
+ *
+ * Only intents that name something a system does. `technology`, `packages` and `hotspots` name things a
+ * repository is made of, and the repository's own type already knows how to introduce those.
+ */
+const RESPONSIBILITY_LEAD: Partial<Readonly<Record<QuestionIntent, AnswerLead>>> = {
+  security: 'subsystem',
+  caching: 'subsystem',
+  deployment: 'deployment',
+};
+
+/**
+ * A question explicitly asking to be walked through something, as distinct from one that merely says
+ * "how does".
+ *
+ * **The distinction the lead order needs.** "How does deployment work?" and "Walk me through the release"
+ * both match `WORKFLOW_QUESTION`; only the second is a request for a narration, and only the second should
+ * outrank the responsibility the question named. Without the split, moving the responsibility leads above
+ * the workflow check turned every narration request into a deployment answer, and leaving them below
+ * turned every "how does X work" into a workflow.
+ */
+const NARRATION = /\b(walk (me |us )?(through|thru)|step by step|end[- ]to[- ]end|lifecycle|trace (the|a|through|this))\b/i;
+
+/**
+ * What a responsibility question is about, where the question named no subsystem.
+ *
+ * The word the classifier used, in the answer's own vocabulary. It is not a focus — nothing was narrowed
+ * to a part of the repository — but the `need` line has to say what the reader asked about, and "one part
+ * of the repository" is not an answer to that.
+ */
+const INTENT_SUBJECT: Partial<Readonly<Record<QuestionIntent, string>>> = {
+  security: 'authentication and access control',
+  caching: 'caching',
+  deployment: 'how this repository is built and shipped',
+  technology: 'the technologies this repository is built with',
+};
+
+/**
+ * Questions asking which parts matter, which the importance ranking now answers directly.
+ *
+ * `major`, `primary` and `principal` were missing, so "What are the major components?" — one of the
+ * commonest ways the question is asked — fell through to whatever the repository's type leads with.
+ */
+const IMPORTANCE =
+  /\b(most important|important|matters|key|critical|main|major|primary|principal|core|significant|biggest|central|focus on)\b/i;
 
 /** Questions asking what happens, rather than what exists. */
 /*
@@ -630,16 +694,52 @@ function leadOf(input: PlanInput, scope: QuestionScope, intent: QuestionIntent, 
     return 'subsystem';
   }
 
+  // An explicit request for a narration outranks the responsibility the question happens to name, and
+  // is the only thing that does. See `NARRATION`.
+  if ((intent === 'workflow' || NARRATION.test(question)) && identity.workflows.length > 0) {
+    return 'workflow';
+  }
+
+  /*
+   * A question about a named responsibility, before the repository's own default shape.
+   *
+   * **Where the responsibility used to reach the lead by accident, and now reaches it on purpose.** "How
+   * does caching work?" used to resolve a *focus* of `caching` — because the profile derives a `caching`
+   * domain and the word was in the question — and a focus meant the subsystem lead. That was the right
+   * shape reached by the wrong mechanism, and it stopped working the moment `focusOf` learned that a word
+   * which classified a question cannot also be its subject. Reading the intent directly says the same
+   * thing without depending on whether the repository happens to name a domain after the question.
+   *
+   * Three intents, and only three: each names something a system *does* rather than something it is made
+   * of, and each already has a section template written for it. A technology or importance question is
+   * about the repository as a whole and keeps the shape its type asks for.
+   */
+  const responsibility = RESPONSIBILITY_LEAD[intent];
+
+  if (responsibility !== undefined) {
+    return responsibility;
+  }
+
+  /*
+   * A repository-wide architecture question gets the architecture shape, whatever kind of repository it
+   * is asked about.
+   *
+   * **The §9 requirement, and it has to be a lead rather than a section template.** A library's default
+   * lead is its public API and a service's is a workflow, so "explain the architecture" was answered with
+   * the surface of one and the request path of the other — both correct answers to a question nobody
+   * asked. What the reader wants is the same in either case: what the repository is, what it is divided
+   * into, what each division is responsible for, and how they meet.
+   */
+  if (intent === 'architecture') {
+    return 'architecture';
+  }
+
   if (WORKFLOW_QUESTION.test(question) && identity.workflows.length > 0) {
     return 'workflow';
   }
 
   if (IMPORTANCE.test(question) || LOCATION.test(question)) {
     return 'components';
-  }
-
-  if (intent === 'deployment') {
-    return 'deployment';
   }
 
   const byType = TYPE_LEAD[identity.profile.type.value] ?? 'components';
@@ -676,7 +776,9 @@ function needOf(input: PlanInput, lead: AnswerLead, focus: string | null, intent
 
   switch (lead) {
     case 'subsystem':
-      return `The reader is asking about ${focus ?? 'one part of the repository'} specifically. They need what it is for, what reaches it, and where it sits — not a description of the repository.`;
+      return `The reader is asking about ${focus ?? INTENT_SUBJECT[intent] ?? 'one part of the repository'} specifically. They need what it is for, what reaches it, and where it sits — not a description of the repository.`;
+    case 'architecture':
+      return 'The reader needs the repository as a system: what it is for, what it is divided into, what each division is responsible for, and how the divisions meet — with the parts the analysis could not establish named rather than filled in.';
     case 'orientation':
       return 'The reader is new to this repository and needs an ordered path into it: where to start, what to read next, and why — not an inventory of what it contains.';
     case 'locate':
@@ -734,8 +836,11 @@ function workflowsFor(
   }
 
   // Even where a workflow is not the lead, one is worth carrying: it is the cheapest way to show how
-  // the named components relate, and the components alone read as a list.
-  return intent === 'overview' || lead === 'orientation' ? identity.workflows.slice(0, 1) : [];
+  // the named components relate, and the components alone read as a list. An architecture answer is the
+  // clearest case — "how the divisions meet" is what a workflow is, where one was traced.
+  return intent === 'overview' || lead === 'orientation' || lead === 'architecture'
+    ? identity.workflows.slice(0, 1)
+    : [];
 }
 
 /**
@@ -829,7 +934,16 @@ function componentsFor(
    * declarations. The distinction matters: naming eight declarations out of React's twenty-four
    * thousand tells a reader nothing about React, while naming eight of LinkForge's is most of it.
    */
-  if (lead === 'components' || depth === 'boundaries') {
+  /*
+   * The architecture lead joins the two that name units first, and the reason is §5 rather than size.
+   *
+   * `identity.critical` is the fan-in ranking. Leading a repository-level answer with it hands the model
+   * a list of highly-referenced declarations under the heading "what this repository is divided into",
+   * which is the exact substitution — prominence presented as importance — that produced the observed
+   * failure. A repository is divided into its units; what those units point at is evidence behind that,
+   * and it still follows.
+   */
+  if (lead === 'components' || lead === 'architecture' || depth === 'boundaries') {
     return [...identity.units.slice(0, limit), ...identity.critical.slice(0, Math.max(0, limit - 4))];
   }
 
@@ -964,7 +1078,23 @@ const ABOUT_TESTS = /\b(test|tests|spec|specs|covered|covers|coverage|suite|suit
 function partsFor(lead: AnswerLead, sections: readonly PlanSection[], question: string): readonly string[] {
   const byLead: Readonly<Record<AnswerLead, readonly string[]>> = {
     workflow: ['request-flow', 'routes', 'architecture'],
-    orientation: ['packages', 'architecture-summary', 'regions'],
+    /*
+     * The repository-level families, in the order a repository-level answer is built from them.
+     *
+     * `hotspots` is deliberately absent, and the intent policy additionally caps it: a ranking of
+     * declarations is not what a repository is divided into.
+     */
+    architecture: ['purpose', 'architecture-summary', 'areas', 'packages', 'key-artifacts', 'architecture'],
+    /*
+     * `onboarding` and `key-artifacts` lead, and `hotspots` is gone.
+     *
+     * The planner's parts are applied *ahead of* the intent's — see `orderedFor` — so an orientation plan
+     * that named `packages` first outranked the `onboarding` part the locate intent had put in front, and
+     * the one family that can license a "start here" recommendation was projected after the package
+     * listing had spent the budget. Measured on TraceIQ: `onboarding` reached zero facts on the question
+     * it exists to answer.
+     */
+    orientation: ['onboarding', 'key-artifacts', 'packages', 'architecture-summary', 'regions'],
     components: ['packages', 'hotspots', 'architecture'],
     api: ['packages', 'externalPackages', 'architecture'],
     'extension-points': ['packages', 'regions', 'externalPackages'],
@@ -1090,6 +1220,8 @@ const UNKNOWN_REASON: Readonly<Record<string, string>> = {
   critical: 'no declaration could be ranked',
   units: 'no package could be derived',
   purpose: 'neither the repository type nor its domains could be established',
+  onboarding:
+    'no documentation, manifest entry point, route or separately packaged unit was found to start a reader from — and a ranking is not a starting point',
 };
 
 /**
@@ -1157,6 +1289,46 @@ const LEAD_SECTIONS: Readonly<Record<AnswerLead, readonly PlanSection[]>> = {
       evidence: ['architecture', 'composition', 'cycles'],
     },
   ],
+  /**
+   * The repository as a system.
+   *
+   * **Written to the §9 shape, and every section names the evidence that would license it.** The last one
+   * is the point of the template rather than a courtesy: a repository-level answer that does not say what
+   * it could not establish reads as complete, and completeness is the claim this analysis is least able
+   * to make. `limitations` is a part every projection carries, so the section is never dropped.
+   */
+  architecture: [
+    {
+      title: 'what this repository is',
+      purpose: 'one paragraph: what it is for, and what kind of thing it is',
+      requires: ['purpose'],
+      evidence: ['purpose', 'profile', 'areas'],
+    },
+    {
+      title: 'what it is divided into',
+      purpose: 'the applications, packages and top-level areas, with what each holds',
+      requires: ['units'],
+      evidence: ['packages', 'areas', 'regions'],
+    },
+    {
+      title: 'what each division is responsible for',
+      purpose: 'the responsibility the facts establish for each — never one inferred from its size',
+      requires: ['components'],
+      evidence: ['architecture', 'architecture-summary', 'key-artifacts'],
+    },
+    {
+      title: 'how the divisions meet',
+      purpose: 'the relationships the graph records between them, and nothing beyond them',
+      requires: ['units'],
+      evidence: ['composition', 'key-artifacts', 'request-flow', 'routes', 'cycles'],
+    },
+    {
+      title: 'what this analysis did not establish',
+      purpose: 'the parts of the architecture the evidence leaves open, named rather than filled in',
+      requires: [],
+      evidence: ['limitations'],
+    },
+  ],
   orientation: [
     {
       title: 'what this repository is',
@@ -1166,9 +1338,9 @@ const LEAD_SECTIONS: Readonly<Record<AnswerLead, readonly PlanSection[]>> = {
     },
     {
       title: 'where to start',
-      purpose: 'the first file or route to open, and why that one',
-      requires: ['entryPoints'],
-      evidence: ['architecture-summary', 'routes', 'packages'],
+      purpose: 'the first file to open, and the evidence that makes it a starting point',
+      requires: ['onboarding'],
+      evidence: ['onboarding', 'key-artifacts'],
     },
     {
       title: 'what to read after that',
@@ -1176,11 +1348,20 @@ const LEAD_SECTIONS: Readonly<Record<AnswerLead, readonly PlanSection[]>> = {
       requires: ['units'],
       evidence: ['packages', 'regions'],
     },
+    /*
+     * **`hotspots` used to be this section's evidence, and that was the §5 failure in a table.**
+     *
+     * It asked for "the declarations everything else points at" — a fan-in ranking — under a heading that
+     * tells a reader to go and inspect them. The most-referenced declaration in a repository is the worst
+     * possible thing to read third: it is referenced by everything precisely because it assumes
+     * everything. What makes a file worth inspecting early is that a document links to it, a manifest
+     * declares it, or a route enters through it, and `onboarding` is the part that carries exactly those.
+     */
     {
       title: 'what to inspect once the shape is clear',
-      purpose: 'the declarations everything else points at',
-      requires: ['critical'],
-      evidence: ['purpose', 'hotspots'],
+      purpose: 'the entry points and documented files a reader can open next, and why each is one',
+      requires: ['onboarding'],
+      evidence: ['onboarding', 'routes', 'key-artifacts'],
     },
     {
       title: 'what to understand last',
@@ -1493,6 +1674,15 @@ function carries(identity: RepositoryIdentity, field: string): boolean {
       return identity.critical.length > 0;
     case 'units':
       return identity.units.length > 0;
+    /*
+     * A plain array of steps rather than an `Evidenced` list, so the default branch cannot read it.
+     *
+     * It is the field the orientation template now rests on, and a silent `false` here would have dropped
+     * both of its recommendation sections on every repository — the honest-looking version of the bug
+     * this milestone is fixing.
+     */
+    case 'onboarding':
+      return identity.onboarding.length > 0;
     default:
       return listValue(identity, field as keyof RepositoryIdentity).length > 0;
   }
@@ -1699,6 +1889,15 @@ function tasksIn(question: string, scopeInput: { readonly question: string; read
  */
 const LEAD_ALLOCATION: Readonly<Record<AnswerLead, FactAllocation>> = {
   workflow: { architecture: 0.25, workflow: 0.4, components: 0.25, supporting: 0.1 },
+  /*
+   * A repository-level answer is mostly architecture-group evidence, and that is not a tautology.
+   *
+   * The group holds the purpose, the area map, the artefact digests and the role summary — everything
+   * that says what the repository *is*. `components` is half what a components answer gets, because the
+   * package listing is a division of the repository rather than a ranking of it, and the ranking itself
+   * is capped by the intent policy regardless of what this table says.
+   */
+  architecture: { architecture: 0.5, workflow: 0.15, components: 0.25, supporting: 0.1 },
   components: { architecture: 0.35, workflow: 0.1, components: 0.45, supporting: 0.1 },
   /*
    * A route is mostly units and declarations, and only its last step is a workflow.

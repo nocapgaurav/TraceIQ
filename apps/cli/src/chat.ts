@@ -1,4 +1,7 @@
-import { RepositoryAnswerer, type Answer, type ContextSource, type GroundingVerdict, type LanguageModel } from '@traceiq/ai';
+import { RepositoryAnswerer, type Answer, type ContextSource, type Turn, type LanguageModel } from '@traceiq/ai';
+
+/** How a turn is labelled for the session's own record. See `Turn.verdict`. */
+type TurnLabel = Turn['verdict'];
 import type { ContextRequest } from '@traceiq/context';
 import type { NodeId } from '@traceiq/types';
 
@@ -51,14 +54,24 @@ export function paint(text: string, colour: keyof typeof ANSI, enabled: boolean)
 }
 
 /**
- * A verdict, as a word and a colour.
+ * What the reader is being shown, as a phrase and a colour.
  *
- * The verdict is never omitted and never softened: an ungrounded answer says so on the line after it.
+ * Never omitted and never softened. `ungrounded` is gone from the vocabulary because it is gone from the
+ * pipeline: an answer whose claims the facts do not license has had those claims removed before it
+ * reaches here, and what it says instead is `limited evidence` — with the removal explained on the line
+ * below rather than left for the reader to find.
  */
-export function renderVerdict(verdict: string, colour: boolean): string {
-  const tone = verdict === 'grounded' ? 'green' : verdict === 'ungrounded' ? 'red' : 'yellow';
+const STATUS_LABEL: Readonly<Record<string, { readonly label: string; readonly tone: 'green' | 'yellow' }>> = {
+  grounded: { label: 'grounded', tone: 'green' },
+  'grounded-after-recovery': { label: 'grounded after evidence recovery', tone: 'green' },
+  'limited-evidence': { label: 'limited evidence', tone: 'yellow' },
+  unverifiable: { label: 'unverifiable', tone: 'yellow' },
+};
 
-  return paint(verdict, tone, colour);
+export function renderVerdict(status: string, colour: boolean): string {
+  const held = STATUS_LABEL[status] ?? { label: status, tone: 'yellow' as const };
+
+  return paint(held.label, held.tone, colour);
 }
 
 /** The grounding line shown before an answer begins. */
@@ -120,7 +133,7 @@ export async function runChat(source: ContextSource, io: Io, options: ChatOption
     `${paint(`model ${description.id} · ${description.contextWindow} token window · subject ${describeSubject(options.subject)}`, 'dim', options.colour)}\n\n`,
   );
 
-  const turns: { question: string; answer: string; verdict: GroundingVerdict }[] = [];
+  const turns: { question: string; answer: string; verdict: TurnLabel }[] = [];
   let subject = options.subject;
   let failures = 0;
 
@@ -185,7 +198,7 @@ export async function runChat(source: ContextSource, io: Io, options: ChatOption
 interface AskInput {
   readonly question: string;
   readonly subject: ContextRequest;
-  readonly turns: readonly { question: string; answer: string; verdict: GroundingVerdict }[];
+  readonly turns: readonly { question: string; answer: string; verdict: TurnLabel }[];
   readonly colour: boolean;
   readonly onInterrupt?: (handler: () => void) => () => void;
 }
@@ -194,7 +207,7 @@ async function ask(
   answerer: RepositoryAnswerer,
   io: Io,
   input: AskInput,
-): Promise<{ readonly failed: boolean; readonly text: string; readonly verdict: GroundingVerdict }> {
+): Promise<{ readonly failed: boolean; readonly text: string; readonly verdict: TurnLabel }> {
   const controller = new AbortController();
   let cancelled = false;
 
@@ -217,7 +230,7 @@ async function ask(
    * session that reported every turn as `unverifiable` would report every question as unanswered. The
    * REPL has the verdict on the `complete` event; nothing but inattention was dropping it.
    */
-  let verdict: GroundingVerdict = 'unverifiable';
+  let verdict: TurnLabel = 'unverifiable';
 
   try {
     for await (const event of answerer.answer(
@@ -266,7 +279,7 @@ async function ask(
          */
         text = '';
         io.write(
-          `\n\n${paint('— the answer above was rejected and is being rewritten —', 'yellow', input.colour)}\n` +
+          `\n\n${paint('— the answer above was rejected and is being replaced —', 'yellow', input.colour)}\n` +
             event.reasons
               .slice(0, 3)
               .map((reason) => `${paint(`  ${reason}`, 'dim', input.colour)}\n`)
@@ -274,7 +287,14 @@ async function ask(
             '\n',
         );
       } else {
-        verdict = event.answer.verdict;
+        /*
+         * The *status*, not the guard's verdict, and only where the two differ.
+         *
+         * A `limited-evidence` answer's returned text verifies — the unsupported statements were removed —
+         * so recording `answer.verdict` would tell the session the question was fully answered when part of
+         * it was withdrawn. `openIn` reads this to decide what the session still owes.
+         */
+        verdict = event.answer.status === 'limited-evidence' ? 'limited-evidence' : event.answer.verdict;
         io.write(`\n\n${renderFooter(event.answer, input.colour)}\n\n`);
       }
     }
@@ -304,22 +324,32 @@ function renderFooter(answer: Answer, colour: boolean): string {
       : ` · ${answer.usage.promptTokens ?? '?'} prompt / ${answer.usage.outputTokens ?? '?'} output tokens`;
 
   lines.push(
-    `${paint('verdict', 'dim', colour)} ${renderVerdict(answer.verdict, colour)}` +
+    `${paint('status', 'dim', colour)} ${renderVerdict(answer.status, colour)}` +
       paint(` · ${answer.model} · ${answer.stopReason}${usage}`, 'dim', colour),
   );
 
-  if (answer.attempts > 1) {
-    // The rewrite is reported whether or not it worked: that the model's first instinct was rejected is
-    // information about this answer, and it also explains why it took twice as long to arrive.
+  if (answer.recovery !== null) {
+    // What the second retrieval went back for, and what it cost. Reported rather than announced: it
+    // explains a doubled wait, and it is the one place the bound on recovery is observable.
     lines.push(
       paint(
-        `  rewritten once after verification rejected ${answer.corrections.length} ${
-          answer.corrections.length === 1 ? 'claim' : 'claims'
-        }`,
+        `  additional evidence retrieved: ${answer.recovery.parts.join(', ')} · +${answer.recovery.addedFacts} facts`,
+        'dim',
+        colour,
+      ),
+    );
+  }
+
+  if (answer.recovery !== null && answer.recovery.removedStatements > 0) {
+    lines.push(
+      paint(
+        `  ${answer.recovery.removedStatements} statement${answer.recovery.removedStatements === 1 ? '' : 's'} the facts do not establish removed`,
         'yellow',
         colour,
       ),
     );
+  } else if (answer.status === 'limited-evidence') {
+    lines.push(paint('  statements the facts do not establish were removed', 'yellow', colour));
   }
 
   if (answer.fabricatedIdentifiers.length > 0) {

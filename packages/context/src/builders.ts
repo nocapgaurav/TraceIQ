@@ -6,9 +6,7 @@ import type {
   ContextDependencies,
   ContextHealth,
   ContextImpact,
-  ContextPart,
   ContextReferences,
-  ImpactSummary,
   Limitation,
   LimitationCode,
   RelatedNode,
@@ -33,17 +31,6 @@ import type {
  */
 export const RELATED_LIMIT = 100;
 export const EXPLAIN_LIMIT = 5;
-
-export interface BuildParts {
-  readonly related: readonly RelatedNode[];
-  readonly references: ContextReferences;
-  readonly dependencies: ContextDependencies;
-  readonly impact: ContextImpact;
-  readonly routes: readonly RouteResult[];
-  readonly health: ContextHealth;
-  readonly limitations: readonly Limitation[];
-  readonly parts: readonly ContextPart[];
-}
 
 export const NO_REFERENCES: ContextReferences = {
   incomingCalls: [],
@@ -157,16 +144,6 @@ const DECLARATION_KINDS = new Set<string>([
   'Variable',
   'Namespace',
 ]);
-
-export function impactSummary(input: {
-  readonly directlyAffected: number;
-  readonly indirectlyAffected: number;
-  readonly unknown: number;
-  readonly maxDepth: number;
-  readonly routesAffected: number;
-}): ImpactSummary {
-  return input;
-}
 
 /**
  * A file's condition, from the counts its own view reports.

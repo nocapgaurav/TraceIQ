@@ -203,9 +203,12 @@ describe('rendering', () => {
 
   it('colours a verdict by its meaning and never hides it', () => {
     expect(renderVerdict('grounded', false)).toBe('grounded');
-    expect(renderVerdict('ungrounded', false)).toBe('ungrounded');
+    // `ungrounded` is gone from the vocabulary because it is gone from the pipeline: unsupported claims
+    // are removed before an answer is returned, and what is shown instead says so.
+    expect(renderVerdict('limited-evidence', false)).toBe('limited evidence');
+    expect(renderVerdict('grounded-after-recovery', false)).toBe('grounded after evidence recovery');
     expect(renderVerdict('unverifiable', false)).toBe('unverifiable');
-    expect(renderVerdict('grounded', true)).not.toBe(renderVerdict('ungrounded', true));
+    expect(renderVerdict('grounded', true)).not.toBe(renderVerdict('limited-evidence', true));
   });
 
   it('reports every omission, so a cap is never silent in the terminal either', () => {
@@ -311,13 +314,13 @@ describe('the REPL', () => {
       lines: linesOf('q', '/exit'),
     });
 
-    expect(io.text()).toContain('verdict grounded');
+    expect(io.text()).toContain('status grounded');
     expect(io.text()).toContain('test:1b');
     expect(io.text()).toContain('complete');
     expect(io.text()).toMatch(/\d+ prompt \/ \d+ output tokens/);
   });
 
-  it('names a fabricated identifier rather than presenting the answer as sound', async () => {
+  it('removes a fabricated identifier and names it, rather than printing the sentence', async () => {
     const io = recorder();
 
     await runChat(new FakeContextSource(context()), io, {
@@ -327,9 +330,11 @@ describe('the REPL', () => {
       lines: linesOf('q', '/exit'),
     });
 
-    expect(io.text()).toContain('verdict ungrounded');
-    expect(io.text()).toContain('sym:invented.ts#Nope');
-    expect(io.text()).toContain('invented, and not in the graph');
+    expect(io.text()).toContain('status limited evidence');
+    // Named in the footer, which is where the evidence of the failure belongs — and not left in the prose,
+    // which is where a reader would mistake it for a finding.
+    expect(io.text()).toContain('invented, and not in the graph: sym:invented.ts#Nope');
+    expect(io.text()).toContain('1 statement the facts do not establish removed');
   });
 
   it('says so when an answer cited nothing', async () => {
@@ -342,7 +347,7 @@ describe('the REPL', () => {
       lines: linesOf('q', '/exit'),
     });
 
-    expect(io.text()).toContain('verdict unverifiable');
+    expect(io.text()).toContain('status unverifiable');
     expect(io.text()).toContain('no facts were cited');
   });
 
@@ -583,7 +588,6 @@ describe('failures', () => {
         capabilities: new Set(['system-prompt'] as const),
       }),
       tokens: { count: (text: string) => Math.ceil(text.length / 3.6) },
-      // eslint-disable-next-line @typescript-eslint/require-await
       async *generate() {
         attempt += 1;
 

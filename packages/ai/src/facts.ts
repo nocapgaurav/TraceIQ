@@ -495,19 +495,47 @@ function isProseAcronym(term: string): boolean {
   );
 }
 
-/** Everything the projection lets an answer name, beyond the graph's own identifiers. */
-export function termsOf(values: Iterable<string>): ReadonlySet<string> {
-  const terms = new Set<string>();
+/**
+ * Every way a repository-relative path may honestly be written, derived from the path itself.
+ *
+ * **One canonicalisation, used by the projection that builds the permitted set and by nothing else, so
+ * generation, facts and verification share an identity system rather than three conventions.** The
+ * failures this closes were all the same shape: the facts carried
+ * `sym:packages/graph-api/src/graph-api.ts#GraphApi`, the answer said the repository has a package called
+ * `packages/graph-api`, and the verifier — which held whole paths and basenames but no directory — called
+ * a true sentence an invention. Four of the seven rejected names in one observed answer were directories
+ * of files the projection had just shown the model.
+ *
+ * **Every alias is a prefix of something the graph holds, which is what keeps this from being fuzzy
+ * matching.** A directory containing a known file is a known location; `packages/graph-api` is admitted
+ * because a file under it was, and `packages/graph-apis` is not admitted by anything. Nothing here
+ * matches on similarity, edit distance or shared words, so a name the repository does not contain cannot
+ * become acceptable by resembling one that it does.
+ */
+export function pathAliases(path: string): readonly string[] {
+  const clean = path.replace(/^\.\//, '').replace(/^\/+/, '');
 
-  for (const value of values) {
-    const trimmed = value.trim();
-
-    if (trimmed !== '') {
-      terms.add(trimmed.toLowerCase());
-    }
+  if (clean === '') {
+    return [];
   }
 
-  return terms;
+  const segments = clean.split('/').filter((segment) => segment !== '');
+  const aliases: string[] = [clean];
+
+  // The basename, which is how prose refers to a file: nobody writes the whole path in a sentence.
+  const basename = segments.at(-1);
+
+  if (basename !== undefined && basename !== clean) {
+    aliases.push(basename);
+  }
+
+  // Every directory that contains it. Each one is a location the graph established by holding a file
+  // inside it, and each one is what an answer calls a package, an area or a module.
+  for (let depth = 1; depth < segments.length; depth += 1) {
+    aliases.push(segments.slice(0, depth).join('/'));
+  }
+
+  return aliases;
 }
 
 /**

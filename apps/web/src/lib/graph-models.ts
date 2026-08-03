@@ -1,5 +1,5 @@
 import { filePathOf, symbolName } from '@/lib/format';
-import { COLUMN_WIDTH, layerByLongestPath, place, type Layout, type LayoutEdge } from '@/lib/graph-layout';
+import { layerByLongestPath, place, type Layout, type LayoutEdge } from '@/lib/graph-layout';
 import type { ArchitectureNavigation, ImpactAnalysis } from '@/types/api';
 
 /**
@@ -94,9 +94,4 @@ export function impactGraph(analysis: ImpactAnalysis): Layout {
     }));
 
   return { nodes, edges, total, truncated: total > nodes.length };
-}
-
-/** The width a canvas needs to show a layout without scrolling horizontally. */
-export function layoutWidth(layout: Layout): number {
-  return layout.nodes.reduce((widest, node) => Math.max(widest, node.x), 0) + COLUMN_WIDTH;
 }

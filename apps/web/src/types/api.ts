@@ -847,8 +847,31 @@ export interface ChatGrounding {
 
 export type ChatVerdict = 'grounded' | 'ungrounded' | 'unverifiable';
 
+/**
+ * What the reader is being shown, and how it got here.
+ *
+ * **Distinct from `ChatVerdict`, and the difference is a guarantee rather than a rename.** A verdict
+ * describes a text: whether these words are supported by these facts, which is why it has an `ungrounded`
+ * value. A status describes what the pipeline *returned*, and unsupported prose is no longer returned —
+ * the claims the verifier rejected are removed before the answer leaves the server. So there is no
+ * `ungrounded` status, and `limited-evidence` is that removal reported.
+ */
+export type ChatStatus = 'grounded' | 'grounded-after-recovery' | 'limited-evidence' | 'unverifiable';
+
+/** What one bounded evidence-recovery pass retrieved, and what it cost. */
+export interface ChatRecovery {
+  /** Fact families the retrieval was widened to. */
+  readonly parts: readonly string[];
+  /** Why each was asked for, in the verifier's own words. */
+  readonly reasons: readonly string[];
+  readonly addedFacts: number;
+  readonly addedTokens: number;
+  /** Statements removed because the evidence still did not establish them. */
+  readonly removedStatements: number;
+}
+
 export interface ChatDiagnostic {
-  readonly kind: 'fabricated-identifier' | 'unsupported-term' | 'unknown-citation' | 'no-citations';
+  readonly kind: 'fabricated-identifier' | 'unsupported-term' | 'unknown-citation' | 'no-citations' | 'unsupported-claim';
   readonly subject: string;
   readonly detail: string;
   /** The closest names the projection did carry, where any were close. */
@@ -859,6 +882,9 @@ export interface ChatAnswer {
   readonly question: string;
   readonly subject: ChatSubject;
   readonly text: string;
+  /** What is being shown, and how it got here. The field the UI renders. */
+  readonly status: ChatStatus;
+  /** The guard's verdict on the text as returned. `grounded` or `unverifiable` by construction. */
   readonly verdict: ChatVerdict;
   readonly citations: readonly ChatCitation[];
   /** Identifiers the answer named that no fact contained. Empty unless the verdict is `ungrounded`. */
@@ -887,8 +913,10 @@ export interface ChatAnswer {
    * information a reader of a repository assistant should have even when the second one is sound.
    */
   readonly attempts: number;
-  /** Why the correction ran, in the verifier's own words. Empty where none did. */
+  /** What the first attempt got wrong, in the verifier's own words. Empty where it got nothing wrong. */
   readonly corrections: readonly string[];
+  /** What the one bounded recovery pass retrieved. `null` where none ran. */
+  readonly recovery: ChatRecovery | null;
   readonly model: string;
   readonly stopReason: string;
   readonly usage: { readonly promptTokens: number | null; readonly outputTokens: number | null };
@@ -943,8 +971,13 @@ export type ChatPhase =
   | 'awaiting-model'
   | 'generating'
   | 'verifying'
-  /** The first answer was rejected and one bounded rewrite is being generated. At most once per answer. */
-  | 'correcting';
+  /**
+   * The first answer was rejected, the evidence has been reselected around the kinds of fact its claims
+   * needed, and the answer is being generated once more. At most once per answer.
+   */
+  | 'recovering'
+  /** Verification has finished and whatever it rejected is being removed. */
+  | 'finalising';
 
 export type ChatEvent =
   | { readonly type: 'open'; readonly model: string | null; readonly contextWindow: number | null }
@@ -952,7 +985,7 @@ export type ChatEvent =
   | { readonly type: 'grounding'; readonly grounding: ChatGrounding }
   | { readonly type: 'delta'; readonly text: string }
   /**
-   * Discard the prose so far: verification rejected it and a rewrite is coming.
+   * Discard the prose so far: verification rejected it and replacement text is coming.
    *
    * A client that ignores this still ends up correct, because `complete` carries the final text — it just
    * shows a rejected answer for longer than it needs to.
