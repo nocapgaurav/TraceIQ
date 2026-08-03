@@ -4,6 +4,11 @@
   "private": true,
   "type": "module",
   "description": "Repository Intelligence Platform. Know Your Codebase.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nocapgaurav/TraceIQ.git"
+  },
   "engines": {
     "node": ">=22"
   },
