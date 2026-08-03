@@ -44,6 +44,7 @@ const GROUNDING = {
   intent: 'overview',
   tier: 'standard',
   tokens: 1920,
+  promptTokens: null,
   digest: 'c0a8bdfbb1fe2e3f',
   omissions: [{ part: 'cycles', kept: 15, total: 18 }],
 };
@@ -58,6 +59,7 @@ const ANSWER = {
   ],
   fabricatedIdentifiers: [],
   unsupportedTerms: [],
+  diagnostics: [],
   unknownCitations: [],
   grounding: GROUNDING,
   model: 'test:1b',
@@ -91,6 +93,13 @@ describe('parseFrame', () => {
     expect(parseFrame(`event: grounding\ndata: ${JSON.stringify(GROUNDING)}`)).toMatchObject({ type: 'grounding' });
     expect(parseFrame('event: delta\ndata: {"text":"hi"}')).toEqual({ type: 'delta', text: 'hi' });
     expect(parseFrame(`event: complete\ndata: ${JSON.stringify(ANSWER)}`)).toMatchObject({ type: 'complete' });
+    // `restart` says the prose already streamed has been rejected. A client that drops it still ends up
+    // correct, because `complete` carries the final text — it just shows a rejected answer for longer.
+    expect(parseFrame('event: restart\ndata: {"reasons":["presence-as-quality: …"]}')).toEqual({
+      type: 'restart',
+      reasons: ['presence-as-quality: …'],
+    });
+    expect(parseFrame('event: restart\ndata: {}')).toEqual({ type: 'restart', reasons: [] });
   });
 
   it('reads an error frame with its partial text', () => {

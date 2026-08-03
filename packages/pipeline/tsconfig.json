@@ -11,6 +11,7 @@
     { "path": "../types" },
     { "path": "../scanner" },
     { "path": "../technology" },
+    { "path": "../artifact" },
     { "path": "../analyzer" },
     { "path": "../python" },
     { "path": "../java" },

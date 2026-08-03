@@ -217,6 +217,7 @@ export function node(input: {
     language: null,
     fileRole: null,
     category: null,
+    artifactKind: null,
     confidence: input.confidence ?? 'CERTAIN',
     provenance: {
       producer: 'graph-builder',

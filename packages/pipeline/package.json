@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@traceiq/analyzer": "workspace:*",
+    "@traceiq/artifact": "workspace:*",
     "@traceiq/call-graph": "workspace:*",
     "@traceiq/framework": "workspace:*",
     "@traceiq/go": "workspace:*",

@@ -1,9 +1,18 @@
 import { describe, expect, it } from 'vitest';
 
 import { NO_HISTORY, recentTurns, type Conversation, type Turn } from './conversation.js';
-import { symbolContext, wideSymbolContext } from './fixtures.test-helper.js';
+import { repositoryContext, symbolContext, wideSymbolContext } from './fixtures.test-helper.js';
 import { estimatingCounter } from './budget.js';
-import { FACTS_CLOSE, FACTS_OPEN, SYSTEM_PROMPT, assemble, renderFacts, renderHistory, reservedTokens } from './prompt.js';
+import {
+  FACTS_CLOSE,
+  FACTS_OPEN,
+  SYSTEM_PROMPT,
+  assemble,
+  promptBreakdown,
+  renderFacts,
+  renderHistory,
+  reservedTokens,
+} from './prompt.js';
 import { project } from './projection.js';
 
 const projection = project(symbolContext(), { tier: 'full' });
@@ -72,10 +81,17 @@ describe('renderFacts', () => {
 
 describe('the standing instruction', () => {
   it('states the four rules an answer must satisfy', () => {
-    expect(SYSTEM_PROMPT).toContain('Use only the facts given');
+    /*
+     * One assertion per rule, so rewording the instruction is allowed and deleting a rule is not.
+     *
+     * The wording changed when the instruction was compressed from 738 tokens to 538 — behavioural
+     * guidance moved into the facts, which now carry a technology's responsibility and a layer's
+     * members. Every rule below survived that edit; these assertions are what proved it.
+     */
+    expect(SYSTEM_PROMPT).toContain('Use only these facts');
     expect(SYSTEM_PROMPT).toContain('Cite every claim');
-    expect(SYSTEM_PROMPT).toContain('Never invent an identifier');
-    expect(SYSTEM_PROMPT).toContain('the facts are incomplete');
+    expect(SYSTEM_PROMPT).toContain('Invent nothing');
+    expect(SYSTEM_PROMPT).toContain('say the list is incomplete');
   });
 
   it('declares the fact region to be data, not instructions', () => {
@@ -85,7 +101,7 @@ describe('the standing instruction', () => {
   it('forbids writing code, because no source text is available to the model', () => {
     // A real 7B model invented an `export interface …` block on the first live run. The rule was
     // strengthened from "do not speculate" to an explicit prohibition in response.
-    expect(SYSTEM_PROMPT).toContain('You have not seen any source code');
+    expect(SYSTEM_PROMPT).toContain('You have seen no source code');
     expect(SYSTEM_PROMPT).toContain('Never write, quote or reconstruct');
   });
 
@@ -186,5 +202,57 @@ describe('reservedTokens', () => {
     });
 
     expect(withHistory).toBeGreaterThan(bare);
+  });
+});
+
+describe('prompt size is measured, not estimated', () => {
+  /**
+   * The instrumentation exists because "reduce the prompt" cannot be acted on without it. These assert
+   * that the accounting adds up and that it attributes cost to the right place — a breakdown that
+   * disagreed with the prompt it describes would send the next round of compression somewhere useless.
+   */
+  const model = {
+    id: 'test',
+    contextWindow: 16_384,
+    maxOutputTokens: null,
+    capabilities: new Set(['system-prompt'] as const),
+  };
+
+  it('accounts for every section, and the parts sum to the total', () => {
+    const projection = project(repositoryContext(), { tier: 'standard' });
+    const breakdown = promptBreakdown({ question: 'What are the main packages?', projection, model });
+    const parts =
+      breakdown.system +
+      breakdown.reminder +
+      breakdown.repositoryGuidance +
+      breakdown.questionGuidance +
+      breakdown.scaffolding +
+      breakdown.core +
+      breakdown.supplement +
+      breakdown.omissions +
+      breakdown.question +
+      breakdown.history;
+
+    expect(breakdown.total).toBe(parts);
+    expect(breakdown.total).toBeGreaterThan(0);
+  });
+
+  it('attributes tokens to the predicate that spent them', () => {
+    const projection = project(repositoryContext(), { tier: 'standard' });
+    const breakdown = promptBreakdown({ question: 'q', projection, model });
+    const factTokens = breakdown.byPredicate.reduce((sum, entry) => sum + entry.tokens, 0);
+
+    expect(factTokens).toBe(breakdown.core + breakdown.supplement);
+    // Largest first, because the point is to say where compression would pay.
+    expect(breakdown.byPredicate.map((entry) => entry.tokens)).toEqual(
+      [...breakdown.byPredicate.map((entry) => entry.tokens)].sort((left, right) => right - left),
+    );
+  });
+
+  it('keeps limitations to one fact, which was a fifth of the prompt as seventeen', () => {
+    const projection = project(repositoryContext(), { tier: 'standard' });
+    const limitations = projection.facts.filter((fact) => fact.predicate === 'limitation');
+
+    expect(limitations.length).toBeLessThanOrEqual(1);
   });
 });

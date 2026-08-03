@@ -17,9 +17,27 @@ export const BUDGET_TIERS = ['minimal', 'standard', 'full'] as const;
 
 export type BudgetTier = (typeof BUDGET_TIERS)[number];
 
+/**
+ * `standard` came down from 6,000, and the justification is latency measured against information kept.
+ *
+ * A projection always spends its budget, so compressing facts alone changes nothing about prompt size —
+ * it changes how much fits. Once limitations went from 1,081 tokens to 160, technology evidence was cut
+ * to its checkable clause and region groups stopped repeating a fixed sentence about their own depth,
+ * the same repository knowledge needed far fewer tokens to state. Lowering the ceiling is what turns
+ * that into a faster answer instead of simply more facts.
+ *
+ * The number is chosen against the clock. Prompt evaluation on the reference stack runs near 50 tokens
+ * per second, so every 1,000 prompt tokens is about 20 seconds before the first word appears; 6,000
+ * tokens of facts meant a cold answer began after roughly two minutes. 3,400 puts a common question's
+ * whole prompt — instruction, facts, question — at about 3,300 tokens and its cold first token near
+ * one minute, which is the difference between waiting and giving up.
+ *
+ * `full` is unchanged and still reachable by a deployment that raises `TRACEIQ_MODEL_CONTEXT`; nothing
+ * here caps what a larger machine may do.
+ */
 export const TIER_TOKENS: Readonly<Record<BudgetTier, number>> = {
   minimal: 1_500,
-  standard: 6_000,
+  standard: 3_400,
   full: 24_000,
 };
 

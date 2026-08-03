@@ -40,9 +40,38 @@ export interface WireGrounding {
   readonly tier: string;
   /** Prompt tokens the facts cost, as the model's counter measured them. */
   readonly tokens: number;
+  /**
+   * Where the whole prompt's tokens went, **by section**.
+   *
+   * Section totals only. The library's breakdown also attributes tokens per fact predicate, which is
+   * what an engineer compressing a prompt needs and is exactly the kind of AI-layer internal this
+   * boundary exists to keep off the wire — `apps/api/src/chat.test.ts` fails the build if a `facts`
+   * array reaches a client, and it caught this.
+   */
+  readonly promptTokens: WirePromptTokens | null;
   /** Identity of the facts that grounded this answer. Two equal digests ground identically. */
   readonly digest: string;
   readonly omissions: readonly WireOmission[];
+}
+
+export interface WirePromptTokens {
+  readonly total: number;
+  readonly system: number;
+  readonly reminder: number;
+  readonly scaffolding: number;
+  readonly core: number;
+  readonly supplement: number;
+  readonly omissions: number;
+  readonly question: number;
+  readonly history: number;
+  /**
+   * The compressed session — what has been covered, what the conversation is about, what is left.
+   *
+   * **Reported because it is what replaced `history`, which used to grow without bound.** A client
+   * watching a long session should be able to see that this stays flat while the answers stay long;
+   * before conversation memory, `history` was the number that ended the session.
+   */
+  readonly conversation: number;
 }
 
 export interface WireAnswer {
@@ -56,7 +85,18 @@ export interface WireAnswer {
   /** Package, framework and dependency names the answer claimed that no fact carried. */
   readonly unsupportedTerms: readonly string[];
   readonly unknownCitations: readonly string[];
+  /** Why the verdict is what it is: what was rejected, what it was checked against, what was near it. */
+  readonly diagnostics: Answer['diagnostics'];
   readonly grounding: WireGrounding;
+  /**
+   * How many generations produced this answer: `1` normally, `2` where one correction ran.
+   *
+   * On the wire because it is the only way a client can tell a slow model from a rejected answer, and
+   * because it is the field that makes the "at most one correction" bound observable from outside.
+   */
+  readonly attempts: number;
+  /** Why the correction ran, in the diagnostics' own words. Empty where none did. */
+  readonly corrections: readonly string[];
   readonly model: string;
   readonly stopReason: string;
   readonly usage: { readonly promptTokens: number | null; readonly outputTokens: number | null };
@@ -71,12 +111,29 @@ export function wireGrounding(grounding: GroundingSummary): WireGrounding {
     intent: grounding.intent,
     tier: grounding.tier,
     tokens: grounding.tokens,
+    promptTokens: grounding.promptTokens === null ? null : sections(grounding.promptTokens),
     digest: grounding.digest,
     omissions: grounding.omissions.map((omission) => ({
       part: omission.part,
       kept: omission.kept,
       total: omission.total,
     })),
+  };
+}
+
+/** The section totals, without the per-predicate attribution that stays inside the AI layer. */
+function sections(breakdown: NonNullable<GroundingSummary['promptTokens']>): WirePromptTokens {
+  return {
+    total: breakdown.total,
+    system: breakdown.system,
+    reminder: breakdown.reminder,
+    scaffolding: breakdown.scaffolding,
+    core: breakdown.core,
+    supplement: breakdown.supplement,
+    omissions: breakdown.omissions,
+    question: breakdown.question,
+    history: breakdown.history,
+    conversation: breakdown.conversation,
   };
 }
 
@@ -98,7 +155,10 @@ export function wireAnswer(answer: Answer): WireAnswer {
     fabricatedIdentifiers: answer.fabricatedIdentifiers,
     unsupportedTerms: answer.unsupportedTerms,
     unknownCitations: answer.unknownCitations,
+    diagnostics: answer.diagnostics,
     grounding: wireGrounding(answer.grounding),
+    attempts: answer.attempts,
+    corrections: answer.corrections,
     model: answer.model,
     stopReason: answer.stopReason,
     usage: answer.usage,

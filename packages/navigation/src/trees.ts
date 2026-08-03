@@ -27,7 +27,15 @@ import type {
 
 /** Declaration kinds the architecture tree groups by, in vocabulary order. */
 const GROUPED_KINDS: readonly NodeKind[] = NODE_KINDS.filter(
-  (kind) => kind !== 'File' && kind !== 'Route' && kind !== 'EnvironmentVariable' && kind !== 'External',
+  (kind) =>
+    kind !== 'File' &&
+    kind !== 'Route' &&
+    kind !== 'EnvironmentVariable' &&
+    kind !== 'External' &&
+    // A workflow step is not a declaration of the architecture. It belongs to its artefact, which the
+    // Explorer shows in place, and grouping it here would put a hundred Markdown headings in the
+    // architecture tree of a documentation repository.
+    kind !== 'ArtifactElement',
 );
 
 /**

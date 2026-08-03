@@ -32,6 +32,14 @@ export interface ChatTurn {
    * a phase belongs to the answer it describes.
    */
   readonly phase: ChatPhase | null;
+  /**
+   * Why this answer was rewritten, where verification rejected the first attempt.
+   *
+   * Held on the turn rather than read off `answer` because it arrives *before* the answer does — on the
+   * `restart` frame, at the moment the rejected prose is cleared — and a reader watching the text vanish is
+   * owed the reason immediately rather than when the rewrite finishes.
+   */
+  readonly corrections: readonly string[];
   readonly error: { readonly code: string; readonly detail: string; readonly hint: string } | null;
 }
 

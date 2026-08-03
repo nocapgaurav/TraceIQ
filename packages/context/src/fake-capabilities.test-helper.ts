@@ -128,6 +128,7 @@ export function node(input: {
     language: null,
     fileRole: null,
     category: null,
+    artifactKind: null,
     confidence: 'CERTAIN',
     provenance: {
       producer: 'graph-builder',

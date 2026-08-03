@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ARTIFACT_ELEMENT_KINDS,
+  ARTIFACT_KINDS,
+  ARTIFACT_RELATIONSHIP_TYPES,
   CONFIDENCE_LEVELS,
   NODE_ID_KINDS,
   RELATIONSHIP_TYPES,
@@ -19,6 +22,8 @@ const vocabularies = {
   ROLES,
   RELATIONSHIP_TYPES,
   NODE_ID_KINDS,
+  ARTIFACT_KINDS,
+  ARTIFACT_ELEMENT_KINDS,
 } satisfies Record<string, readonly string[]>;
 
 describe('domain vocabularies', () => {
@@ -51,13 +56,20 @@ describe('roles', () => {
 });
 
 describe('identifier prefixes', () => {
-  it('are exactly the five the contract defines', () => {
-    expect([...NODE_ID_KINDS]).toEqual(['file', 'sym', 'route', 'env', 'ext']);
+  it('are exactly the six the contract defines', () => {
+    expect([...NODE_ID_KINDS]).toEqual(['file', 'sym', 'route', 'env', 'ext', 'art']);
+  });
+
+  it('keeps artefact elements out of the declaration prefix', () => {
+    // A consumer showing "declarations in this file" filters on `sym:`. Sharing the prefix would put
+    // workflow steps in that list, and no layer downstream could tell them apart again.
+    expect(NODE_ID_KINDS).toContain('art');
+    expect(NODE_ID_KINDS).toContain('sym');
   });
 });
 
 describe('relationship types', () => {
-  it('are exactly the thirteen relationships the contract allows', () => {
+  it('are exactly the nineteen relationships the contract allows', () => {
     expect([...RELATIONSHIP_TYPES]).toEqual([
       'DECLARES',
       'IMPORTS',
@@ -72,10 +84,44 @@ describe('relationship types', () => {
       'DEPENDS_ON',
       'CONTINUES_TO',
       'TESTS',
+      'CONTAINS',
+      'REFERENCES',
+      'RUNS',
+      'CONFIGURES',
+      'DOCUMENTS',
+      'USES_ENV',
     ]);
   });
 
   it('does not define a generic USES relationship', () => {
     expect(RELATIONSHIP_TYPES).not.toContain('USES');
+  });
+
+  it('keeps the six artefact relationships inside the one vocabulary', () => {
+    for (const type of ARTIFACT_RELATIONSHIP_TYPES) {
+      expect(RELATIONSHIP_TYPES).toContain(type);
+    }
+
+    expect(ARTIFACT_RELATIONSHIP_TYPES).toHaveLength(6);
+  });
+});
+
+/**
+ * The two artefact vocabularies share one graph column, discriminated by the node's `kind`.
+ *
+ * A term appearing in both would make a stored value ambiguous — a reader could not tell whether
+ * `service` named the family of a file or the kind of an element — so disjointness is a contract rather
+ * than a coincidence, and this is where it is enforced.
+ */
+describe('artefact vocabularies', () => {
+  it('do not overlap, because they share one column', () => {
+    const families = new Set<string>(ARTIFACT_KINDS);
+    const overlap = ARTIFACT_ELEMENT_KINDS.filter((kind) => families.has(kind));
+
+    expect(overlap).toEqual([]);
+  });
+
+  it('name an explicit unknown family rather than leaving one implicit', () => {
+    expect(ARTIFACT_KINDS).toContain('unknown-artifact');
   });
 });

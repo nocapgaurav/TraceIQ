@@ -13,6 +13,12 @@ import {
   type Predicate,
 } from './facts.js';
 import { INTENT_PARTS, type QuestionIntent } from './intent.js';
+import type { FactAllocation, FactGroup } from './plan.js';
+import { responsibilityOf, summariseArchitecture, type TechnologyRef } from './architecture.js';
+import { deriveProfile, type RepositoryProfile } from './profile.js';
+import { deriveIdentity } from './identity.js';
+import { renderWorkflow } from './workflow.js';
+import { deriveStructure, roleOfPath } from './structure.js';
 import type { TokenCounter } from './model.js';
 
 /**
@@ -208,6 +214,708 @@ export function subjectOf(context: RepositoryContext): string | null {
  * than one more entry in a ranked list does, so it goes first and the ranked list absorbs the cap.
  */
 const EXTRACTORS: readonly Extractor[] = [
+  /**
+   * What *kind of thing* this repository is, before anything about it is described.
+   *
+   * **First, ahead even of the architecture summary, and for the same reason that one is ahead of the
+   * counts.** The summary says what the system contains; this says what it *is*, which is the sentence
+   * the prompt's whole explanation strategy is built around. A model instructed to explain a framework's
+   * extension points, and given no fact saying this repository is a framework, would either write the
+   * claim uncited — which the standing instruction forbids — or hedge its way around the one thing it
+   * was most confidently told.
+   *
+   * Three facts at most, each carrying the evidence the profile derived it from, so a reader can check
+   * the characterisation rather than trust it. Everything else in the profile is a restatement of facts
+   * emitted below and would be paid for twice.
+   */
+  {
+    part: 'profile',
+    caps: ALL,
+    extract: (context) => {
+      if (context.primary.type !== 'repository') {
+        return [];
+      }
+
+      const profile = deriveProfile(context);
+      const drafts: Draft[] = [];
+
+      if (profile.type.value !== 'unknown') {
+        drafts.push({
+          names: [profile.type.value],
+          ...draft(
+            'repository',
+            'characterised-as',
+            `a ${profile.type.value} — ${profile.type.evidence.join('; ')}`,
+            '@traceiq/ai',
+            // Derived from graph evidence by rule, not measured. The same honesty `layered` observes:
+            // that a repository exposes routes is CERTAIN, that this makes it a service is a judgement.
+            'INFERRED',
+          ),
+        });
+      }
+
+      /*
+       * The scale, stated as what it *means for an answer* rather than as a file count.
+       *
+       * A model told "1,347 files" will report 1,347 files. Told that the repository is too large to
+       * describe at once and that these are its largest units, it has been given the shape of the
+       * answer instead of another number to repeat — and the numbers are still there, at the end, as
+       * the evidence for the claim.
+       */
+      drafts.push({
+        names: profile.units.slice(0, 6),
+        ...draft(
+          'repository',
+          'characterised-as',
+          `${profile.scale.scale} — ${profile.scale.files} files, ${profile.scale.declarations} declarations, ${profile.scale.packages} packages${
+            profile.units.length === 0 ? '' : `; largest units ${profile.units.slice(0, 6).join(', ')}`
+          }`,
+          '@traceiq/explorer',
+        ),
+      });
+
+      if (profile.domains.length > 0) {
+        drafts.push({
+          ...draft(
+            'repository',
+            'characterised-as',
+            `organised around ${profile.domains
+              .slice(0, 5)
+              .map((claim) => `${claim.domain} (${claim.evidence[0] ?? ''})`)
+              .join(', ')}`,
+            '@traceiq/ai',
+            'INFERRED',
+          ),
+        });
+      }
+
+      return drafts;
+    },
+  },
+
+  /**
+   * What the repository is *for*, what happens when it works, and what matters most in it.
+   *
+   * **Second only to the profile, and ahead of every structural fact, because this is the answer's
+   * opening sentence.** The profile says what kind of thing the repository is; these say what it is
+   * trying to accomplish. A model given the guidance "this repository is organised around url and
+   * analytics" and no fact carrying it must either write the sentence uncited — which the standing
+   * instruction forbids — or hedge around the one thing it was told most confidently.
+   *
+   * Every line here **reorganises** evidence emitted below rather than measuring anything new: the
+   * purpose is assembled from the type rules and the layer agreement, a workflow is the framework
+   * extractor's own route-to-handler edges arranged as a sequence, and a rank carries the fan-in the
+   * health analyser already computed. That is why the cap is small — the budget should be spent on the
+   * evidence, not on a second rendering of it.
+   */
+  {
+    // `identity` is already taken, by the extractor that states what the *subject* of a context is.
+    // This one is about the repository's purpose, so it is named for that rather than renaming a part
+    // that appears in recorded omissions.
+    part: 'purpose',
+    caps: { minimal: 3, standard: 8, full: 14 },
+    coreCaps: { minimal: 2, standard: 6, full: 10 },
+    extract: (context) => {
+      if (context.primary.type !== 'repository') {
+        return [];
+      }
+
+      const identity = deriveIdentity(context);
+      const drafts: Draft[] = [];
+
+      if (identity.purpose !== null) {
+        drafts.push({
+          ...draft(
+            'repository',
+            'exists-to',
+            `${identity.purpose.value} — ${identity.purpose.evidence.slice(0, 2).join('; ')}`,
+            '@traceiq/ai',
+            // Assembled from evidenced clauses by rule. That the repository exposes `/:shortCode` is
+            // measured; that this makes it "organised around url" is a derivation, and says so.
+            'INFERRED',
+          ),
+        });
+      }
+
+      /*
+       * The workflows, which are the facts nothing else in this projection can express.
+       *
+       * A `request-flow` fact already names the layers a request conventionally traverses. A workflow
+       * names *this* route reaching *this* handler, which is an edge the framework extractor recorded
+       * — so the two are not duplicates, and the workflow is the stronger of the pair.
+       */
+      for (const workflow of identity.workflows.slice(0, 4)) {
+        drafts.push({
+          names: workflow.steps.flatMap((step) => step.actor.split(', ')),
+          ...draft(
+            'repository',
+            'workflow',
+            renderWorkflow(workflow),
+            '@traceiq/framework',
+            // The route-to-handler steps are recorded edges; the continuation past the handler is
+            // conventional. The weaker of the two governs the whole line.
+            workflow.steps.every((step) => step.confidence === 'CERTAIN') ? 'CERTAIN' : 'INFERRED',
+          ),
+        });
+      }
+
+      /*
+       * The ranking, with the numbers that produced it.
+       *
+       * Not a claim about quality — it says how much of the repository points at a declaration, which
+       * is what the graph measured. A reader who disagrees with the ranking can see exactly why it
+       * ranked that way, which is the difference between a score and an assertion.
+       */
+      for (const component of identity.critical.slice(0, 5)) {
+        drafts.push({
+          names: [component.name],
+          identities: component.kind === 'declaration' ? [component.id] : [],
+          ...draft(
+            component.kind === 'declaration' ? component.id : 'repository',
+            'ranks',
+            `${'★'.repeat(component.stars)}${'☆'.repeat(5 - component.stars)} ${component.name} — ${component.signals
+              .map((signal) => signal.detail)
+              .join('; ')}`,
+            '@traceiq/health',
+          ),
+        });
+      }
+
+      return drafts;
+    },
+  },
+
+  /**
+   * The repository's top-level map: what each area is, and how big it is.
+   *
+   * **Pinned into the core beside the profile, because it answers the question the profile cannot.** On a
+   * repository whose analysable code is four CI scripts, `profile` says `unknown`, `purpose` says nothing,
+   * and every ranked declaration is a CI script — so a repository-wide question was answered from CI. The
+   * area map says the repository declares git submodules, holds 85 files of CI and 4 of Azure deployment,
+   * and carries no code of its own. That is six short lines and it is the whole answer.
+   *
+   * Question-independent by construction — a directory map does not change with the question — so it sits
+   * in the stable prefix and costs nothing to reuse across a session.
+   */
+  {
+    part: 'areas',
+    caps: { minimal: 4, standard: 8, full: 12 },
+    coreCaps: { minimal: 3, standard: 6, full: 10 },
+    extract: (context) => {
+      if (context.primary.type !== 'repository') {
+        return [];
+      }
+
+      const structure = deriveStructure(context);
+      const drafts: Draft[] = [];
+
+      if (structure.category !== 'unknown') {
+        drafts.push({
+          ...draft(
+            'repository',
+            'characterised-as',
+            `${structure.category} — ${structure.categoryEvidence.join('; ')}`,
+            '@traceiq/ai',
+            // Derived from the directory map by rule, exactly as the profile's claims are.
+            'INFERRED',
+          ),
+        });
+      }
+
+      for (const area of structure.areas) {
+        if (area.name === '' && area.declarations === 0) {
+          // Loose files at the repository root are not an area anyone navigates to.
+          continue;
+        }
+
+        drafts.push({
+          names: [area.name],
+          ...draft(
+            'repository',
+            'area',
+            `${area.name === '' ? 'the repository root' : area.name} is ${area.role} — ${area.files} ${
+              area.files === 1 ? 'file' : 'files'
+            }, ${area.declarations === 0 ? 'no analysed declarations' : `${area.declarations} declarations`}`,
+            '@traceiq/graph-api',
+          ),
+        });
+      }
+
+      return drafts;
+    },
+  },
+
+  /**
+   * What the repository is made of, when most of it is not source.
+   *
+   * **Pinned beside the area map, and for the same reason.** A repository of forty workflows and one
+   * Python script has one analysable declaration and a language distribution that says Python — so every
+   * part of the projection that reads declarations described a Python project, and the forty files that
+   * actually constitute the repository were invisible. This is one line saying what the artefact families
+   * are, with the counts that make it checkable.
+   *
+   * Question-independent, so it sits in the stable prefix. Four lines at `standard`: the families are a
+   * short list on every repository, and the artefacts themselves are `key-artifacts` below.
+   */
+  {
+    part: 'artifact-inventory',
+    caps: { minimal: 3, standard: 6, full: 10 },
+    coreCaps: { minimal: 2, standard: 4, full: 8 },
+    extract: (context) => {
+      if (context.primary.type !== 'repository') {
+        return [];
+      }
+
+      // Defensive, like every other read of the overview here: a caller may supply a context assembled
+      // by something other than the Context Builder, and a missing part means "not established" rather
+      // than a crash.
+      const families = context.primary.value.overview.artifacts ?? [];
+
+      if (families.length === 0) {
+        return [];
+      }
+
+      return families.map((family) => ({
+        names: [family.kind],
+        ...draft(
+          'repository',
+          'artifact-inventory',
+          `${family.files} ${family.kind} ${family.files === 1 ? 'file' : 'files'}${
+            family.elements === 0
+              ? ' — no structure was extracted from them'
+              : `, from which ${family.elements} structural ${family.elements === 1 ? 'element was' : 'elements were'} read`
+          }${family.examples.length === 0 ? '' : `, e.g. ${family.examples.join(', ')}`}`,
+          '@traceiq/artifact',
+        ),
+      }));
+    },
+  },
+
+  /**
+   * The artefacts that describe the running system, each with what it declares.
+   *
+   * **The part that makes an architecture question answerable on a repository whose architecture is
+   * written in YAML.** A compose file declaring `api`, `worker`, `postgres` and `redis`, with `api`
+   * declaring that it needs `postgres`, *is* the architecture of that system — and no declaration count,
+   * hotspot ranking or role annotation can see any of it. Nor is it a substitute for code analysis where
+   * code exists: it sits below the architecture summary and above the ranked lists, which is where a fact
+   * about the system's shape belongs.
+   *
+   * `artifact-ordering` is emitted only where an artefact **states** a prerequisite. That is the whole
+   * discipline of this part: the entailment guard rejects an execution-order claim unless a relationship
+   * licenses it, so an answer may narrate `build → deploy` exactly when the repository wrote `needs:
+   * build` and never because one job appears above another.
+   */
+  {
+    part: 'key-artifacts',
+    caps: { minimal: 4, standard: 18, full: 44 },
+    coreCaps: { minimal: 3, standard: 9, full: 22 },
+    extract: (context) => {
+      if (context.primary.type !== 'repository') {
+        return [];
+      }
+
+      const drafts: Draft[] = [];
+
+      for (const digest of context.primary.value.overview.keyArtifacts?.entries ?? []) {
+        const declared = digest.declares.map((entry) => `${entry.count} ${entry.kind}`).join(', ');
+
+        drafts.push({
+          names: [digest.path, digest.kind],
+          identities: [`file:${digest.path}`],
+          ...draft(
+            `file:${digest.path}`,
+            'declares',
+            `a ${digest.kind}${declared === '' ? ' from which no structure was extracted' : ` declaring ${declared}`}${
+              digest.names.length === 0 ? '' : `: ${digest.names.join('; ')}`
+            }`,
+            '@traceiq/artifact',
+          ),
+        });
+
+        for (const ordering of digest.ordering) {
+          drafts.push({
+            ...draft(
+              `file:${digest.path}`,
+              'artifact-ordering',
+              // The wording is load-bearing: the artefact states the prerequisite, and whether a runner
+              // honours it is not something any analysis here observed.
+              `${ordering} — the artefact declares this prerequisite; the order it runs in was not observed`,
+              '@traceiq/artifact',
+            ),
+          });
+        }
+
+        for (const reach of digest.reaches) {
+          drafts.push({
+            names: [reach.path],
+            identities: [`file:${reach.path}`],
+            ...draft(
+              `file:${digest.path}`,
+              reach.type === 'RUNS' ? 'runs' : reach.type === 'DOCUMENTS' ? 'documents' : 'references',
+              `file:${reach.path}`,
+              '@traceiq/artifact',
+              // A command naming a path that resolves to a file is strong evidence of an invocation and
+              // not proof of one: the reading did not follow control flow. See `invokedPaths`.
+              reach.type === 'RUNS' ? 'INFERRED' : 'CERTAIN',
+            ),
+          });
+        }
+
+        if (digest.variables.length > 0) {
+          drafts.push({
+            names: digest.variables,
+            identities: digest.variables.map((name) => `env:${name}`),
+            ...draft(
+              `file:${digest.path}`,
+              'configures',
+              `it supplies or names ${digest.variables.join(', ')} — variable names only; no value was read`,
+              '@traceiq/artifact',
+            ),
+          });
+        }
+      }
+
+      return drafts;
+    },
+  },
+
+  /**
+   * What a reader can actually start from, and the kind of evidence behind each.
+   *
+   * **Its own part because an onboarding answer built from a ranking is wrong however well it cites.** The
+   * most-referenced declaration in a repository is the worst possible first file: it is referenced by
+   * everything precisely because it assumes everything. Asked "what should I read first" about an umbrella
+   * repository, the pipeline previously answered `set_secret.py`, correctly cited, because that is what
+   * fan-in ranked — and that failure is a *retrieval* failure, not a prompt one. There was no fact of the
+   * kind an onboarding answer needed, so the model was given facts of the kind it did not need.
+   *
+   * Four kinds of evidence, in descending directness, and **each one names its own kind** so an answer can
+   * say why it recommends something:
+   *
+   * 1. **Documentation the repository ships**, and the files it links to. A README is the repository
+   *    telling a reader where to start, in its own words.
+   * 2. **An entry point a manifest declares** — a `main`, a `bin`, an `exports`.
+   * 3. **Package boundaries**, which are where a repository states its own units.
+   * 4. **Where control enters**, as the identity derived it: routes, or units nothing imports.
+   *
+   * Emitting nothing is a real outcome and is left to the planner to report. A repository with no
+   * documentation, no manifest entry point and no route has not told anybody where to start, and inventing
+   * a starting point from a fan-in count is the failure this part exists to prevent.
+   */
+  {
+    part: 'onboarding',
+    caps: { minimal: 4, standard: 12, full: 24 },
+    coreCaps: { minimal: 2, standard: 5, full: 12 },
+    extract: (context) => {
+      if (context.primary.type !== 'repository') {
+        return [];
+      }
+
+      const drafts: Draft[] = [];
+      const overview = context.primary.value.overview;
+
+      for (const digest of overview.keyArtifacts?.entries ?? []) {
+        if (digest.kind === 'documentation') {
+          const headings = digest.names
+            .filter((name) => name.startsWith('heading '))
+            .map((name) => name.slice('heading '.length));
+
+          drafts.push({
+            names: [digest.path],
+            identities: [`file:${digest.path}`],
+            ...draft(
+              `file:${digest.path}`,
+              'onboarding',
+              `documentation the repository ships${headings.length === 0 ? '' : `, covering ${headings.slice(0, 6).join('; ')}`}`,
+              '@traceiq/artifact',
+            ),
+          });
+
+          for (const reach of digest.reaches) {
+            if (reach.type !== 'DOCUMENTS') {
+              continue;
+            }
+
+            drafts.push({
+              names: [reach.path],
+              identities: [`file:${reach.path}`],
+              ...draft(
+                `file:${reach.path}`,
+                'onboarding',
+                `documented by file:${digest.path}, which links to it`,
+                '@traceiq/artifact',
+              ),
+            });
+          }
+
+          continue;
+        }
+
+        if (digest.kind !== 'package-manifest') {
+          continue;
+        }
+
+        for (const name of digest.names) {
+          drafts.push({
+            names: [digest.path],
+            identities: [`file:${digest.path}`],
+            ...draft(
+              `file:${digest.path}`,
+              'onboarding',
+              `${name}, declared by the manifest at file:${digest.path}`,
+              '@traceiq/artifact',
+            ),
+          });
+        }
+      }
+
+      const identity = deriveIdentity(context);
+
+      if (identity.entryPoints !== null) {
+        for (const entry of identity.entryPoints.value.slice(0, 4)) {
+          drafts.push({
+            names: [entry],
+            ...draft(
+              'repository',
+              'onboarding',
+              `${entry} — ${identity.entryPoints.evidence[0] ?? 'where control enters the repository'}`,
+              '@traceiq/ai',
+              // Derived from routes or from the absence of dependents, both of which are evidence about
+              // structure rather than a statement the repository made about itself.
+              'INFERRED',
+            ),
+          });
+        }
+      }
+
+      return drafts;
+    },
+  },
+
+  /**
+   * What the system is, before anything is counted.
+   *
+   * **First, and that ordering is the milestone.** Everything after this is evidence; this is the
+   * claim the evidence supports. A model handed a role count and a file count at the same rank
+   * answers with both at the same rank — "there are 6 controllers", "src/modules contains 26 files" —
+   * and never says what the repository does. Every field is a restatement of something the graph
+   * asserted, and a field that cannot be proven is simply absent: LinkForge declares
+   * `@prisma/adapter-pg` and no `pg`, so nothing here mentions PostgreSQL.
+   */
+  {
+    part: 'architecture-summary',
+    caps: ALL,
+    extract: (context) => {
+      /*
+       * The repository kind only.
+       *
+       * A question about one declaration is not answered by the stack it happens to sit in, and
+       * putting the technology layers ahead of the symbol's own identity was exactly the failure this
+       * extractor was written to fix, pointed the other way: the first thing the model reads should be
+       * the thing it was asked about.
+       */
+      if (context.primary.type !== 'repository') {
+        return [];
+      }
+
+      const summary = summariseArchitecture(context);
+      const drafts: Draft[] = [];
+
+      /** One line per technology layer, carrying the detection's own evidence. */
+      const layer = (label: string, entries: readonly TechnologyRef[]): void => {
+        if (entries.length === 0) {
+          return;
+        }
+
+        drafts.push({
+          names: entries.map((entry) => entry.name),
+          ...draft(
+            'repository',
+            'runs-on',
+            // The responsibility, then the names, then the evidence. A reader who stops after the
+            // first clause still knows what this layer is for; one who reads on can check it.
+            `${label} — ${responsibilityOf(label)}: ${entries
+              .map((entry) => `${entry.name}${entry.region === '' ? '' : ` (in ${entry.region})`}`)
+              .join(', ')}. ${shorten(entries[0]?.evidence ?? '', 60)}`,
+            '@traceiq/technology',
+          ),
+        });
+      };
+
+      layer('frontend', summary.frontend);
+      layer('backend', summary.backend);
+      layer('persistence', summary.persistence);
+      layer('cache', summary.cache);
+      layer('infrastructure', summary.infrastructure);
+      layer('testing', summary.testing);
+      layer('build', summary.build);
+
+      for (const entry of summary.layers) {
+        drafts.push({
+          names: entry.members,
+          ...draft(
+            'repository',
+            'layered',
+            // Named, not counted. "14 repositories" tells a reader nothing they can act on;
+            // `PrismaUrlRepository, PrismaAnalyticsRepository, UserRepository` tells them what is
+            // persisted, that it is split by domain, and which file to open first.
+            `${entry.role}: ${entry.members.join(', ')}${entry.declarations > entry.members.length ? ` and ${entry.declarations - entry.members.length} more` : ''} (${entry.declarations} in total)`,
+            '@traceiq/framework',
+            // A role is a judgement the Framework Extractor made from names and decorators, and the
+            // health layer says so in its own `roles-are-judgements` limitation. Carried at that
+            // strength rather than promoted to certainty by being summarised.
+            'INFERRED',
+          ),
+        });
+      }
+
+      /*
+       * What the layers agree the system is organised around.
+       *
+       * A noun reaches this list only when two or more different role layers contain it — a
+       * `urlController`, a `urlService` and a `PrismaUrlRepository` are three independent annotations
+       * converging on one domain. That convergence is a graph fact; what the domain *means* is left
+       * to the reader, which is why the fact names the declarations rather than the product feature.
+       */
+      for (const capability of summary.capabilities) {
+        drafts.push({
+          names: [capability.noun, ...capability.members],
+          ...draft(
+            'repository',
+            'capability',
+            `'${capability.noun}' spans ${capability.layers.join(' + ')}: ${capability.members.join(', ')}`,
+            '@traceiq/framework',
+            'INFERRED',
+          ),
+        });
+      }
+
+      if (summary.configuration.length > 0) {
+        drafts.push({
+          names: summary.configuration,
+          // The prefixed form of each name, for the reason the `environmentVariables` extractor
+          // declares it: the model is told `env:` is an identifier prefix, so it writes one.
+          identities: summary.configuration.map((name) => `env:${name}`),
+          ...draft(
+            'repository',
+            'reads-env',
+            `configuration: ${summary.configuration.join(', ')}`,
+            '@traceiq/framework',
+          ),
+        });
+      }
+
+      for (const group of summary.routeGroups) {
+        drafts.push({
+          names: [group.prefix, group.example.split(' ')[1] ?? ''],
+          ...draft(
+            'repository',
+            'exposes',
+            `${group.count} ${group.methods.join('/')} ${group.count === 1 ? 'route' : 'routes'} under ${group.prefix}, for example ${group.example}`,
+            '@traceiq/query',
+          ),
+        });
+      }
+
+      return drafts;
+    },
+  },
+
+  /**
+   * The layers a request passes through, as one fact.
+   *
+   * **The membership is measured; the order is a convention, and the fact says which is which.**
+   * TraceIQ records that one declaration is annotated Controller and another Repository — it does not
+   * record that the first calls the second on every request. Printing an arrow diagram without that
+   * caveat would be the projection asserting a call graph it never built, which is exactly the kind of
+   * plausible fabrication the whole layer exists to prevent.
+   */
+  {
+    part: 'request-flow',
+    caps: ALL,
+    extract: (context) => {
+      if (context.primary.type !== 'repository') {
+        return [];
+      }
+
+      const summary = summariseArchitecture(context);
+
+      if (summary.requestFlow.length < 2) {
+        // One layer is not a flow. Emitting `HTTP request → Controller` would dress a single fact up
+        // as a pipeline.
+        return [];
+      }
+
+      /*
+       * This repository's flow, not Express's.
+       *
+       * `HTTP → Middleware → Controller → Service → Repository → Prisma` is a diagram of the MVC
+       * pattern; it would read identically for any Express application and tells a reader nothing
+       * about the one in front of them. Naming the entry point, the actual middleware, the actual
+       * controllers and where the data ends up makes the same sentence specific — and every name in it
+       * is a declaration the graph recorded or a technology the detection proved.
+       *
+       * Each stage is included only when it exists. There is no fabricated authentication step, no
+       * queue, no worker: if the annotations do not contain one, the arrow is not drawn.
+       */
+      const named = (role: string): string => {
+        const layer = summary.layers.find((entry) => entry.role === role);
+
+        if (layer === undefined) {
+          return role;
+        }
+
+        const shown = layer.members.slice(0, 3).join(', ');
+
+        return `${role} (${shown}${layer.declarations > 3 ? `, +${layer.declarations - 3}` : ''})`;
+      };
+
+      const stages: string[] = [];
+      const claimable: string[] = [];
+
+      if (summary.frontend.length > 0) {
+        stages.push(`browser: ${summary.frontend.map((entry) => entry.name).join('/')}`);
+        claimable.push(...summary.frontend.map((entry) => entry.name));
+      }
+
+      if (summary.backend.length > 0) {
+        stages.push(`${summary.backend.map((entry) => entry.name).join('/')} HTTP layer`);
+        claimable.push(...summary.backend.map((entry) => entry.name));
+      } else {
+        stages.push('HTTP request');
+      }
+
+      for (const role of summary.requestFlow) {
+        stages.push(named(role));
+        claimable.push(...(summary.layers.find((entry) => entry.role === role)?.members ?? []));
+      }
+
+      if (summary.cache.length > 0) {
+        stages.push(`${summary.cache.map((entry) => entry.name).join('/')} (cache)`);
+        claimable.push(...summary.cache.map((entry) => entry.name));
+      }
+
+      if (summary.persistence.length > 0) {
+        stages.push(summary.persistence.map((entry) => entry.name).join('/'));
+        claimable.push(...summary.persistence.map((entry) => entry.name));
+      }
+
+      return [
+        {
+          names: claimable,
+          ...draft(
+            'repository',
+            'request-flow',
+            `${stages.join(' → ')} (every stage named here exists; the order is the conventional one, not a measured call chain)`,
+            '@traceiq/framework',
+            'INFERRED',
+          ),
+        },
+      ];
+    },
+  },
+
   {
     part: 'identity',
     caps: ALL,
@@ -351,7 +1059,7 @@ const EXTRACTORS: readonly Extractor[] = [
           ...draft(
             'repository',
             'built-with',
-            `${entry.name} (${entry.category})${describeRegions(entry.regions)} — ${entry.evidence}`,
+            `${entry.name} (${entry.category})${describeRegions(entry.regions)} — ${shorten(entry.evidence, 70)}`,
             '@traceiq/technology',
             // Copied from the detection rather than fixed here. Every rule that produces one is a
             // direct reading of a manifest entry or a marker file, so these are CERTAIN — and if a
@@ -459,6 +1167,7 @@ const EXTRACTORS: readonly Extractor[] = [
       interface Group {
         readonly language: string;
         readonly depth: string;
+        readonly role: string;
         readonly paths: string[];
         files: number;
         sources: number;
@@ -469,7 +1178,18 @@ const EXTRACTORS: readonly Extractor[] = [
 
       for (const region of context.capabilities.regions) {
         const language = region.primaryLanguage ?? 'no dominant source language';
-        const identity = `${language} :: ${region.depth}`;
+        /*
+         * Grouped by role as well as by language and depth.
+         *
+         * **Caught in a live answer rather than in review.** Asked to explain `stripe/ai`'s architecture,
+         * the model wrote "953 files across five main regions: benchmarks/furever, tools/python,
+         * llm/ai-sdk, benchmarks/card-element-to-checkout, benchmarks/saas-starter-partial-payments" —
+         * naming three benchmark fixtures among the repository's main regions. Every other consumer of
+         * structural scope had been fixed and this fact still presented all fifty regions as equals,
+         * largest first, which on a repository that is 72% demonstrations means the demonstrations lead.
+         */
+        const role = roleOfPath(region.path);
+        const identity = `${language} :: ${region.depth} :: ${role}`;
         const held = groups.get(identity);
         const where = region.path === '' ? 'the repository root' : region.path;
 
@@ -477,6 +1197,7 @@ const EXTRACTORS: readonly Extractor[] = [
           groups.set(identity, {
             language,
             depth: region.depth,
+            role,
             paths: [where],
             files: region.fileCount,
             sources: region.sourceFileCount,
@@ -489,9 +1210,19 @@ const EXTRACTORS: readonly Extractor[] = [
         }
       }
 
-      // Largest group first: the shape of a repository is what most of it is made of.
+      /*
+       * Production regions first, then largest.
+       *
+       * The shape of a repository is what most of *its own code* is made of — not what most of the tree
+       * is made of, which on a repository built to hold sample applications is the sample applications.
+       */
       return [...groups.values()]
-        .sort((left, right) => right.sources - left.sources || left.language.localeCompare(right.language))
+        .sort(
+          (left, right) =>
+            Number(right.role === 'production') - Number(left.role === 'production') ||
+            right.sources - left.sources ||
+            left.language.localeCompare(right.language),
+        )
         .map((group) => {
           const named = [...group.paths].sort().slice(0, 3);
           const rest = group.paths.length - named.length;
@@ -501,7 +1232,7 @@ const EXTRACTORS: readonly Extractor[] = [
             ...draft(
               'analysis',
               'region-depth',
-              `${group.paths.length} ${group.language} ${group.paths.length === 1 ? 'region' : 'regions'} (${group.sources} of ${group.files} files are source) analysed to ${group.depth} depth — ${named.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}: ${group.reason}`,
+              `${group.paths.length} ${group.language} ${group.paths.length === 1 ? 'region' : 'regions'} of ${group.role} code (${group.sources} of ${group.files} files are source) analysed to ${group.depth} depth — ${named.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}`,
               '@traceiq/graph-api',
             ),
           };
@@ -509,21 +1240,52 @@ const EXTRACTORS: readonly Extractor[] = [
     },
   },
 
+  /**
+   * What the analysis could not determine, as codes rather than paragraphs.
+   *
+   * **The largest single cost in the prompt, and the least useful per token.** Measured on
+   * `facebook/react`: 17 limitation facts costing **1,081 tokens — 20% of the entire prompt, on every
+   * question**, more than packages, dependencies or hotspots. Each was a full fixed sentence, and the
+   * sentences are written for a reader looking at one capability's output, not for a model composing
+   * an answer about a repository.
+   *
+   * They also actively damaged answers. Asked what to understand first about React, the model ended
+   * with *"The repository overview is computed independently for health reports [f38]"* — a caveat
+   * about TraceIQ's own internals, restated as though it were a fact about React. Verbose boilerplate
+   * in a prompt does not sit inertly; a model reaching for something to say will say it.
+   *
+   * So the codes are kept — they are the actionable half, and dropping them would break the promise
+   * that an absence is never presented as a measurement — and the prose is not. One fact, cited once,
+   * naming everything that qualifies the answer.
+   */
   {
     part: 'limitations',
     caps: ALL,
-    extract: (context) =>
-      context.limitations.map((limitation) =>
+    extract: (context) => {
+      if (context.limitations.length === 0) {
+        return [];
+      }
+
+      // Deduplicated and counted: several capabilities raise `capped-lists`, and three copies of one
+      // code says nothing three times.
+      const byCode = new Map<string, number>();
+
+      for (const limitation of context.limitations) {
+        byCode.set(limitation.code, (byCode.get(limitation.code) ?? 0) + 1);
+      }
+
+      const codes = [...byCode.keys()].sort();
+
+      return [
         draft(
           'analysis',
           'limitation',
-          limitation.affected === null
-            ? `${limitation.code}: ${limitation.detail}`
-            : `${limitation.code} (affects ${limitation.affected}): ${limitation.detail}`,
+          `these qualify every answer: ${codes.join(', ')}`,
           '@traceiq/context',
           'CERTAIN',
         ),
-      ),
+      ];
+    },
   },
 
   /**
@@ -916,15 +1678,72 @@ const EXTRACTORS: readonly Extractor[] = [
     },
   },
 
+  /**
+   * The repository's tests, by name, with what each appears to exercise.
+   *
+   * **This part exists because a whole class of question had no evidence to be answered from.** The only
+   * test fact a prompt ever carried was `N declarations carry the Test role` — a count. Asked "what tests
+   * should I read first?", the projection had nothing to offer, the importance ranking answered instead,
+   * and the reader received an architecture overview. A count cannot be opened.
+   *
+   * Two confidences, kept apart the way a workflow's steps are. The file and the package it sits in are
+   * recorded paths, so the line is `CERTAIN`. What the test *covers* is a match between its filename and a
+   * declaration the repository annotated — a naming convention across two independently recorded facts,
+   * never an observed relationship — so a line carrying one is `INFERRED` and says so in its own words.
+   */
+  {
+    part: 'tests',
+    caps: { minimal: 3, standard: 8, full: 16 },
+    coreCaps: { minimal: 0, standard: 0, full: 0 },
+    extract: (context) => {
+      if (context.primary.type !== 'repository') {
+        return [];
+      }
+
+      const { testFiles } = summariseArchitecture(context);
+
+      return testFiles.map((test) => {
+        const where = test.area === '' ? '' : `, in ${test.area}`;
+        const covers =
+          test.covers.length === 0
+            ? ' — the analysis cannot say what it exercises'
+            : ` — its name matches ${test.covers.join(', ')}, which is a naming convention rather than an observed relationship`;
+
+        return {
+          names: [test.name, test.path, ...test.covers],
+          identities: [`file:${test.path}`],
+          ...draft(
+            'repository',
+            'tested-by',
+            `${test.path}${where}${covers}`,
+            '@traceiq/framework',
+            test.covers.length === 0 ? 'CERTAIN' : 'INFERRED',
+          ),
+        };
+      });
+    },
+  },
+
   {
     part: 'environmentVariables',
     caps: FEW,
     extract: (context) => {
       const subject = subjectOf(context) ?? 'repository';
 
-      return context.dependencies.environmentVariables.map((node) =>
-        draft(subject, 'reads-env', node.name, '@traceiq/framework'),
-      );
+      return context.dependencies.environmentVariables.map((node) => ({
+        /*
+         * The `env:` identifier the fact stands for, declared rather than printed.
+         *
+         * The fact reads `reads-env REDIS_URL`, because the bare name is what prose uses and printing
+         * the prefixed form twice would cost tokens to say the same thing. But the standing instruction
+         * tells the model that identifiers begin `sym:`, `file:`, `route:`, `env:` or `ext:` — so a
+         * model that writes `env:REDIS_URL` is using the vocabulary it was given, and the guard was
+         * calling that an invention. `identities` exists for exactly this: an identifier an admitted
+         * fact stands for without rendering it.
+         */
+        identities: [node.id],
+        ...draft(subject, 'reads-env', node.name, '@traceiq/framework'),
+      }));
     },
   },
 
@@ -932,9 +1751,18 @@ const EXTRACTORS: readonly Extractor[] = [
     part: 'routes',
     caps: FEW,
     extract: (context) =>
-      context.routes.map((route) =>
-        draft(route.node.id, 'handles-route', `${route.method} ${route.composition.effectivePath}`, '@traceiq/framework'),
-      ),
+      context.routes.map((route) => ({
+        // A route is referred to by its path — `/todos/:id` — far more often than by method and path
+        // together, and never by the identifier of the declaration that handles it. Both forms are
+        // claimable; a model that names the route it just read about is not inventing anything.
+        names: [route.composition.effectivePath, `${route.method} ${route.composition.effectivePath}`],
+        ...draft(
+          route.node.id,
+          'handles-route',
+          `${route.method} ${route.composition.effectivePath}`,
+          '@traceiq/framework',
+        ),
+      })),
   },
 
   {
@@ -1096,6 +1924,28 @@ function admissible(candidate: Draft): boolean {
 }
 
 /**
+ * A fixed explanatory sentence, cut to the part that identifies it.
+ *
+ * **Evidence has to stay checkable, not stay complete.** A technology's evidence reads "Yarn is used:
+ * yarn.lock the lockfile this package manager writes" — the first clause names the file a reader can
+ * go and look at, and the rest explains what a lockfile is to somebody who already knows. Measured on
+ * React, `built-with` cost 777 tokens across ten facts; the tails are most of that.
+ *
+ * Cut on a word boundary and marked with an ellipsis, so a truncated string never reads as a complete
+ * one.
+ */
+function shorten(text: string, limit: number): string {
+  if (text.length <= limit) {
+    return text;
+  }
+
+  const cut = text.slice(0, limit);
+  const space = cut.lastIndexOf(' ');
+
+  return `${(space > limit / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
+/**
  * Where a technology was found, in one clause.
  *
  * Three regions are named; beyond that the count replaces the list, because the point of the clause is
@@ -1185,6 +2035,24 @@ export interface ProjectionOptions {
   readonly tier: BudgetTier;
   /** Tokens already spent on the fixed prompt scaffolding and the question. */
   readonly reserved?: number;
+  /**
+   * The **question-independent** part of that reservation — the standing instruction, the repository
+   * guidance, the scaffolding. Everything that is identical for two questions about one repository.
+   *
+   * **This exists because the stable core stopped being stable, and nothing else could have caught
+   * it.** The core's ceiling is a share of `TIER − reserved`, and `reserved` includes the question and
+   * the guidance the question steers. That was harmless while question guidance was forty tokens: the
+   * ceiling moved a little, the same facts still fitted under it, and `coreCount` came out the same.
+   * Once the planner began emitting workflows and a ranked component list, question guidance ranged
+   * from 205 to 457 tokens across one battery — the ceiling moved by hundreds, a different number of
+   * facts fitted, and the rendered prefix differed between two questions about the same repository.
+   * Measured: the prefix was identical on 3 of 13 repositories and different on the other 10.
+   *
+   * Deriving the core's ceiling from the fixed part alone restores the property the whole
+   * prefix-reuse design rests on. Omitted, this falls back to `reserved` and behaves exactly as
+   * before — which is right for a caller that has no question in hand.
+   */
+  readonly coreReserved?: number;
   readonly counter?: TokenCounter;
   /**
    * What the question is about. Decides the **supplement** only; the core is identical either way.
@@ -1193,7 +2061,82 @@ export interface ProjectionOptions {
    * projection without a question in hand should see.
    */
   readonly intent?: QuestionIntent;
+  /**
+   * Fact parts the answer plan asked for, ahead of what the intent asks for.
+   *
+   * **The plan outranks the intent, because the plan knows what the answer is made of.** "Where should
+   * I start?" classifies as `architecture` and would receive role counts; the plan reads it as an
+   * orientation question and asks for packages and entry points instead. Passing this is optional —
+   * omitted, the projection behaves exactly as it did before the planner existed.
+   */
+  readonly parts?: readonly string[];
+  /**
+   * What share of the supplement each group of facts may take.
+   *
+   * **Reordering was not enough.** `parts` puts the plan's parts at the front of the supplement, and
+   * the front of the supplement is where nearly all of its budget goes: the first extractors to run
+   * take what they want and the rest take what is left. So a workflow question got its `request-flow`
+   * facts *and* whatever large listing sorted next, and the ranked components the plan had also asked
+   * for were priced out by a part nothing had asked for at all. Ordering decides what runs first; only
+   * a share decides what it may spend.
+   *
+   * **The supplement only, and never the core.** An allocation is derived from the question, and the
+   * core exists to be identical between two questions about one repository — the property the whole
+   * prompt-prefix reuse rests on, and one already broken once by exactly this kind of question-derived
+   * quantity reaching the core's ceiling. See `coreReserved`.
+   *
+   * **Nothing is wasted.** A group that does not spend its share leaves the room to a second,
+   * unallocated sweep over the same extractors, which admits whatever the shares refused while the
+   * budget lasts. Measured across thirteen repositories and ten questions each, the allocated
+   * projection spends the same budget to within one fact of the unallocated one, every time.
+   *
+   * **What changes is the composition, and the count moves with it.** An allocation buys different
+   * facts, not more of them: React asked how authentication works went from 32 supplement facts to 47
+   * — fourteen more hotspot rankings and three more configuration reads, for three fewer role counts —
+   * while Express asked to explain its architecture went from 77 to 71, trading six cheap package
+   * lines for the role facts a layered answer is actually made of. A count that moved either way is
+   * the shares working; a token total that fell would be the bug, and is what the sweep prevents.
+   */
+  readonly allocation?: FactAllocation;
 }
+
+/**
+ * Which of the four groups each part belongs to.
+ *
+ * **The mapping lives here rather than beside the shares, because the part names are this file's.** A
+ * share table in the planner that named `environmentVariables` would be the planner asserting something
+ * about an extractor it cannot see; naming the groups there and the membership here means a new
+ * extractor is classified by the file that declares it.
+ *
+ * Unlisted parts are `supporting`, which is the honest default: the other three name what an answer is
+ * *built from*, and a part that is none of them is evidence behind one of them.
+ */
+const GROUP_OF: Readonly<Record<string, FactGroup>> = {
+  profile: 'architecture',
+  purpose: 'architecture',
+  'architecture-summary': 'architecture',
+  architecture: 'architecture',
+  regions: 'architecture',
+  composition: 'architecture',
+  cycles: 'architecture',
+  // The artefact inventory and the system artefacts are architecture: on a repository whose services are
+  // wired in YAML they are the *only* architecture, and grouping them as `supporting` would let the
+  // allocation starve them on exactly the questions they answer.
+  'artifact-inventory': 'architecture',
+  'key-artifacts': 'architecture',
+  'request-flow': 'workflow',
+  routes: 'workflow',
+  // Where to start is a claim about the repository's shape rather than about a component, and the
+  // orientation lead allocates most of its budget to `architecture`.
+  onboarding: 'architecture',
+  packages: 'components',
+  hotspots: 'components',
+  'impact-summary': 'components',
+  incomingCalls: 'components',
+  outgoingCalls: 'components',
+  related: 'components',
+  identity: 'components',
+};
 
 /**
  * Projects a context into a budget.
@@ -1206,6 +2149,11 @@ export function project(context: RepositoryContext, options: ProjectionOptions):
   const counter = options.counter ?? estimatingCounter;
   const budget = TIER_TOKENS[options.tier] - (options.reserved ?? 0);
   const intent = options.intent ?? 'overview';
+
+  // Derived once, here, and carried on the result. The extractors, the ordering and every consumer
+  // downstream read this same object, so what a prompt says about the repository and what the facts say
+  // about it cannot drift apart.
+  const profile = deriveProfile(context);
 
   const facts: Fact[] = [];
   const lines: string[] = [];
@@ -1243,10 +2191,24 @@ export function project(context: RepositoryContext, options: ProjectionOptions):
   /**
    * Runs one pass over a list of extractors, admitting what fits.
    *
-   * Returns `false` once the pass's own ceiling is reached, so the caller can stop rather than keep
-   * calling extractors whose output cannot be afforded.
+   * Stops once the pass's own ceiling is reached, so the caller does not keep calling extractors whose
+   * output cannot be afforded.
+   *
+   * With an `allocation`, each group additionally gets a share of whatever the pass began with, and an
+   * extractor whose group is exhausted is **skipped rather than terminal** — the other groups still have
+   * room, and ending the pass there would hand the whole remainder to nobody. Only the pass ceiling
+   * ends a pass.
    */
-  const run = (extractors: readonly Extractor[], ceiling: number, core: boolean): void => {
+  const run = (
+    extractors: readonly Extractor[],
+    ceiling: number,
+    core: boolean,
+    allocation?: FactAllocation,
+  ): void => {
+    /** Spend per group, and the room each may have. Both empty where no allocation was given. */
+    const groupSpent = new Map<FactGroup, number>();
+    const share = Math.max(0, ceiling - spent);
+
     for (const extractor of extractors) {
       // Filtering before capping keeps the omission honest: `total` counts the facts this part could
       // have contributed that nothing earlier had already said *and* that are worth a token.
@@ -1275,7 +2237,13 @@ export function project(context: RepositoryContext, options: ProjectionOptions):
 
       const caps = core ? (extractor.coreCaps ?? extractor.caps) : extractor.caps;
       const capped = drafts.slice(0, caps[options.tier]);
+      const group = GROUP_OF[extractor.part] ?? 'supporting';
+      const room = allocation === undefined ? Number.POSITIVE_INFINITY : Math.floor(share * allocation[group]);
+
+      let used = groupSpent.get(group) ?? 0;
       let kept = 0;
+      /** Whether the pass itself ran out, as opposed to this one group's share. */
+      let exhausted = false;
 
       for (const candidate of capped) {
         sequence += 1;
@@ -1287,6 +2255,14 @@ export function project(context: RepositoryContext, options: ProjectionOptions):
           // This pass is exhausted. Undo the candidate's id so numbering stays contiguous, and stop —
           // admitting later, cheaper facts out of order would break the fixed priority.
           sequence -= 1;
+          exhausted = true;
+          break;
+        }
+
+        if (used + cost > room) {
+          // This group's share is spent. The pass continues: the facts refused here are offered again
+          // by the unallocated sweep, and only after every other group has had its share.
+          sequence -= 1;
           break;
         }
 
@@ -1296,16 +2272,20 @@ export function project(context: RepositoryContext, options: ProjectionOptions):
         represented.push(...(candidate.identities ?? []));
         lines.push(line);
         spent += cost;
+        used += cost;
         kept += 1;
       }
 
+      groupSpent.set(group, used);
+
       const held = tally.get(extractor.part) ?? { kept: 0, total: 0 };
 
-      // `total` is the largest this part was ever seen to offer. Both passes see the same context, but
-      // the second sees fewer candidates because the first consumed some — summing would double-count.
+      // `total` is the largest this part was ever seen to offer. Every pass sees the same context, but
+      // a later one sees fewer candidates because the earlier ones consumed some — summing would
+      // double-count.
       tally.set(extractor.part, { kept: held.kept + kept, total: Math.max(held.total, held.kept + drafts.length) });
 
-      if (kept < capped.length) {
+      if (exhausted) {
         // Nothing later in this pass can fit either, since every extractor after it is lower priority.
         return;
       }
@@ -1314,7 +2294,16 @@ export function project(context: RepositoryContext, options: ProjectionOptions):
 
   // Pass one: the stable core. Extractor order, core caps, and a fixed share of the budget — nothing
   // here reads the question, which is precisely what lets the rendered prefix be reused between them.
-  run(EXTRACTORS, Math.floor(budget * CORE_SHARE), true);
+  // The *profile* may reorder it, and that is safe for the same reason: a profile depends on the
+  // repository and not on the question, so the prefix is still byte-identical between two questions.
+  //
+  // The ceiling comes from the **question-independent** reservation, so two questions about one
+  // repository admit the same core facts and render the same prefix. See `coreReserved`.
+  const coreBudget = TIER_TOKENS[options.tier] - (options.coreReserved ?? options.reserved ?? 0);
+
+  // Never larger than what is actually left: a core that overran the real budget would leave the
+  // supplement negative and silently drop every question-specific fact.
+  run(shapedFor(profile), Math.max(0, Math.min(Math.floor(coreBudget * CORE_SHARE), budget)), true);
 
   /**
    * The boundary, recorded here rather than re-derived afterwards.
@@ -1326,8 +2315,28 @@ export function project(context: RepositoryContext, options: ProjectionOptions):
    */
   const coreCount = facts.length;
 
-  // Pass two: the supplement, led by whatever the question is about.
-  run(orderedFor(intent), budget, false);
+  // Pass two: the supplement, led by whatever the question is about — within the order the repository's
+  // own shape already set, so a technology question about a huge repository still gets its packages
+  // before its hotspots — and divided between the four groups where the plan said how.
+  const supplement = orderedFor(intent, profile, options.parts ?? []);
+
+  run(supplement, budget, false, options.allocation);
+
+  /*
+   * Pass three: whatever the shares refused, while the budget lasts.
+   *
+   * **An allocation is a statement of preference, not a cap on the answer.** Without this, a plan that
+   * reserved 40% for workflow facts on a repository with two of them would leave a third of the budget
+   * unspent — and the facts it declined to buy are the same facts an unplanned projection would have
+   * had. Running the identical extractor order a second time costs one more pass over data already in
+   * memory and admits only what `seen` proves was never emitted.
+   *
+   * Skipped where the allocated pass already spent what it was given, which is the common case on any
+   * repository large enough for the budget to bind.
+   */
+  if (options.allocation !== undefined && spent < budget) {
+    run(supplement, budget, false);
+  }
 
   const omissions: Omission[] = [...tally.entries()]
     .filter(([, counts]) => counts.kept < counts.total)
@@ -1359,9 +2368,97 @@ export function project(context: RepositoryContext, options: ProjectionOptions):
     terms: termsFrom(facts, [...claimed, ...represented]),
     omissions,
     tier: options.tier,
+    profile,
+    // Derived once per context and cached there, so this is a lookup rather than a second ranking.
+    identity: context.primary.type === 'repository' ? deriveIdentity(context) : null,
     tokens: spent,
     digest: digest(lines),
   };
+}
+
+/**
+ * What each kind of repository needs its facts to be *about*, before any question is asked.
+ *
+ * **This is Phase 7 at the repository axis, and it is the half the intent classifier could never
+ * supply.** `INTENT_PARTS` answers "this question is about caching, so lead with technologies"; it has
+ * no opinion about the fact that a framework's answer is made of packages and exports while a service's
+ * is made of routes and layers. Given the same question, the two need different facts, and until this
+ * existed both received the declared order — which is the application order, because that is what the
+ * declared order was tuned on.
+ *
+ * A **reordering, never a filter**, exactly as `orderedFor` is: every extractor still runs, so a type
+ * rule that fired wrongly costs a differently-ordered projection rather than a missing part of the
+ * repository. That is what keeps a rule table safe enough to be a rule table.
+ */
+const TYPE_PARTS: Readonly<Record<string, readonly string[]>> = {
+  // A request is the thing to explain, so the surfaces and the layers come first.
+  application: ['routes', 'architecture', 'technologies', 'packages'],
+  service: ['routes', 'architecture', 'environmentVariables', 'technologies'],
+  // A consumer's question is answered by the units and what they export, never by a route.
+  framework: ['packages', 'regions', 'externalPackages', 'hotspots'],
+  library: ['packages', 'externalPackages', 'hotspots', 'technologies'],
+  sdk: ['packages', 'externalPackages', 'architecture', 'technologies'],
+  cli: ['packages', 'architecture', 'environmentVariables', 'externalPackages'],
+  // Nothing was analysed but manifests and configuration; that is the whole of the answer.
+  infrastructure: ['technologies', 'environmentVariables', 'regions', 'composition'],
+  // The pipeline is the architecture, and the packages are its stages.
+  compiler: ['packages', 'regions', 'hotspots', 'cycles'],
+  monorepo: ['packages', 'regions', 'composition', 'technologies'],
+  tooling: ['packages', 'architecture', 'externalPackages', 'technologies'],
+  unknown: [],
+};
+
+/**
+ * Parts nothing may reorder.
+ *
+ * **A guard rather than a preference, and it was added because reordering broke the thing the previous
+ * milestone built.** `TYPE_PARTS` for an application named `request-flow` first, and a stable sort duly
+ * lifted it above `profile` and `architecture-summary` — so the first fact a model read about a web
+ * service was the request flow, and what the system *is* had been pushed below what it *does*. Every
+ * part here is small, `ALL`-capped and needed by every answer regardless of type: the two that say what
+ * the repository is, the subject's own identity, and the limitations that are the honesty guarantee.
+ * Steering is for the ranked lists, which is where all the budget is anyway.
+ */
+const PINNED: readonly string[] = [
+  'areas',
+  /*
+   * The artefact inventory joins the pinned set, and only the inventory.
+   *
+   * It is one short list saying what the repository is made of when most of it is not source — the same
+   * job the area map does one level up, and needed by every answer for the same reason. `key-artifacts` is
+   * deliberately *not* pinned: it is the ranked-list-shaped part of artefact evidence, so it belongs in the
+   * steerable region where a deployment question can lift it and an API question can leave it.
+   */
+  'artifact-inventory',
+  'profile',
+  'purpose',
+  'architecture-summary',
+  'request-flow',
+  'identity',
+  'limitations',
+];
+
+/**
+ * Extractors ordered for the repository this is, before the question is considered.
+ *
+ * Runs on the **core** pass as well as feeding the supplement, and that is deliberate: the core is the
+ * part every answer rests on, so a framework whose core is full of route facts has already lost the
+ * answer before the intent gets a say. It stays safe for prefix reuse because a profile is a function
+ * of the repository alone — two questions about one repository produce the same order and therefore the
+ * same bytes.
+ */
+function shapedFor(profile: RepositoryProfile): readonly Extractor[] {
+  const wanted = TYPE_PARTS[profile.type.value] ?? [];
+
+  /*
+   * A huge repository is reordered whatever its type, because at that size the failure is the same for
+   * all of them: the answer must be built from the units and the boundaries between them, and a ranked
+   * list of individual declarations spends the budget on detail nobody asked for. `hotspots` is not
+   * removed — nothing ever is — it simply stops out-ranking the package list.
+   */
+  const scaled = profile.scale.scale === 'huge' ? ['packages', 'regions', ...wanted] : wanted;
+
+  return reordered(EXTRACTORS, scaled, true);
 }
 
 /**
@@ -1370,22 +2467,64 @@ export function project(context: RepositoryContext, options: ProjectionOptions):
  * A **reordering, never a filter**: every extractor still runs, so an intent the classifier got wrong
  * costs a differently-ordered supplement rather than a missing part of the repository. That property is
  * what lets the classifier be six lines of keyword matching instead of a second model call.
+ *
+ * The intent is applied **on top of** the repository's own order rather than instead of it, so the two
+ * compose: the question decides what leads, and the repository decides everything the question did not
+ * name. A framework asked about caching gets its cache technologies first and its packages second,
+ * rather than the route facts an application would have received.
  */
-function orderedFor(intent: QuestionIntent): readonly Extractor[] {
-  const wanted = INTENT_PARTS[intent];
+function orderedFor(
+  intent: QuestionIntent,
+  profile: RepositoryProfile,
+  planned: readonly string[],
+): readonly Extractor[] {
+  // The plan's parts lead, then the intent's, then the repository's own order behind both. A part the
+  // plan and the intent both name keeps the plan's position, because `reordered` is a stable sort and
+  // the plan is applied last.
+  const wanted = [...planned, ...INTENT_PARTS[intent].filter((part) => !planned.includes(part))];
+  const shaped = shapedFor(profile);
 
+  /*
+   * The intent sorts *without* pinning, and the asymmetry with `shapedFor` is deliberate.
+   *
+   * The core pass is where the essential parts are guaranteed, so that is where they are protected. The
+   * supplement's entire purpose is to be led by the question — lifting the pinned parts here as well
+   * would mean that on any repository whose core exhausted its budget, every question's supplement
+   * opened with the same identity facts and the intent decided nothing. `INTENT_PARTS` names no pinned
+   * part in any case, so this preserves exactly the behaviour the supplement already had.
+   */
+  return wanted.length === 0 ? shaped : reordered(shaped, wanted, false);
+}
+
+/**
+ * A stable sort that brings the named parts to the front.
+ *
+ * With `pin`, three ranks rather than two: the pinned parts hold rank `-1` and keep their declared order
+ * at the very front whatever was asked for, the named parts follow in the order they were named, and
+ * everything else keeps its declared order behind both. Naming a pinned part then changes nothing, which
+ * is the intended reading of `PINNED`.
+ */
+function reordered(
+  extractors: readonly Extractor[],
+  wanted: readonly string[],
+  pin: boolean,
+): readonly Extractor[] {
   if (wanted.length === 0) {
-    return EXTRACTORS;
+    return extractors;
   }
 
   const rank = (extractor: Extractor): number => {
+    if (pin && PINNED.includes(extractor.part)) {
+      return -1;
+    }
+
     const index = wanted.indexOf(extractor.part);
 
     return index === -1 ? wanted.length : index;
   };
 
-  // A stable sort, so parts the intent does not name keep their declared order behind the ones it does.
-  return [...EXTRACTORS].sort((left, right) => rank(left) - rank(right));
+  // A stable sort, so parts the caller did not name keep their declared order behind the ones it did.
+  return [...extractors].sort((left, right) => rank(left) - rank(right));
 }
 
 /**
@@ -1469,10 +2608,33 @@ function termsFrom(facts: readonly Fact[], claimed: readonly string[]): Readonly
       // "Fiber in packages/react-reconciler/src/ReactInternalTypes.js", and neither half of that
       // sentence should be reported as an invention.
       const body = bare.slice(bare.indexOf(':') + 1);
+
+      /*
+       * The identifier without its prefix.
+       *
+       * Caught in the product: asked which declarations are most referenced, the model answered
+       * correctly and wrote `packages/react-reconciler/src/ReactInternalTypes.js#Fiber` — the same
+       * identifier the facts carried, minus the four characters of `sym:`. The guard called it a name
+       * no fact contained.
+       */
+      add(body);
+
       const [path, chain] = body.split('#');
 
       if (path !== undefined) {
         add(path);
+
+        /*
+         * The file's own name, which is how prose refers to it.
+         *
+         * Caught in the product rather than in review: asked to explain React's architecture, the
+         * model wrote a correct, well-cited answer naming `ModalDialog.js`, `ProfilerContext.js` and
+         * `InspectedElementContext.js`, and the guard marked all three as terms no fact carried — for
+         * three files whose full paths were sitting in the identifiers it had just been given. Nobody
+         * writing about a file calls it `packages/react-devtools-shared/src/…/ModalDialog.js` in a
+         * sentence, and a verifier that demands they do is wrong about a right answer.
+         */
+        add(path.split('/').at(-1) ?? '');
       }
 
       if (chain !== undefined) {

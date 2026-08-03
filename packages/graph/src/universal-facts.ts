@@ -26,7 +26,85 @@ export interface UniversalFacts {
    * TraceIQ has no analyser for exactly as they do for TypeScript.
    */
   readonly technologies: readonly UniversalTechnology[];
+  /**
+   * What every non-code artefact declares, as artefact analysis read it.
+   *
+   * Universal for the same reason the technologies are: a workflow, a Dockerfile, a compose file and a
+   * README are readable without a compiler. This is the input that lets a repository with no analysable
+   * source hold edges at all — until it existed, every relationship in the vocabulary needed a
+   * declaration at one end, so those files could hold a node and never appear at either end of an edge.
+   *
+   * Empty where artefact analysis did not run, which is not the same as a repository holding no
+   * artefacts. `File.artifactKind` is `null` in that case, and every consumer reads it as "not analysed".
+   */
+  readonly artifacts: readonly UniversalArtifact[];
   readonly capabilities: RepositoryCapabilities;
+}
+
+/**
+ * One artefact, flattened to what the graph stores.
+ *
+ * Structurally identical to `@traceiq/artifact`'s `Artifact` and deliberately re-declared rather than
+ * imported: the graph builder must not depend on the analysis package, for the same reason it does not
+ * depend on the scanner or the technology detector. Every input arrives as plain data.
+ */
+export interface UniversalArtifact {
+  readonly path: string;
+  /** The artefact family, from `ARTIFACT_KINDS`. */
+  readonly kind: string;
+  readonly read: boolean;
+  readonly boundary: string;
+  readonly summary: string;
+  readonly elements: readonly UniversalArtifactElement[];
+  readonly references: readonly UniversalArtifactReference[];
+}
+
+export interface UniversalArtifactElement {
+  /** The element kind, from `ARTIFACT_ELEMENT_KINDS`. */
+  readonly kind: string;
+  readonly name: string;
+  /** The containing section path inside the artefact; `''` for a top-level element. */
+  readonly section: string;
+  readonly detail: string;
+  readonly line: number;
+  /** Names of sibling elements this one declares it needs. The only ordering evidence artefacts give. */
+  readonly requires: readonly string[];
+}
+
+export interface UniversalArtifactReference {
+  /** `path`, `command`, `link`, `environment` or `technology`. */
+  readonly kind: string;
+  readonly text: string;
+  /**
+   * The repository-relative paths this text could denote, most plausible first. Empty where it denotes none.
+   *
+   * Alternatives for **one** reference rather than several references: a path inside a workflow may mean the
+   * repository root or the workflow's own directory, and the translator resolves against what the scan
+   * actually found. Recording them as separate references made every unchosen alternative a phantom dead
+   * link — 431 of them on one documentation-heavy repository.
+   */
+  readonly candidates: readonly string[];
+  /** The element that named it, or `null` where the artefact itself did. */
+  readonly element: string | null;
+  readonly line: number;
+  readonly evidence: string;
+  readonly confidence: string;
+}
+
+/**
+ * An artefact element's node identifier.
+ *
+ * Scoped by the artefact, the section and the element's own kind and name, because none of those alone is
+ * unique: two jobs may hold a step called `Checkout`, and a compose file may declare a service and a
+ * volume of the same name. Deterministic, so two scans of one repository produce identical identifiers.
+ */
+export function artifactElementId(input: {
+  readonly path: string;
+  readonly kind: string;
+  readonly section: string;
+  readonly name: string;
+}): NodeId {
+  return `art:${input.path}#${input.kind}:${input.section}:${input.name}` as NodeId;
 }
 
 /** One detected technology, flattened to what the graph stores. */
@@ -112,6 +190,7 @@ export function universalFactsFromAnalysedFiles(input: {
     })),
     manifests: [],
     technologies: [],
+    artifacts: [],
     capabilities: input.capabilities,
   };
 }

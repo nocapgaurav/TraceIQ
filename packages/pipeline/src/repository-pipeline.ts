@@ -12,6 +12,7 @@ import { isEcosystem, RELATIONSHIP_TYPES } from '@traceiq/types';
 import { RepositoryScanner } from '@traceiq/scanner';
 import { planAnalysisUnits } from '@traceiq/project-host';
 import { detectTechnologies } from '@traceiq/technology';
+import { analyseArtifacts } from '@traceiq/artifact';
 
 import { runAnalyzers, type LanguageAnalyzer } from '@traceiq/analyzer';
 import { GoAnalyzer, preloadGoParser } from '@traceiq/go';
@@ -162,6 +163,17 @@ export class RepositoryPipeline {
     const analyzers = input.analyzers ?? (await defaultAnalyzersFor(inventory));
     const outcomes = runAnalyzers({ analyzers, inventory });
 
+    // One reader for both universal passes, so a file a technology rule and an artefact reader both
+    // want is opened once. Unreadable is not a finding in either: the detection simply does not
+    // happen, which is the same answer as the file not being there.
+    const read = async (relativePath: string): Promise<string | null> => {
+      try {
+        return await readFile(path.join(inventory.rootPath, relativePath), 'utf8');
+      } catch {
+        return null;
+      }
+    };
+
     // Technologies are universal: a Dockerfile, a `next` dependency and a Terraform file are
     // readable without a compiler, so they exist for a repository in a language no analyser covers
     // exactly as they do for TypeScript. Detected after the analysers only because nothing here
@@ -170,15 +182,22 @@ export class RepositoryPipeline {
       files: inventory.files,
       manifests: inventory.manifests,
       regions: inventory.regions,
-      readFile: async (relativePath) => {
-        try {
-          return await readFile(path.join(inventory.rootPath, relativePath), 'utf8');
-        } catch {
-          // Unreadable is not a finding. The technology simply goes undetected, which is the same
-          // answer as the file not being there.
-          return null;
-        }
-      },
+      readFile: read,
+    });
+
+    /*
+     * Artefacts are universal for the same reason, and this is the pass that stops "0 declarations"
+     * from meaning "does nothing".
+     *
+     * It runs **after** technology detection because it consumes its output: a `CONFIGURES`
+     * relationship from `next.config.js` to Next.js is the detector's own evidence restated from the
+     * file's side, and inventing a second opinion about what reads a configuration file is exactly what
+     * this layer must not do.
+     */
+    const artifacts = await analyseArtifacts({
+      files: inventory.files,
+      technologies: profile.technologies,
+      readFile: read,
     });
 
     // The build is isolated too. An analyser can also fail by *succeeding* and returning facts the
@@ -207,6 +226,15 @@ export class RepositoryPipeline {
           regionPath: technology.regionPath,
           confidence: technology.confidence,
           evidence: technology.evidence,
+        })),
+        artifacts: artifacts.artifacts.map((artifact) => ({
+          path: artifact.path,
+          kind: artifact.kind,
+          read: artifact.read,
+          boundary: artifact.boundary,
+          summary: artifact.summary,
+          elements: artifact.elements,
+          references: artifact.references,
         })),
         capabilities,
       }),
@@ -247,7 +275,11 @@ export class RepositoryPipeline {
         kind('EnvironmentVariable') -
         kind('External') -
         kind('Manifest') -
-        kind('Dependency'),
+        kind('Dependency') -
+        // An artefact element is not a declaration. Counting one would mean a repository whose YAML is
+        // thorough reported more declarations than a repository with more code, which is precisely the
+        // conflation this milestone exists to remove.
+        kind('ArtifactElement'),
       nodes: graph.nodes.length,
       edges: graph.edges.length,
       unresolvedReferences: graph.unresolved.length,
@@ -268,6 +300,9 @@ export class RepositoryPipeline {
       regions: capabilities.regions.length,
       manifests: kind('Manifest'),
       declaredDependencies: kind('Dependency'),
+      artifacts: artifacts.artifacts.length,
+      artifactsRead: artifacts.artifacts.filter((artifact) => artifact.read).length,
+      artifactElements: kind('ArtifactElement'),
       depth: capabilities.depth,
       isPolyglot: capabilities.isPolyglot,
       analyzerFailures: built.outcomes
@@ -381,6 +416,16 @@ function summaryOfStoredGraph(
     regions: capabilities.regions.length,
     manifests: kind('Manifest'),
     declaredDependencies: kind('Dependency'),
+    // Counted from the stored graph, like everything else here: an artefact is a file carrying a family,
+    // and the family is on the node rather than remembered from the scan that wrote it.
+    artifacts: api.getNodes('File').filter((node) => node.artifactKind !== null).length,
+    // Whether a reader ran is not stored per file. A file holding elements was certainly read; one that
+    // holds none may have been read and found to declare nothing, so this is a floor rather than a count,
+    // and a caller wanting the exact figure rescans.
+    artifactsRead: new Set(
+      api.getNodes('ArtifactElement').flatMap((node) => (node.fileId === null ? [] : [node.fileId])),
+    ).size,
+    artifactElements: kind('ArtifactElement'),
     depth: capabilities.depth,
     isPolyglot: capabilities.isPolyglot,
     analyzerFailures: [],

@@ -21,6 +21,8 @@ export default defineConfig({
       '@traceiq/types': packageSource('types'),
       '@traceiq/shared': packageSource('shared'),
       '@traceiq/scanner': packageSource('scanner'),
+      '@traceiq/technology': packageSource('technology'),
+      '@traceiq/artifact': packageSource('artifact'),
       '@traceiq/project-host': packageSource('project-host'),
       '@traceiq/ir': packageSource('ir'),
       '@traceiq/resolver': packageSource('resolver'),

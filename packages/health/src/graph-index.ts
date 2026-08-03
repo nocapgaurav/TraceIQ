@@ -22,8 +22,16 @@ import type { HealthGraph } from './types.js';
  *
  * It is still counted in `edgeCount` and in the relationship totals, because it is a real edge.
  */
+/**
+ * `CONTAINS` is excluded for exactly the reason `DECLARES` is: it is containment, not a reference.
+ *
+ * A workflow file holding twelve steps would otherwise have a fan-out of twelve and every step a fan-in
+ * of one, so a repository whose YAML is thorough would read as its most coupled region — which is the
+ * hotspot-as-importance failure arriving through a new door. Artefact containment is counted in
+ * `edgeCount` and in the relationship totals, because it is a real edge.
+ */
 export const REFERENCE_TYPES: readonly RelationshipType[] = RELATIONSHIP_TYPES.filter(
-  (type) => type !== 'DECLARES',
+  (type) => type !== 'DECLARES' && type !== 'CONTAINS',
 );
 
 /** Neighbours of one node, in the order the edges arrived — which is identifier order. */

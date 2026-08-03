@@ -9,6 +9,7 @@ import type {
 import type { ConfidenceLevel, NodeId } from '@traceiq/types';
 
 import { translateAnnotations } from './annotation-translator.js';
+import { translateArtifacts, type ArtifactFileFacts } from './artifact-translator.js';
 import { translateCallGraph, translateExternalCalls } from './call-translator.js';
 import { GraphConstraintError, validateGraph } from './constraints.js';
 import { edgeIdentity, strongerConfidence } from './identity.js';
@@ -16,6 +17,7 @@ import { declaringNodeIdOf } from './declares.js';
 import { externalIdentityOf } from './external-identity.js';
 import { NO_CAPABILITIES } from './capabilities.js';
 import { linkClientCallsToRoutes } from './client-route-linker.js';
+import { environmentVariableId } from '@traceiq/shared';
 import {
   dependencyId,
   technologyId,
@@ -132,12 +134,34 @@ export class GraphBuilder {
         .map((file) => file.path),
     );
 
+    /*
+     * Artefacts are translated before the file nodes are made, because a file node carries the artefact
+     * family the translation decided. Its own nodes and edges are appended after the technologies, since
+     * a `CONFIGURES` edge targets one of those.
+     */
+    const artifacts = translateArtifacts({
+      artifacts: universal.artifacts,
+      filePaths: new Set(universal.files.map((file) => file.path)),
+      technologies: universal.technologies,
+      existingVariableIds: new Set(
+        annotations.environmentVariables.flatMap((usage) => {
+          try {
+            return [environmentVariableId(usage.name)];
+          } catch {
+            // An unaddressable name has no identity to collide with; the annotation translator records it.
+            return [];
+          }
+        }),
+      ),
+    });
+
     const nodes: GraphNode[] = universal.files.map((file) =>
-      fileNode(file, declarationFiles.has(file.path)),
+      fileNode(file, declarationFiles.has(file.path), artifacts.artifactByPath.get(file.path) ?? null),
     );
 
     nodes.push(...manifestNodes(universal));
     nodes.push(...technologyNodes(universal));
+    nodes.push(...artifacts.nodes);
 
     const declarationIds = new Set(declarations.map((entry) => entry.id));
 
@@ -145,7 +169,7 @@ export class GraphBuilder {
       nodes.push(declarationNode(declaration, enrichment.get(declaration.id)));
     }
 
-    const edges: GraphEdge[] = [...dependencyEdges(universal, nodes)];
+    const edges: GraphEdge[] = [...dependencyEdges(universal, nodes), ...artifacts.edges];
 
     for (const declaration of declarations) {
       edges.push(declaresEdge(declaration, declaringNodeIdOf(declaration, declarationIds)));
@@ -176,6 +200,11 @@ export class GraphBuilder {
     }
 
     const unresolved = resolved.unresolved.map((entry) => unresolvedRow(entry));
+
+    // A workflow naming a script the repository does not hold is a real fact about the repository. It
+    // lands here rather than being dropped, so the absence of a `RUNS` edge stays distinguishable from
+    // the absence of a command.
+    unresolved.push(...artifacts.unresolved);
 
     // Framework annotations are translated last: their Route nodes and READS edges refer
     // to declarations and files, which by now all exist.
@@ -498,10 +527,22 @@ const BLANK_NODE = {
   language: null,
   fileRole: null,
   category: null,
+  artifactKind: null,
   locations: [],
 } as const satisfies Partial<GraphNode>;
 
-function fileNode(file: UniversalFacts['files'][number], isDeclarationFile: boolean): GraphNode {
+function fileNode(
+  file: UniversalFacts['files'][number],
+  isDeclarationFile: boolean,
+  /**
+   * The artefact family, or `null` where artefact analysis did not classify this file.
+   *
+   * `null` means *not analysed* and never *has no purpose*. Source files are deliberately `null`: their
+   * structure is what the language analysers produce, at a fidelity a line reader could not reach, and a
+   * second description of the same file would give the graph two answers to one question.
+   */
+  artifact: ArtifactFileFacts | null,
+): GraphNode {
   return {
     id: fileId(file.path),
     kind: 'File',
@@ -525,11 +566,22 @@ function fileNode(file: UniversalFacts['files'][number], isDeclarationFile: bool
     language: file.language,
     fileRole: file.role,
     category: null,
+    artifactKind: artifact?.kind ?? null,
     confidence: 'CERTAIN',
     provenance: {
       producer: PRODUCER,
       fileId: fileId(file.path),
-      evidence: `found by the Repository Scanner; ${file.language === null ? 'no language recognised' : `identified as ${file.language}`} and classified as ${file.role} by extension and path`,
+      /*
+       * The scanner's reading, then the artefact reading, then the boundary of that reading.
+       *
+       * The boundary belongs here rather than in a column of its own because it is provenance in the
+       * exact sense this field already means — why the claim is made, shown to a reader verbatim — and
+       * because it is the sentence that stops an artefact holding no elements from reading as a file that
+       * declares nothing. The Explorer surfaces it unchanged; nothing parses it.
+       */
+      evidence:
+        `found by the Repository Scanner; ${file.language === null ? 'no language recognised' : `identified as ${file.language}`} and classified as ${file.role} by extension and path` +
+        (artifact === null ? '' : `; read by artefact analysis as ${artifact.summary}. ${artifact.boundary}`),
     },
     locations: [],
   };
@@ -567,6 +619,7 @@ function declarationNode(
     language: null,
     fileRole: null,
     category: null,
+    artifactKind: null,
     confidence: 'CERTAIN',
     provenance: {
       producer: PRODUCER,
@@ -600,6 +653,7 @@ function externalNode(id: NodeId, pending: PendingExternal): GraphNode {
     language: null,
     fileRole: null,
     category: null,
+    artifactKind: null,
     confidence: pending.confidence,
     provenance: {
       producer: PRODUCER,

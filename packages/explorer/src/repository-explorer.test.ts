@@ -581,9 +581,9 @@ describe('reuse and shared state', () => {
   it('builds the whole-graph index once however many operations need it', () => {
     explorer.overview();
 
-    // Eighteen node kinds and thirteen relationship types, read once each.
-    expect(graph.calls.getNodes).toBe(19);
-    expect(graph.calls.getEdges).toBe(13);
+    // Twenty node kinds and nineteen relationship types, read once each.
+    expect(graph.calls.getNodes).toBe(20);
+    expect(graph.calls.getEdges).toBe(19);
 
     explorer.hotspots();
     explorer.cycles();

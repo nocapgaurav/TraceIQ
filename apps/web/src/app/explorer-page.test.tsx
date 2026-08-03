@@ -48,6 +48,9 @@ const CORE: PackageView = {
 const SERVICE_FILE: FileView = {
   file: node({ id: 'file:packages/core/src/service.ts', kind: 'File', fileId: null }),
   packageName: 'packages/core',
+  // A source file, so artefact analysis classified nothing: its structure is the language analysers' to
+  // produce. `null` is what the panel reads as "this is a source file", not as "nothing is known".
+  artifact: null,
   declarations: listing([
     node({ id: 'sym:packages/core/src/service.ts#UserService', kind: 'Class', name: 'UserService' }),
     node({ id: 'sym:packages/core/src/service.ts#helper', kind: 'Function', name: 'helper' }),
@@ -95,6 +98,103 @@ function wide() {
   return within(layout as HTMLElement);
 }
 
+
+/**
+ * A workflow file: no declarations, and everything a reader needs anyway.
+ *
+ * **The fixture that names the milestone.** Every code statistic on it is zero, which is exactly what the
+ * old panel showed — six zeroes and "This file declares nothing" over a file that declares four things and
+ * runs two scripts.
+ */
+const WORKFLOW_FILE: FileView = {
+  file: node({ id: 'file:.github/workflows/ci.yml', kind: 'File', fileId: null }),
+  packageName: '.github/workflows',
+  artifact: {
+    kind: 'ci-workflow',
+    format: 'yaml',
+    role: 'configuration',
+    summary: {
+      kind: 'ci-workflow',
+      role: 'configuration',
+      defines: [
+        { kind: 'job', count: 2 },
+        { kind: 'step', count: 4 },
+      ],
+      configures: [],
+      reaches: [{ type: 'RUNS', count: 1 }],
+      referencedBy: 1,
+      variables: ['NPM_TOKEN'],
+      position: 'in .github/workflows, 2 levels deep',
+      established: true,
+    },
+    sections: [
+      {
+        title: 'jobs',
+        elements: [
+          {
+            node: node({ id: 'art:.github/workflows/ci.yml#job:jobs:verify', kind: 'ArtifactElement', name: 'verify' }),
+            kind: 'job',
+            name: 'verify',
+            detail: 'runs on ubuntu-latest',
+            line: 6,
+            requires: [],
+          },
+          {
+            node: node({ id: 'art:.github/workflows/ci.yml#job:jobs:ship', kind: 'ArtifactElement', name: 'ship' }),
+            kind: 'job',
+            name: 'ship',
+            detail: 'runs on ubuntu-latest',
+            line: 14,
+            requires: [node({ id: 'art:.github/workflows/ci.yml#job:jobs:verify', kind: 'ArtifactElement', name: 'verify' })],
+          },
+        ],
+      },
+    ],
+    references: listing([
+      {
+        type: 'RUNS',
+        node: node({ id: 'file:tools/ship.sh', kind: 'File', fileId: null, name: 'tools/ship.sh' }),
+        via: node({ id: 'art:.github/workflows/ci.yml#command:jobs.ship:bash tools/ship.sh', kind: 'ArtifactElement', name: 'bash tools/ship.sh' }),
+        confidence: 'INFERRED',
+        evidence: 'invoked by ship: bash tools/ship.sh; resolved to tools/ship.sh',
+      },
+    ]),
+    referencedBy: listing([
+      {
+        type: 'DOCUMENTS',
+        node: node({ id: 'file:README.md', kind: 'File', fileId: null, name: 'README.md' }),
+        via: null,
+        confidence: 'RESOLVED',
+        evidence: 'linked from this document; resolved to .github/workflows/ci.yml',
+      },
+    ]),
+    unresolved: listing([
+      {
+        type: 'RUNS',
+        text: './tools/gone.sh',
+        reason: 'artefact-path-matches-no-file',
+        evidence: 'invoked by ship; no file in the repository has this path',
+      },
+    ]),
+    boundary:
+      'Read as indentation structure: jobs, their declared prerequisites and their steps. Matrix expansion was not performed.',
+  },
+  declarations: listing([]),
+  imports: listing([]),
+  exports: listing([]),
+  externalPackages: listing([]),
+  routes: listing([]),
+  environmentVariables: listing([]),
+  statistics: {
+    declarations: 0,
+    imports: 0,
+    exports: 0,
+    fanIn: 0,
+    fanOut: 0,
+    declarationsByKind: {},
+  },
+};
+
 /**
  * Paths are spelled out in full rather than as short prefixes.
  *
@@ -102,11 +202,26 @@ function wide() {
  * `/api/files/packages/core/…` — only `#` is escaped — which contains `/packages`. A `/files/` stub loses to the
  * package-listing stub and the file panel is handed the wrong payload.
  */
+/**
+ * Opens a tab in the wide layout.
+ *
+ * `userEvent.click` does not switch these: the page renders both the wide and the narrow arrangement, and
+ * with two live Radix tab lists in one document the synthesised pointer sequence does not reach the
+ * intended trigger. Radix activates on mouse-down, so dispatching that directly is both sufficient and
+ * closer to what the component actually listens for.
+ */
+function openTab(name: string): void {
+  const tab = wide().getAllByRole('tab', { name: new RegExp(`^${name}`) })[0] as HTMLElement;
+
+  fireEvent.mouseDown(tab);
+}
+
 function render(): void {
   stub = stubFetch([
     { path: '/packages/packages/core', data: CORE },
     { path: '/packages', data: PACKAGES },
     { path: '/files/packages/core/src/service.ts', data: SERVICE_FILE },
+    { path: '/files/.github/workflows/ci.yml', data: WORKFLOW_FILE },
     { path: '/symbol/', data: SYMBOL_VIEW },
     { path: '/search', data: SEARCH },
   ]);
@@ -300,6 +415,102 @@ describe('Explorer', () => {
 
       expect(push).toHaveBeenCalledWith(expect.stringContaining('symbol=sym%3A'));
       expect(push).toHaveBeenCalledWith(expect.stringContaining('/explorer?'));
+    });
+  });
+
+
+  /**
+   * The artefact panel: what the centre pane shows for a file that declares no code.
+   *
+   * The layout is deliberately unchanged — same header, same badges, same tab strip — so these tests are
+   * about the *information*, which is the only thing this milestone moved.
+   */
+  describe('with an artefact selected', () => {
+    beforeEach(() => {
+      params.current = new URLSearchParams('file=.github/workflows/ci.yml');
+    });
+
+    it('names the artefact family instead of the word "File"', async () => {
+      render();
+
+      await wide().findByRole('heading', { level: 2, name: '.github/workflows/ci.yml' });
+      expect(wide().getByText('ci-workflow')).toBeInTheDocument();
+    });
+
+    it('summarises what the artefact declares rather than showing six zeroes', async () => {
+      render();
+
+      await wide().findByRole('heading', { level: 2, name: '.github/workflows/ci.yml' });
+      // Assembled from graph facts, never generated: see `ArtifactSummary`.
+      expect(wide().getByText(/declaring 2 jobs, 4 steps/)).toBeInTheDocument();
+      expect(wide().getByText(/in \.github\/workflows, 2 levels deep/)).toBeInTheDocument();
+    });
+
+    it('leads with the structure, and shows what the artefact declares', async () => {
+      render();
+
+      await wide().findByRole('heading', { level: 2, name: '.github/workflows/ci.yml' });
+      expect(wide().getByText('verify')).toBeInTheDocument();
+      expect(wide().getByText('ship')).toBeInTheDocument();
+      // Two jobs share a `runs-on`, so the detail line appears twice — which is correct, and the assertion
+      // is about it appearing at all.
+      expect(wide().getAllByText('runs on ubuntu-latest').length).toBe(2);
+    });
+
+    it('shows only the ordering the artefact declared, and says who declared it', async () => {
+      render();
+
+      await wide().findByRole('heading', { level: 2, name: '.github/workflows/ci.yml' });
+      // `ship` needs `verify`; `verify` needs nothing, and appears above `ship` in the file — position is
+      // not evidence and nothing here presents it as any.
+      expect(wide().getByText(/needs verify/)).toBeInTheDocument();
+      expect(wide().getByText(/declared by this artefact/)).toBeInTheDocument();
+    });
+
+    it('states where the reading stopped, so an artefact is never silently empty', async () => {
+      render();
+
+      await wide().findByRole('heading', { level: 2, name: '.github/workflows/ci.yml' });
+      expect(wide().getByText(/Matrix expansion was not performed/)).toBeInTheDocument();
+    });
+
+    it('never says a file with no declarations declares nothing', async () => {
+      render();
+
+      await wide().findByRole('heading', { level: 2, name: '.github/workflows/ci.yml' });
+
+      // The sentence this milestone exists to delete.
+      expect(wide().queryByText('This file declares nothing')).not.toBeInTheDocument();
+
+      openTab('Declarations');
+      expect(
+        wide().getByText('No source-code declarations were extracted from this file'),
+      ).toBeInTheDocument();
+      expect(wide().getByText(/What it declares is on the Structure tab/)).toBeInTheDocument();
+    });
+
+    it('shows what it runs and what documents it, with the evidence for each', async () => {
+      render();
+
+      await wide().findByRole('heading', { level: 2, name: '.github/workflows/ci.yml' });
+
+      openTab('References');
+      expect(wide().getByText('runs')).toBeInTheDocument();
+      expect(wide().getByText(/resolved to tools\/ship\.sh/)).toBeInTheDocument();
+
+      openTab('Referenced by');
+      expect(wide().getByText('documents')).toBeInTheDocument();
+    });
+
+    it('shows what the artefact named that resolved to nothing', async () => {
+      render();
+
+      await wide().findByRole('heading', { level: 2, name: '.github/workflows/ci.yml' });
+
+      openTab('Unresolved');
+      // A workflow invoking a script that no longer exists is one of the more useful things an analysis can
+      // report, and dropping it would make an absent RUNS edge indistinguishable from an absent command.
+      expect(wide().getByText('./tools/gone.sh')).toBeInTheDocument();
     });
   });
 

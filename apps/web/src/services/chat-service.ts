@@ -159,6 +159,11 @@ export function parseFrame(block: string): ChatEvent | null {
       return { type: 'grounding', grounding: payload as ChatGrounding };
     case 'delta':
       return { type: 'delta', text: (payload as { text?: string }).text ?? '' };
+    case 'restart': {
+      const reasons = (payload as { reasons?: readonly string[] }).reasons;
+
+      return { type: 'restart', reasons: reasons ?? [] };
+    }
     case 'complete':
       return { type: 'complete', answer: payload as ChatAnswer };
     case 'error': {

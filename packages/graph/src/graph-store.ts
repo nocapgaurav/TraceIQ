@@ -155,13 +155,13 @@ export class GraphStore {
          id, kind, name, file_id, container_chain, visibility,
          is_exported, is_static, is_abstract, is_readonly, is_optional, is_async,
          is_declaration_file, has_symbol, is_exported_from_module,
-         external_kind, external_name, language, file_role, category, confidence,
+         external_kind, external_name, language, file_role, category, artifact_kind, confidence,
          provenance_producer, provenance_file_id, provenance_evidence, revision_id
        ) VALUES (
          @id, @kind, @name, @fileId, @containerChain, @visibility,
          @isExported, @isStatic, @isAbstract, @isReadonly, @isOptional, @isAsync,
          @isDeclarationFile, @hasSymbol, @isExportedFromModule,
-         @externalKind, @externalName, @language, @fileRole, @category, @confidence,
+         @externalKind, @externalName, @language, @fileRole, @category, @artifactKind, @confidence,
          @producer, @provenanceFileId, @evidence, @revisionId
        )`,
     );
@@ -194,6 +194,7 @@ export class GraphStore {
         language: node.language,
         fileRole: node.fileRole,
         category: node.category,
+        artifactKind: node.artifactKind,
         externalName: node.externalName,
         confidence: node.confidence,
         producer: node.provenance.producer,

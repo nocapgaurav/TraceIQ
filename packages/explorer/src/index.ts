@@ -1,3 +1,4 @@
+export { artifactDigestsOf, artifactSummariesOf, artifactViewOf } from './artifacts.js';
 export { CachingGraph } from './caching-graph.js';
 export { ExplorerContext, packageOf, packageOfNode, type PackageIndex } from './explorer-context.js';
 export { LIMITATION_DETAIL } from './limitations.js';
@@ -11,6 +12,13 @@ export {
   RESULT_LIMIT,
   type ArchitectureSummary,
   type ArchitectureView,
+  type ArtifactDigest,
+  type ArtifactElementView,
+  type ArtifactFamilySummary,
+  type ArtifactLink,
+  type ArtifactSection,
+  type ArtifactSummary,
+  type ArtifactView,
   type Cycle,
   type CycleKind,
   type CycleReport,
@@ -38,6 +46,7 @@ export {
   type SymbolHealthSummary,
   type SymbolImpactSummary,
   type SymbolView,
+  type UnresolvedArtifactReference,
 } from './types.js';
 
 // Depends only on the Query Engine, Explain Symbol, Impact Analysis, Repository Health, the Graph

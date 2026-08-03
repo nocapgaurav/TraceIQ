@@ -319,6 +319,7 @@ function materialise(
         language: null,
         fileRole: null,
     category: null,
+    artifactKind: null,
         confidence: node.confidence,
         provenance: {
           producer: PRODUCER,

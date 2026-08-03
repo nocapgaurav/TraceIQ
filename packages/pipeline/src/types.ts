@@ -23,6 +23,18 @@ export interface ScanSummary {
   readonly manifests: number;
   /** Distinct dependency names declared across every manifest. */
   readonly declaredDependencies: number;
+  /**
+   * Files artefact analysis classified, and how many it read the structure of.
+   *
+   * Reported as two numbers because their difference is the honest measurement of this capability's
+   * reach: `artifacts` counts the non-source files the repository holds, and `artifactsRead` counts
+   * those a format reader actually understood. A large gap is a statement about TraceIQ rather than
+   * about the repository, and it should be visible without opening a graph.
+   */
+  readonly artifacts: number;
+  readonly artifactsRead: number;
+  /** Structural pieces of those artefacts the graph now holds: jobs, steps, services, headings. */
+  readonly artifactElements: number;
   /** The deepest analysis reached anywhere in the repository. */
   readonly depth: AnalysisDepth;
   readonly isPolyglot: boolean;

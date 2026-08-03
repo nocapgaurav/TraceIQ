@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { repositoryContext, symbolContext } from './fixtures.test-helper.js';
+import { node, repositoryContext, symbolContext } from './fixtures.test-helper.js';
 import type { ContextProjection } from './facts.js';
 import { checkGrounding } from './grounding.js';
 import { project } from './projection.js';
+import { SYSTEM_PROMPT } from './prompt.js';
 
 /**
  * The guard — where "grounded only in RepositoryContext" stops being aspirational.
@@ -273,5 +274,151 @@ describe('repository-level claims are checkable without becoming over-restrictiv
     const regions = project(repositoryContext(), { tier: 'full' }).terms;
 
     expect(regions.has('the repository root')).toBe(true);
+  });
+});
+
+describe('regressions caught in the product', () => {
+  /**
+   * Each of these is a failure a real model produced against a real repository. They are here rather
+   * than as hypotheticals because every one of them was a case somebody had reasoned about and got
+   * wrong — the value is in the specific string, not in the shape.
+   */
+  const withTerms = (terms: readonly string[]): ContextProjection => ({
+    ...projection,
+    terms: new Set(terms.map((term) => term.toLowerCase())),
+  });
+
+  it('accepts a file named the way prose names it, not the way the graph identifies it', () => {
+    // `facebook/react`, asked to explain its architecture: a correct, well-cited answer was marked
+    // ungrounded over `ModalDialog.js`, `ProfilerContext.js` and `InspectedElementContext.js` — three
+    // files whose full paths were in the identifiers it had just been given.
+    const paths = [
+      'packages/react-devtools-shared/src/devtools/views/ModalDialog.js',
+      'packages/react-devtools-shared/src/devtools/views/ProfilerContext.js',
+    ];
+    const withFiles = project(
+      { ...repositoryContext(), related: paths.map((path) => ({ node: node(`file:${path}`, { kind: 'File' }), relation: 'package-file', depth: null, explain: null })) } as never,
+      { tier: 'full' },
+    );
+
+    const report = checkGrounding(
+      'The dialog lives in `ModalDialog.js` and the profiler context in `ProfilerContext.js` [f1].',
+      withFiles,
+    );
+
+    expect(report.unsupportedTerms).toEqual([]);
+    expect(report.verdict).not.toBe('ungrounded');
+  });
+
+  it('explains a rejection instead of only listing it', () => {
+    const report = checkGrounding('It depends on `@scope/absent`.', withTerms(['@scope/present']));
+
+    expect(report.unsupportedTerms).toEqual(['@scope/absent']);
+
+    const diagnostic = report.diagnostics.find((entry) => entry.kind === 'unsupported-term');
+
+    expect(diagnostic?.subject).toBe('@scope/absent');
+    // What it was checked against, so a reader can tell a fabrication from too strict a guard.
+    expect(diagnostic?.detail).toContain('names were available');
+  });
+
+  it('points at the near miss when one exists, which is how granularity bugs are spotted', () => {
+    const report = checkGrounding('`react-devtools-shared/src/x.js` is central.', withTerms(['packages/react-devtools-shared/src/x.js']));
+    const diagnostic = report.diagnostics.find((entry) => entry.kind === 'unsupported-term');
+
+    expect(diagnostic?.nearest).toContain('packages/react-devtools-shared/src/x.js');
+  });
+
+  it('accepts an identifier written without its prefix, as prose writes it', () => {
+    // `facebook/react`, "which declarations are most referenced": the model answered correctly and
+    // wrote `packages/react-reconciler/src/ReactInternalTypes.js#Fiber` — the identifier the facts
+    // carried, minus the four characters of `sym:`. Marked ungrounded.
+    const report = checkGrounding(
+      'The busiest is `packages/core/src/service.ts#UserService.find` [f1].',
+      projection,
+    );
+
+    expect(report.unsupportedTerms).toEqual([]);
+  });
+
+  it('accepts a route named by its path', () => {
+    // "Explain the architecture": the model named `/todos/:id`, a route the facts carried as
+    // `GET /todos/:id`. A route is referred to by its path far more often than by method and path.
+    const context = repositoryContext();
+    const withRoute = project(
+      {
+        ...context,
+        routes: [
+          {
+            node: node('route:GET:/todos/:id', { kind: 'Route' }),
+            method: 'GET',
+            composition: { effectivePath: '/todos/:id', composed: true, note: '' },
+          },
+        ],
+      } as never,
+      { tier: 'full' },
+    );
+
+    expect(withRoute.terms.has('/todos/:id')).toBe(true);
+    expect(checkGrounding('It exposes `/todos/:id` [f1].', withRoute).unsupportedTerms).toEqual([]);
+  });
+
+  it('leaves a generalising category word to the prose rule rather than the verifier', () => {
+    /*
+     * **Reversed, deliberately, and this is the one place the guard was made more permissive.**
+     *
+     * The facts say `GitHub Actions`, and an answer that writes "CI/CD" has replaced a proved thing with
+     * a category — which the standing instruction forbids in as many words. The previous position was
+     * that the verifier should catch it too, on the grounds that `CI/CD` is coordinate-shaped. Running
+     * real repositories showed what that costs: `CI/CD` appeared inside otherwise correct, well-cited
+     * paragraphs and dragged the whole verdict to `ungrounded`, and a user shown that beside a true
+     * answer learns to ignore the verdict entirely.
+     *
+     * The line is now drawn where it is decidable. A *naming* claim — this package, this file, this
+     * route — is adjudicable against a closed set, and every one of those still is. Whether "CI/CD" is
+     * too general a word for GitHub Actions is a judgement about prose, and the instruction is where
+     * judgements about prose belong. See `isProseAcronym`, and the negative controls beside it that
+     * prove a real slashed name is still adjudicated.
+     */
+    const report = checkGrounding('It uses `CI/CD` for builds [f1].', withTerms(['github actions']));
+
+    expect(report.unsupportedTerms).toEqual([]);
+
+    // The instruction that does forbid it is still there, and still says so.
+    expect(SYSTEM_PROMPT).toContain('GitHub Actions is not "CI/CD"');
+  });
+
+  it('accepts the named technology itself, however it is capitalised', () => {
+    const report = checkGrounding('Builds run through `GitHub Actions` [f1].', withTerms(['github actions']));
+
+    expect(report.unsupportedTerms).toEqual([]);
+  });
+
+  it('says why an answer with no citations could not be checked', () => {
+    /*
+     * The sentence used to be "The repository is well organised", which now fails a *different* check —
+     * `presence-as-quality`, because nothing in any projection measures how well a repository is organised.
+     * That is the right verdict and the wrong test: this one is about the diagnostic an uncited answer
+     * gets, so the sentence is now one that claims nothing rather than one that claims something
+     * unsupportable. The quality claim has its own test below.
+     */
+    const report = checkGrounding('The repository holds several directories.', projection);
+
+    expect(report.verdict).toBe('unverifiable');
+    expect(report.diagnostics.map((entry) => entry.kind)).toEqual(['no-citations']);
+  });
+
+  it('rejects a quality verdict, because nothing in a projection measures quality', () => {
+    const report = checkGrounding('The repository is well organised and well documented [f1].', projection);
+
+    expect(report.verdict).toBe('ungrounded');
+    expect(report.unsupportedClaims.map((finding) => finding.kind)).toEqual(['presence-as-quality']);
+  });
+
+  it('reports nothing at all when an answer is clean', () => {
+    const report = checkGrounding(`It is a Method [f1].`, projection);
+
+    expect(report.verdict).toBe('grounded');
+    expect(report.diagnostics).toEqual([]);
   });
 });

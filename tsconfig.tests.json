@@ -32,6 +32,7 @@
     { "path": "./packages/shared" },
     { "path": "./packages/scanner" },
     { "path": "./packages/technology" },
+    { "path": "./packages/artifact" },
     { "path": "./packages/project-host" },
     { "path": "./packages/ir" },
     { "path": "./packages/resolver" },

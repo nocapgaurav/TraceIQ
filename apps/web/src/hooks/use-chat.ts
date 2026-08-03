@@ -66,6 +66,7 @@ export function useChat(): UseChat {
         answer: null,
         status: 'streaming',
         phase: 'acquiring-context',
+        corrections: [],
         error: null,
       };
 
@@ -94,6 +95,15 @@ export function useChat(): UseChat {
             updateTurn(target.id, turnId, { grounding: event.grounding });
           } else if (event.type === 'delta') {
             appendDelta(target.id, turnId, event.text);
+          } else if (event.type === 'restart') {
+            /*
+             * Verification rejected what has been streamed, and one rewrite is coming.
+             *
+             * The text is cleared rather than annotated: leaving the rejected prose on screen until
+             * `complete` arrives would let a reader finish reading an answer the pipeline had already
+             * thrown away, and appending the rewrite after it would splice two answers together.
+             */
+            updateTurn(target.id, turnId, { text: '', corrections: event.reasons });
           } else if (event.type === 'complete') {
             updateTurn(target.id, turnId, {
               answer: event.answer,

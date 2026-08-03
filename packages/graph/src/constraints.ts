@@ -76,8 +76,18 @@ export const ENDPOINT_RULES: Readonly<Partial<Record<RelationshipType, EndpointR
    * language analyser produces, and the reason the frozen vocabulary needed no addition.
    */
   DEPENDS_ON: {
-    sources: ['Manifest'],
-    targets: ['Dependency'],
+    /*
+     * `ArtifactElement` on both sides, because an artefact can declare a prerequisite between its own
+     * parts and that is the only ordering evidence a configuration format ever gives.
+     *
+     * A workflow's `needs: build` and a compose service's `depends_on:` are the repository *stating* an
+     * order, which is categorically different from one step happening to be written above another. The
+     * entailment guard rejects an execution-order claim unless a relationship licenses it, and this is
+     * the relationship — so widening the row here is what makes "walk me through the deployment" an
+     * answerable question on a repository whose only ordering is in its YAML.
+     */
+    sources: ['Manifest', 'ArtifactElement'],
+    targets: ['Dependency', 'ArtifactElement'],
   },
   HANDLED_BY: {
     sources: ['Route'],
@@ -119,6 +129,57 @@ export const ENDPOINT_RULES: Readonly<Partial<Record<RelationshipType, EndpointR
       'Variable',
       'External',
     ],
+  },
+
+  // ---- artefact relationships ----------------------------------------------------------------
+  //
+  // Every row below has a `File` or an `ArtifactElement` on the source side and nothing else, which is
+  // the structural statement that these come from reading an artefact rather than from compiling
+  // source. A declaration can never be the source of one: if it could, the two capabilities would be
+  // able to produce the same edge and no consumer could tell which reading it came from.
+
+  /**
+   * An artefact holds an element, or an element holds a nested one.
+   *
+   * A job contains its steps, a service contains its ports, a heading contains nothing — the shape is
+   * whatever the format nests, and the file is always the root.
+   */
+  CONTAINS: {
+    sources: ['File', 'ArtifactElement'],
+    targets: ['ArtifactElement'],
+  },
+  /**
+   * An artefact, or one of its elements, names a path that resolves to a file.
+   *
+   * The element side matters: a compose service's build context is the *service's* reference, not the
+   * whole file's, and collapsing it to the file would lose which part of the artefact said so.
+   */
+  REFERENCES: {
+    sources: ['File', 'ArtifactElement'],
+    targets: ['File'],
+  },
+  /**
+   * A command invokes a file. Sourced at the element carrying the command wherever one exists, and at
+   * the file for a format with no element granularity worth minting.
+   */
+  RUNS: {
+    sources: ['File', 'ArtifactElement'],
+    targets: ['File'],
+  },
+  /** A configuration file configures a detected technology. */
+  CONFIGURES: {
+    sources: ['File'],
+    targets: ['Technology'],
+  },
+  /** A documentation file links to a file. */
+  DOCUMENTS: {
+    sources: ['File'],
+    targets: ['File'],
+  },
+  /** An artefact supplies or names an environment variable. */
+  USES_ENV: {
+    sources: ['File', 'ArtifactElement'],
+    targets: ['EnvironmentVariable'],
   },
 };
 

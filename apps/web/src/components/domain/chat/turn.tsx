@@ -10,7 +10,7 @@ import type { ChatPhase } from '@/types/api';
 import {
   AnswerFooter,
   Citations,
-  Fabrications,
+  Diagnostics,
   GroundingBadge,
   OmissionSummary,
   ProjectionSummary,
@@ -63,6 +63,19 @@ export function Turn({ turn }: { readonly turn: ChatTurn }) {
           <div className="flex flex-col gap-2">
             <div className="flex flex-wrap items-center gap-2">
               <GroundingBadge verdict={turn.answer.verdict} />
+              {turn.answer.attempts > 1 ? (
+                /*
+                 * That the first answer was rejected is information about this answer, and it is shown whether
+                 * or not the rewrite worked — a reader who watched the text disappear is owed the reason, and
+                 * one who did not is owed the fact that the model's first instinct did not verify.
+                 */
+                <Badge
+                  variant="warning"
+                  title={turn.answer.corrections.join('; ')}
+                >
+                  rewritten once
+                </Badge>
+              ) : null}
               {turn.answer.unknownCitations.length > 0 ? (
                 <Badge variant="danger" title="cited a fact id that was never shown to the model">
                   {turn.answer.unknownCitations.length} unknown citation
@@ -72,16 +85,13 @@ export function Turn({ turn }: { readonly turn: ChatTurn }) {
               <AnswerFooter answer={turn.answer} className="ml-auto" />
             </div>
 
-            <Fabrications identifiers={turn.answer.fabricatedIdentifiers} />
             {/*
-              Reported apart from fabricated identifiers, because the two are not equally damning. An
-              invented `sym:` has no defence; a package name the answer volunteered may be a real
-              dependency the budget did not reach. The heading says which claim it is making.
+              One explained list rather than two bare ones. `Diagnostics` covers both fabricated
+              identifiers and unsupported names, and says for each what it was checked against and what
+              the facts did carry that was close — which is what distinguishes an invention from a
+              verifier that was too strict about how a name is written.
             */}
-            <Fabrications
-              identifiers={turn.answer.unsupportedTerms}
-              heading="Named, but no fact shown to the model carried it"
-            />
+            <Diagnostics diagnostics={turn.answer.diagnostics} />
             <Citations citations={turn.answer.citations} />
           </div>
         )}
@@ -108,6 +118,9 @@ const PHASE_LABEL: Readonly<Record<ChatPhase, string>> = {
   'awaiting-model': 'The model is reading the facts…',
   generating: 'Writing the answer…',
   verifying: 'Verifying citations…',
+  // The one stage that can double the wait, so it says what it is rather than reusing "Writing the
+  // answer…" — a reader who watched the text disappear needs to know the second wait is deliberate.
+  correcting: 'The answer made an unsupported claim — rewriting it from the same facts…',
 };
 
 function Progress({ phase }: { readonly phase: ChatPhase | null }) {

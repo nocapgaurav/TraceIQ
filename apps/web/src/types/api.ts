@@ -71,7 +71,9 @@ export type NodeKind =
   | 'Namespace'
   | 'Route'
   | 'EnvironmentVariable'
-  | 'External';
+  | 'External'
+  /** One structural piece of a non-code artefact: a CI job, a compose service, a Markdown heading. */
+  | 'ArtifactElement';
 
 export type Confidence = 'CERTAIN' | 'RESOLVED' | 'INFERRED' | 'AMBIGUOUS';
 
@@ -392,6 +394,14 @@ export interface RouteResult {
 export interface FileView {
   readonly file: GraphNode;
   readonly packageName: string;
+  /**
+   * What this file declares as a non-code artefact, or `null` where artefact analysis did not classify it.
+   *
+   * `null` for every source file, whose structure the language analysers produce at a fidelity a line
+   * reader could not reach. It never means the file has no purpose — which is exactly what the Explorer
+   * used to imply by showing "This file declares nothing" over a workflow that declares four jobs.
+   */
+  readonly artifact: ArtifactView | null;
   readonly declarations: Listing<GraphNode>;
   readonly imports: Listing<Callee>;
   readonly exports: Listing<Callee>;
@@ -406,6 +416,79 @@ export interface FileView {
     readonly fanOut: number;
     readonly declarationsByKind: Readonly<Record<string, number>>;
   };
+}
+
+/**
+ * What a non-code artefact declares, as the graph holds it.
+ *
+ * Mirrors the API's own shape. Every field is a projection of stored nodes and edges — no model is
+ * involved anywhere in producing this, which is what makes the Explorer's artefact panel a view of the
+ * repository rather than a description of it.
+ */
+export interface ArtifactView {
+  /** The artefact family: `ci-workflow`, `container-image`, `documentation`, `unknown-artifact`, … */
+  readonly kind: string;
+  readonly format: string | null;
+  readonly role: string | null;
+  readonly summary: ArtifactSummary;
+  readonly sections: readonly ArtifactSection[];
+  readonly references: Listing<ArtifactLink>;
+  readonly referencedBy: Listing<ArtifactLink>;
+  /** Paths the artefact names that resolved to no file. Shown, because an absence is a real finding. */
+  readonly unresolved: Listing<UnresolvedArtifactReference>;
+  /** What the reading did not cover, in the reader's own words. */
+  readonly boundary: string;
+}
+
+export interface ArtifactSection {
+  /** The section path inside the artefact, or `''` for the top level. */
+  readonly title: string;
+  readonly elements: readonly ArtifactElementView[];
+}
+
+export interface ArtifactElementView {
+  readonly node: GraphNode;
+  /** The element kind: `job`, `step`, `service`, `heading`, `entity`, … */
+  readonly kind: string;
+  readonly name: string;
+  readonly detail: string;
+  readonly line: number;
+  /** Sibling elements the artefact declares this one needs. The only ordering shown. */
+  readonly requires: readonly GraphNode[];
+}
+
+export interface ArtifactLink {
+  readonly type: string;
+  readonly node: GraphNode;
+  readonly via: GraphNode | null;
+  readonly confidence: Confidence;
+  readonly evidence: string;
+}
+
+export interface UnresolvedArtifactReference {
+  readonly type: string;
+  readonly text: string;
+  readonly reason: string;
+  readonly evidence: string;
+}
+
+/**
+ * The deterministic artefact summary: six questions, answered only where the graph answers them.
+ *
+ * `established` is the field the empty state turns on. `false` means the artefact *was read* and no
+ * structure came out of it — which the boundary sentence explains — and it exists so the panel can say
+ * that instead of showing a zero.
+ */
+export interface ArtifactSummary {
+  readonly kind: string;
+  readonly role: string | null;
+  readonly defines: readonly { readonly kind: string; readonly count: number }[];
+  readonly configures: readonly string[];
+  readonly reaches: readonly { readonly type: string; readonly count: number }[];
+  readonly referencedBy: number;
+  readonly variables: readonly string[];
+  readonly position: string;
+  readonly established: boolean;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -738,12 +821,39 @@ export interface ChatGrounding {
   readonly intent: string;
   readonly tier: string;
   readonly tokens: number;
+  /**
+   * Where the whole prompt's tokens went, by section.
+   *
+   * Prompt size is the biggest lever on how long an answer takes — near 50 tokens per second, so every
+   * 1,000 tokens is roughly 20 seconds before the first word appears.
+   */
+  readonly promptTokens: {
+    readonly total: number;
+    readonly system: number;
+    readonly reminder: number;
+    readonly scaffolding: number;
+    readonly core: number;
+    readonly supplement: number;
+    readonly omissions: number;
+    readonly question: number;
+    readonly history: number;
+    /** The compressed session. Flat across a long conversation, where `history` used to grow. */
+    readonly conversation: number;
+  } | null;
   /** Identity of the facts that grounded this answer. Two equal digests ground identically. */
   readonly digest: string;
   readonly omissions: readonly ChatOmission[];
 }
 
 export type ChatVerdict = 'grounded' | 'ungrounded' | 'unverifiable';
+
+export interface ChatDiagnostic {
+  readonly kind: 'fabricated-identifier' | 'unsupported-term' | 'unknown-citation' | 'no-citations';
+  readonly subject: string;
+  readonly detail: string;
+  /** The closest names the projection did carry, where any were close. */
+  readonly nearest: readonly string[];
+}
 
 export interface ChatAnswer {
   readonly question: string;
@@ -762,7 +872,23 @@ export interface ChatAnswer {
    */
   readonly unsupportedTerms: readonly string[];
   readonly unknownCitations: readonly string[];
+  /**
+   * Why the verdict is what it is.
+   *
+   * Shown rather than the bare lists, because a rejected string on its own tells a reader nothing about
+   * whether the model invented something or the verifier was too strict.
+   */
+  readonly diagnostics: readonly ChatDiagnostic[];
   readonly grounding: ChatGrounding;
+  /**
+   * How many generations produced this answer: `1` normally, `2` where one correction ran.
+   *
+   * Shown because a rewrite doubles the wait, and because "the model's first answer was rejected" is
+   * information a reader of a repository assistant should have even when the second one is sound.
+   */
+  readonly attempts: number;
+  /** Why the correction ran, in the verifier's own words. Empty where none did. */
+  readonly corrections: readonly string[];
   readonly model: string;
   readonly stopReason: string;
   readonly usage: { readonly promptTokens: number | null; readonly outputTokens: number | null };
@@ -816,13 +942,22 @@ export type ChatPhase =
   | 're-projecting'
   | 'awaiting-model'
   | 'generating'
-  | 'verifying';
+  | 'verifying'
+  /** The first answer was rejected and one bounded rewrite is being generated. At most once per answer. */
+  | 'correcting';
 
 export type ChatEvent =
   | { readonly type: 'open'; readonly model: string | null; readonly contextWindow: number | null }
   | { readonly type: 'status'; readonly phase: ChatPhase }
   | { readonly type: 'grounding'; readonly grounding: ChatGrounding }
   | { readonly type: 'delta'; readonly text: string }
+  /**
+   * Discard the prose so far: verification rejected it and a rewrite is coming.
+   *
+   * A client that ignores this still ends up correct, because `complete` carries the final text — it just
+   * shows a rejected answer for longer than it needs to.
+   */
+  | { readonly type: 'restart'; readonly reasons: readonly string[] }
   | { readonly type: 'complete'; readonly answer: ChatAnswer }
   | {
       readonly type: 'error';

@@ -1,4 +1,4 @@
-import { RepositoryAnswerer, type Answer, type ContextSource, type LanguageModel } from '@traceiq/ai';
+import { RepositoryAnswerer, type Answer, type ContextSource, type GroundingVerdict, type LanguageModel } from '@traceiq/ai';
 import type { ContextRequest } from '@traceiq/context';
 import type { NodeId } from '@traceiq/types';
 
@@ -120,7 +120,7 @@ export async function runChat(source: ContextSource, io: Io, options: ChatOption
     `${paint(`model ${description.id} · ${description.contextWindow} token window · subject ${describeSubject(options.subject)}`, 'dim', options.colour)}\n\n`,
   );
 
-  const turns: { question: string; answer: string }[] = [];
+  const turns: { question: string; answer: string; verdict: GroundingVerdict }[] = [];
   let subject = options.subject;
   let failures = 0;
 
@@ -172,7 +172,7 @@ export async function runChat(source: ContextSource, io: Io, options: ChatOption
     if (outcome.failed) {
       failures += 1;
     } else {
-      turns.push({ question, answer: outcome.text });
+      turns.push({ question, answer: outcome.text, verdict: outcome.verdict });
     }
   }
 
@@ -185,7 +185,7 @@ export async function runChat(source: ContextSource, io: Io, options: ChatOption
 interface AskInput {
   readonly question: string;
   readonly subject: ContextRequest;
-  readonly turns: readonly { question: string; answer: string }[];
+  readonly turns: readonly { question: string; answer: string; verdict: GroundingVerdict }[];
   readonly colour: boolean;
   readonly onInterrupt?: (handler: () => void) => () => void;
 }
@@ -194,7 +194,7 @@ async function ask(
   answerer: RepositoryAnswerer,
   io: Io,
   input: AskInput,
-): Promise<{ readonly failed: boolean; readonly text: string }> {
+): Promise<{ readonly failed: boolean; readonly text: string; readonly verdict: GroundingVerdict }> {
   const controller = new AbortController();
   let cancelled = false;
 
@@ -210,6 +210,14 @@ async function ask(
   });
 
   let text = '';
+  /*
+   * The guard's own verdict, recorded rather than assumed.
+   *
+   * Conversation memory reads it to decide which earlier questions are still owed an answer, and a
+   * session that reported every turn as `unverifiable` would report every question as unanswered. The
+   * REPL has the verdict on the `complete` event; nothing but inattention was dropping it.
+   */
+  let verdict: GroundingVerdict = 'unverifiable';
 
   try {
     for await (const event of answerer.answer(
@@ -226,7 +234,7 @@ async function ask(
                   answer: turn.answer,
                   subject: input.subject,
                   citations: [],
-                  verdict: 'unverifiable' as const,
+                  verdict: turn.verdict,
                   projectionDigest: '',
                   model: '',
                 })),
@@ -248,22 +256,40 @@ async function ask(
         // Written as it arrives: a local model takes seconds, and a spinner would say less than the text.
         text += event.text;
         io.write(event.text);
+      } else if (event.type === 'restart') {
+        /*
+         * The answer above has been rejected and is being rewritten.
+         *
+         * A terminal cannot unprint, so the only honest option is to say so and draw a line. Leaving the
+         * rejected prose with no marker would let a reader scroll up and quote an answer the pipeline had
+         * already thrown away — which is worse than showing it once with a rule under it.
+         */
+        text = '';
+        io.write(
+          `\n\n${paint('— the answer above was rejected and is being rewritten —', 'yellow', input.colour)}\n` +
+            event.reasons
+              .slice(0, 3)
+              .map((reason) => `${paint(`  ${reason}`, 'dim', input.colour)}\n`)
+              .join('') +
+            '\n',
+        );
       } else {
+        verdict = event.answer.verdict;
         io.write(`\n\n${renderFooter(event.answer, input.colour)}\n\n`);
       }
     }
 
-    return { failed: false, text };
+    return { failed: false, text, verdict };
   } catch (error) {
     if (cancelled) {
       io.write(`\n${paint('cancelled', 'yellow', input.colour)}\n\n`);
 
-      return { failed: false, text };
+      return { failed: false, text, verdict };
     }
 
     io.writeError(`\n${renderChatError(error, input.colour)}\n\n`);
 
-    return { failed: true, text };
+    return { failed: true, text, verdict };
   } finally {
     controller.abort();
     unsubscribe?.();
@@ -281,6 +307,20 @@ function renderFooter(answer: Answer, colour: boolean): string {
     `${paint('verdict', 'dim', colour)} ${renderVerdict(answer.verdict, colour)}` +
       paint(` · ${answer.model} · ${answer.stopReason}${usage}`, 'dim', colour),
   );
+
+  if (answer.attempts > 1) {
+    // The rewrite is reported whether or not it worked: that the model's first instinct was rejected is
+    // information about this answer, and it also explains why it took twice as long to arrive.
+    lines.push(
+      paint(
+        `  rewritten once after verification rejected ${answer.corrections.length} ${
+          answer.corrections.length === 1 ? 'claim' : 'claims'
+        }`,
+        'yellow',
+        colour,
+      ),
+    );
+  }
 
   if (answer.fabricatedIdentifiers.length > 0) {
     lines.push(

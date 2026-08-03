@@ -75,6 +75,7 @@ function context(): RepositoryContext {
           middleware: { entries: [], total: 0, truncated: false },
           models: { entries: [], total: 0, truncated: false },
           tests: { entries: [], total: 0, truncated: false },
+          routes: { entries: [], total: 0, truncated: false },
         },
         hotspots: {
           mostReferenced: { entries: [], total: 0, truncated: false },
@@ -364,7 +365,7 @@ describe('the REPL', () => {
     expect(io.text()).toContain('bye');
   });
 
-  it('replays prior turns as conversation, and never the facts that grounded them', async () => {
+  it('carries prior turns as a session, not as replayed answers', async () => {
     const io = recorder();
     const model = new ScriptedModel({ text: 'ok [f1]' });
 
@@ -379,10 +380,15 @@ describe('the REPL', () => {
     const text = (second?.messages ?? []).map((message) => message.content).join('\n');
 
     expect(text).toContain('first question');
-    expect(text).toContain('ok [f1]');
-    // A prior turn contributes its words, not its evidence: a fact from turn one must not still be
-    // grounding turn two after the repository has changed underneath it.
-    expect((second?.messages ?? []).filter((message) => message.role === 'user')).toHaveLength(2);
+    /*
+     * The prior answer's prose does not travel, and the turn does not become a message pair.
+     *
+     * A REPL is where the old behaviour hurt most — a user asks ten questions in a session — and it is
+     * where the fix is most visible: one user message per turn, whatever the turn number, because the
+     * session reaches the model as a bounded block inside it rather than as a transcript before it.
+     */
+    expect(text).not.toContain('ok [f1]');
+    expect((second?.messages ?? []).filter((message) => message.role === 'user')).toHaveLength(1);
   });
 
   it('forgets the conversation on /clear', async () => {

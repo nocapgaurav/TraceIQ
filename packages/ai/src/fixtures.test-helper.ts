@@ -244,6 +244,68 @@ export function repositoryContext(): RepositoryContext {
             total: 4,
             truncated: false,
           },
+          /*
+           * The artefacts a real repository of this shape holds.
+           *
+           * Present in the shared fixture rather than only in the artefact tests, because the point of
+           * the milestone is that artefact facts participate in *every* projection — and a fixture with
+           * none would let a regression that stopped emitting them pass every test but one.
+           */
+          artifacts: [
+            { kind: 'ci-workflow', files: 2, elements: 14, examples: ['.github/workflows/ci.yml'] },
+            { kind: 'documentation', files: 3, elements: 9, examples: ['README.md', 'docs/design.md'] },
+            { kind: 'container-compose', files: 1, elements: 6, examples: ['docker-compose.yml'] },
+            { kind: 'package-manifest', files: 4, elements: 12, examples: ['package.json'] },
+            { kind: 'lockfile', files: 1, elements: 0, examples: ['pnpm-lock.yaml'] },
+          ],
+          keyArtifacts: {
+            entries: [
+              {
+                path: 'docker-compose.yml',
+                kind: 'container-compose',
+                declares: [
+                  { kind: 'service', count: 2 },
+                  { kind: 'port', count: 2 },
+                ],
+                names: ['service api', 'service postgres'],
+                ordering: ['api → postgres'],
+                reaches: [{ type: 'REFERENCES', path: 'packages/api/Dockerfile' }],
+                variables: ['DATABASE_URL'],
+              },
+              {
+                path: '.github/workflows/ci.yml',
+                kind: 'ci-workflow',
+                declares: [
+                  { kind: 'step', count: 6 },
+                  { kind: 'job', count: 2 },
+                ],
+                names: ['job build', 'job publish'],
+                ordering: ['publish → build'],
+                reaches: [{ type: 'RUNS', path: 'scripts/release.sh' }],
+                variables: ['NPM_TOKEN'],
+              },
+              {
+                path: 'package.json',
+                kind: 'package-manifest',
+                declares: [{ kind: 'script-target', count: 3 }],
+                names: ['script-target build', 'script-target test'],
+                ordering: [],
+                reaches: [],
+                variables: [],
+              },
+              {
+                path: 'README.md',
+                kind: 'documentation',
+                declares: [{ kind: 'heading', count: 4 }],
+                names: ['heading Getting started', 'heading Architecture'],
+                ordering: [],
+                reaches: [{ type: 'DOCUMENTS', path: 'packages/core/src/index.ts' }],
+                variables: [],
+              },
+            ],
+            total: 4,
+            truncated: false,
+          },
         },
         architecture: {
           controllers: { entries: [node('sym:packages/api/src/routes.ts#getUser')], total: 1, truncated: false },
@@ -252,6 +314,7 @@ export function repositoryContext(): RepositoryContext {
           middleware: { entries: [], total: 0, truncated: false },
           models: { entries: [], total: 0, truncated: false },
           tests: { entries: [], total: 96, truncated: true },
+          routes: { entries: [], total: 0, truncated: false },
         },
         hotspots: {
           mostReferenced: {

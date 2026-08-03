@@ -160,13 +160,23 @@ export function node(input: {
   readonly externalKind?: GraphNode['externalKind'];
   readonly externalName?: string | null;
   readonly confidence?: ConfidenceLevel;
+  /** The artefact family for a `File`, or the element kind for an `ArtifactElement`. */
+  readonly artifactKind?: string | null;
+  /** The section path an artefact element sits under. */
+  readonly containerChain?: string | null;
+  readonly language?: string | null;
+  readonly fileRole?: string | null;
+  /** Overridden where a test asserts on the provenance sentence — an artefact's boundary lives there. */
+  readonly evidence?: string;
+  /** The line the node starts at. Artefact elements are ordered by it, so a test can assert file order. */
+  readonly line?: number;
 }): GraphNode {
   return {
     id: input.id as NodeId,
     kind: input.kind,
     name: input.name ?? input.id.split(/[#.]/).at(-1) ?? input.id,
     fileId: (input.fileId ?? null) as NodeId | null,
-    containerChain: null,
+    containerChain: input.containerChain ?? null,
     visibility: null,
     isExported: input.isExported ?? false,
     isStatic: false,
@@ -179,16 +189,17 @@ export function node(input: {
     isExportedFromModule: null,
     externalKind: input.externalKind ?? null,
     externalName: input.externalName ?? null,
-    language: null,
-    fileRole: null,
+    language: input.language ?? null,
+    fileRole: input.fileRole ?? null,
     category: null,
+    artifactKind: input.artifactKind ?? null,
     confidence: input.confidence ?? 'CERTAIN',
     provenance: {
       producer: 'graph-builder',
       fileId: (input.fileId ?? null) as NodeId | null,
-      evidence: `synthetic ${input.kind} node for testing`,
+      evidence: input.evidence ?? `synthetic ${input.kind} node for testing`,
     },
-    locations: [RANGE],
+    locations: [input.line === undefined ? RANGE : { ...RANGE, startLine: input.line, endLine: input.line }],
   };
 }
 

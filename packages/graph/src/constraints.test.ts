@@ -10,23 +10,47 @@ import { DECLARATION_NODE_KINDS, NODE_KINDS } from './types.js';
  * rather than silently widen what the graph accepts.
  */
 describe('the endpoint matrix', () => {
-  it('covers exactly the eleven edge types now produced', () => {
+  it('covers exactly the seventeen edge types now produced', () => {
     // HANDLED_BY and READS joined with the complete framework annotation model; CALLS joined with
     // the call graph; CONTINUES_TO joined when a request a repository makes could be matched to a
-    // route it serves, which is the one edge that crosses a language boundary.
+    // route it serves, which is the one edge that crosses a language boundary. The six artefact types
+    // joined with artefact analysis, which is the first capability that produces an edge without a
+    // declaration at either end.
     expect(Object.keys(ENDPOINT_RULES).sort()).toEqual([
       'CALLS',
+      'CONFIGURES',
+      'CONTAINS',
       'CONTINUES_TO',
       'DECLARES',
       'DEPENDS_ON',
+      'DOCUMENTS',
       'EXPORTS',
       'EXTENDS',
       'HANDLED_BY',
       'IMPLEMENTS',
       'IMPORTS',
       'READS',
+      'REFERENCES',
       'REFERENCES_TYPE',
+      'RUNS',
+      'USES_ENV',
     ]);
+  });
+
+  /**
+   * Every artefact relationship is sourced at a file or an artefact element, and never at a declaration.
+   *
+   * The structural statement that these come from reading an artefact rather than from compiling source.
+   * If a declaration could source one, the two capabilities could produce the same edge and no consumer
+   * could tell which reading it came from.
+   */
+  it('sources every artefact relationship at a file or an artefact element', () => {
+    for (const type of ['CONTAINS', 'REFERENCES', 'RUNS', 'CONFIGURES', 'DOCUMENTS', 'USES_ENV'] as const) {
+      expect(ENDPOINT_RULES[type]?.sources).toEqual(
+        expect.arrayContaining<string>(['File']),
+      );
+      expect(ENDPOINT_RULES[type]?.sources.every((kind) => kind === 'File' || kind === 'ArtifactElement')).toBe(true);
+    }
   });
 
   it('sources CONTINUES_TO at a file or declaration, and targets a Route', () => {
@@ -165,8 +189,11 @@ describe('the endpoint matrix', () => {
     }
   });
 
-  it('sources DEPENDS_ON at a Manifest and targets a Dependency', () => {
-    expect(ENDPOINT_RULES.DEPENDS_ON?.sources).toEqual(['Manifest']);
-    expect(ENDPOINT_RULES.DEPENDS_ON?.targets).toEqual(['Dependency']);
+  it('sources DEPENDS_ON at a Manifest or an artefact element, and targets what each declares', () => {
+    // The artefact side is a workflow's `needs:` and a compose service's `depends_on:` — the only
+    // ordering evidence a configuration format ever gives, and the relationship the entailment guard
+    // requires before an execution-order claim is allowed.
+    expect(ENDPOINT_RULES.DEPENDS_ON?.sources).toEqual(['Manifest', 'ArtifactElement']);
+    expect(ENDPOINT_RULES.DEPENDS_ON?.targets).toEqual(['Dependency', 'ArtifactElement']);
   });
 });

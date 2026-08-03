@@ -98,7 +98,12 @@ function ExplorerView() {
     symbolId !== null ? (
       <DeclarationPanel query={symbol} id={symbolId} onSelectFile={openFile} />
     ) : filePath !== null ? (
-      <FilePanel query={file} path={filePath} onSelectDeclaration={openDeclaration} />
+      <FilePanel
+        query={file}
+        path={filePath}
+        onSelectDeclaration={openDeclaration}
+        onSelectFile={openFile}
+      />
     ) : packageName !== null ? (
       <PackagePanel query={pkg} name={packageName} onSelectFile={openFile} />
     ) : (

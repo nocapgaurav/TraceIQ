@@ -812,6 +812,11 @@ export const ENDPOINTS: readonly Endpoint[] = [
             sink.send('grounding', wireGrounding(event.grounding));
           } else if (event.type === 'delta') {
             sink.send('delta', { text: event.text });
+          } else if (event.type === 'restart') {
+            // Discard what you have and start again: the prose already sent has been rejected, and one
+            // rewrite is on its way. A client that ignores this frame still ends up correct, because
+            // `complete` carries the final text — it just shows the rejected answer for longer.
+            sink.send('restart', { reasons: event.reasons });
           } else {
             settled = true;
             sink.send('complete', wireAnswer(event.answer));

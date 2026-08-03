@@ -1,3 +1,6 @@
+import type { RepositoryIdentity } from './identity.js';
+import type { RepositoryProfile } from './profile.js';
+
 /**
  * The unit of grounding.
  *
@@ -70,6 +73,89 @@ export const PREDICATES = [
    */
   'has-package',
   'entry-point',
+  /**
+   * A test the repository holds, and what its name suggests it exercises.
+   *
+   * Its own predicate rather than a `contains` count, because a count cannot be opened. The confidence on
+   * the fact carries the distinction that matters: the path is recorded, the coverage is a naming
+   * convention, and the rendered object says which of the two it is stating.
+   */
+  'tested-by',
+  /**
+   * One top-level directory of the repository, with what it is and how much it holds.
+   *
+   * **The only evidence a repository has when almost none of it is analysable code.** An umbrella of git
+   * submodules yields twelve declarations, all CI scripts, so everything derived from declarations
+   * described a CI tool. Its directory map says what it is in six lines, and the map was already in the
+   * graph — nothing read it.
+   */
+  'area',
+  /**
+   * What the system *is*, and how a request moves through it.
+   *
+   * These three exist because a projection of equals produces an answer of equals. Given a role count
+   * and a file count at the same rank, a model reports both at the same rank — "there are 6
+   * controllers", "src/modules contains 26 files" — and never says what the repository does. A fact
+   * that states the shape of the system, emitted first, is what an answer can be built around; the
+   * counts then support it instead of replacing it.
+   *
+   * `runs-on` covers the technology layers — frontend, backend, persistence, cache, infrastructure —
+   * each carrying the detection's own evidence. `layered` names a role layer and how many
+   * declarations carry it. `request-flow` names the layers present in the order a request
+   * conventionally traverses, and says in its own text that the order is a convention rather than a
+   * measured call chain.
+   */
+  'runs-on',
+  'layered',
+  'request-flow',
+  /**
+   * What *kind of thing* the repository is, and how much of it an answer can hold at once.
+   *
+   * **The one predicate that makes the adaptation itself citable, and it exists for that reason
+   * alone.** The prompt now tells a model that this repository is a service organised around
+   * authentication and caching, and instructs it to explain the request flow rather than the public
+   * API. An answer that then opens "this is a URL-shortening service" is making a claim — and without
+   * a fact behind it, it is an *uncited* claim, which the standing instruction forbids and the
+   * grounding guard cannot adjudicate. So the profile is emitted as facts carrying the same evidence
+   * the guidance was derived from, and the model can cite the sentence it was told to write.
+   *
+   * Kept to a handful of lines. Every field of the profile is a restatement of something already in
+   * the projection — the type from the routes and technologies, the scale from the counts — so
+   * emitting all of it would spend budget saying twice what the facts below already say once.
+   */
+  'characterised-as',
+  /**
+   * What the repository is *for*, what happens when it works, and what matters most in it.
+   *
+   * **These exist so a semantic answer can stay a cited answer.** The prompt now opens a model with
+   * "this repository is organised around url and analytics, and a redirect arrives at
+   * `GET /:shortCode`" — and an answer that repeats it is making a claim. Without a fact behind that
+   * claim it is an *uncited* one, which the standing instruction forbids and the grounding guard
+   * cannot adjudicate, so the model would be forced to choose between the instruction it was given and
+   * the rule it was given.
+   *
+   * `exists-to` carries the purpose sentence with the evidence each clause was assembled from.
+   * `workflow` carries one thing that happens, as an arrowed chain, and says in its own text which
+   * steps were measured and which are conventional. `ranks` carries one component with the numbers
+   * that ranked it — a fan-in, a route count — so "the most important declaration here" is checkable
+   * rather than asserted.
+   *
+   * Deliberately few. Every one of them reorganises facts emitted below rather than adding new
+   * measurements, so emitting many would be paying twice for the same evidence.
+   */
+  'exists-to',
+  'workflow',
+  'ranks',
+  /** What the repository exposes, as route groups rather than as a count of routes. */
+  'exposes',
+  /**
+   * A domain two or more role layers agree the system is organised around.
+   *
+   * Derived rather than observed, and the fact names the declarations that agree so the derivation is
+   * checkable. It stops short of naming a product feature: a system organised around `url` with a
+   * redirect route is a URL shortener, and that conclusion belongs to the reader.
+   */
+  'capability',
   // What the analysis could not determine
   'limitation',
   // What the repository is made of, and how deeply each part was read. These three exist so an answer
@@ -89,6 +175,48 @@ export const PREDICATES = [
    * in a repository and still not say what any of it was for.
    */
   'built-with',
+  /**
+   * What the repository's **non-code artefacts** declare.
+   *
+   * **These six exist because a repository can be almost entirely artefacts and, before them, the
+   * projection had nothing to say about it.** Every predicate above needs a declaration somewhere in its
+   * derivation: `has-package` counts declarations, `hotspot` measures edges between them, `layered` reads
+   * role annotations on them. A repository whose deployment is four compose files and whose build is
+   * eleven workflows therefore reached a model as a file count and a language distribution, and an answer
+   * built from that describes a directory rather than a system.
+   *
+   * `artifact-inventory` says what kinds of artefact the repository holds, which is the shortest true
+   * answer to "what is this made of" when most of it is not source. `declares` names one artefact and what
+   * it declares — services, jobs, stages, entities — and is the one that turns "three compose files" into
+   * an architecture. `configures` ties a configuration file to the technology it configures. `runs` names
+   * a file an artefact's own command invokes, which is the only execution evidence a repository with no
+   * analysable source ever gives. `documents` names a file a document links to, which is what an
+   * onboarding question needs and what fan-in cannot supply. `artifact-ordering` carries a prerequisite an
+   * artefact **states** between two of its own parts — a workflow's `needs`, a compose `depends_on` — and
+   * it is deliberately the only ordering predicate: nothing here is derived from the order things appear
+   * in a file.
+   *
+   * All six are restatements of stored edges, exactly like the graph predicates above them. None is a
+   * summary and none is a ranking.
+   */
+  'artifact-inventory',
+  'declares',
+  'configures',
+  'runs',
+  'documents',
+  'artifact-ordering',
+  /**
+   * What the analysis established about **starting to read** the repository, and on what evidence.
+   *
+   * **Its own predicate because an onboarding answer must not be built from a ranking.** A reader asking
+   * where to start used to receive the most-referenced declaration, which is the single worst first file
+   * in any repository — it is referenced by everything precisely because it assumes everything. What an
+   * onboarding answer can rest on is documentation the repository ships, a package boundary it declares,
+   * an entry point a manifest names, or a bootstrap path a framework registered; this fact carries one of
+   * those with the kind of evidence behind it, so an answer that recommends something can cite *why*
+   * rather than assert it.
+   */
+  'onboarding',
 ] as const;
 
 export type Predicate = (typeof PREDICATES)[number];
@@ -132,8 +260,16 @@ export interface Citation {
   readonly fact: Fact;
 }
 
-/** Identity prefixes the graph uses. The grounding guard recognises a fabricated identifier by these. */
-export const IDENTIFIER_PREFIXES = ['sym:', 'file:', 'route:', 'env:', 'ext:'] as const;
+/**
+ * Identity prefixes the graph uses. The grounding guard recognises a fabricated identifier by these.
+ *
+ * `art:` names a piece of a non-code artefact — a workflow job, a compose service, a Markdown heading. It
+ * is a separate prefix from `sym:` deliberately: a `sym:` is a declaration a language analyser parsed, an
+ * `art:` is a structure a line reader recognised, and a consumer showing "declarations in this file" must
+ * not be handed a workflow step. It joins the guard's closed set on the same footing as the others, so an
+ * invented job name is caught exactly as an invented class name is.
+ */
+export const IDENTIFIER_PREFIXES = ['sym:', 'file:', 'route:', 'env:', 'ext:', 'art:'] as const;
 
 /**
  * External identity kinds that are **not** an ecosystem dependency.
@@ -205,7 +341,7 @@ export function dependencyNameOf(identifier: string): string | null {
  * sentence, and treating the full stop as part of the identifier would report a fabrication that is
  * really punctuation.
  */
-export const IDENTIFIER_PATTERN = /\b(?:sym|file|route|env|ext):[^\s,;)\]}'"`]+/g;
+export const IDENTIFIER_PATTERN = /\b(?:sym|file|route|env|ext|art):[^\s,;)\]}'"`]+/g;
 
 /** Strips trailing punctuation a sentence left attached to an identifier. */
 export function trimIdentifier(value: string): string {
@@ -316,11 +452,47 @@ export function isArtefactShaped(term: string): boolean {
     return false;
   }
 
+  if (isProseAcronym(term)) {
+    return false;
+  }
+
   // The third alternative allows a dotted group before the colon, because that is what a Maven or
   // Gradle coordinate looks like — `org.springframework:spring-core`. Requiring `[\w-]+` there rejected
   // every JVM dependency in the corpus while accepting every npm one, which is exactly the
   // single-ecosystem bias this milestone set out to remove.
   return /[@/]/.test(term) || /^[\w-]+(?:\.[\w-]+){1,}$/.test(term) || /^[\w.-]+:[\w.-]+/.test(term);
+}
+
+/**
+ * Whether a slashed term is a prose acronym rather than an artefact name.
+ *
+ * **Caught against a real answer: `CI/CD` was reported as a package no fact carried.** It contains a
+ * slash, so it passed the artefact shape test, and it is in no manifest anywhere, so it was adjudicated
+ * and rejected — inside an otherwise correct, well-cited paragraph. The standing instruction already
+ * forbids generalising `GitHub Actions` into "CI/CD", but that is a *prose* rule the reader judges, not
+ * a naming claim the verifier can decide. A guard that is wrong about a right answer teaches a user to
+ * ignore the verdict, which costs more than the sentence it caught.
+ *
+ * Two shapes, both narrow enough to keep every real name adjudicable:
+ *
+ * - Every segment is at most three letters — `CI/CD`, `I/O`, `TCP/IP`, `and/or`.
+ * - Every segment is an all-caps acronym or a bare number — `HTTP/2`, `CI/CD`.
+ *
+ * A real package name defeats both, because it carries a hyphen, a dot, a scope or a lowercase segment
+ * of four or more characters: `aws-sdk/client-s3`, `next.js/router`, `@prisma/client` and `React/DOM`
+ * are all still adjudicated, and `grounding-battery.test.ts` holds each of them as a negative control.
+ */
+function isProseAcronym(term: string): boolean {
+  if (!term.includes('/') || /[@._-]/.test(term)) {
+    return false;
+  }
+
+  const segments = term.split('/');
+
+  return (
+    segments.every((segment) => /^[A-Za-z]{1,3}$/.test(segment)) ||
+    segments.every((segment) => /^(?:[A-Z][A-Z0-9]{0,4}|\d{1,3})$/.test(segment))
+  );
 }
 
 /** Everything the projection lets an answer name, beyond the graph's own identifiers. */
@@ -374,6 +546,24 @@ export interface ContextProjection {
   readonly terms: ReadonlySet<string>;
   readonly omissions: readonly Omission[];
   readonly tier: string;
+  /**
+   * What the repository *is*, as the profile derived it.
+   *
+   * Carried on the projection rather than re-derived by every consumer: the prompt needs it to select
+   * an explanation strategy, the answerer needs it to decide the question's scope, and a second
+   * derivation from the same context would be a second chance to disagree with the facts that were
+   * actually emitted.
+   */
+  readonly profile: RepositoryProfile;
+  /**
+   * What the repository is *for*, as the identity derived it. `null` for a context with no repository
+   * overview to derive one from — a symbol or file context, where the subject is the answer.
+   *
+   * Carried for the same reason `profile` is: the prompt needs it to open with what the system does,
+   * the planner needs it to decide what the reader wants, and a second derivation would be a second
+   * chance to disagree with the facts that were actually emitted.
+   */
+  readonly identity: RepositoryIdentity | null;
   /** Prompt tokens the facts cost, by the counter that measured them. */
   readonly tokens: number;
   /** Deterministic identity of these facts: two equal digests would ground an answer identically. */

@@ -36,6 +36,7 @@ const GROUNDING = {
   intent: 'overview',
   tier: 'standard',
   tokens: 1920,
+  promptTokens: null,
   digest: 'c0a8bdfbb1fe2e3f',
   omissions: [{ part: 'cycles', kept: 15, total: 18 }],
 };
@@ -58,8 +59,11 @@ function answer(overrides: Record<string, unknown> = {}): Record<string, unknown
     ],
     fabricatedIdentifiers: [],
     unsupportedTerms: [],
+    diagnostics: [],
     unknownCitations: [],
     grounding: GROUNDING,
+    attempts: 1,
+    corrections: [],
     model: 'test:1b',
     stopReason: 'complete',
     usage: { promptTokens: 2002, outputTokens: 13 },
@@ -288,6 +292,37 @@ describe('asking', () => {
   });
 });
 
+describe('a corrected answer', () => {
+  it('discards the rejected prose when told to, and says the answer was rewritten', async () => {
+    /*
+     * The rejected answer was already on screen. Leaving it there until `complete` arrives would let a
+     * reader finish something the pipeline had thrown away; appending the rewrite would splice two answers
+     * together. So the text is cleared, and the badge says the first attempt did not verify.
+     */
+    stub([
+      frame('grounding', GROUNDING),
+      frame('delta', { text: 'The repository is well documented.' }),
+      frame('restart', { reasons: ['presence-as-quality: nothing measures documentation'] }),
+      frame('status', { phase: 'correcting' }),
+      frame('delta', { text: 'It has **228** files [f2].' }),
+      frame('complete', {
+        ...answer(),
+        attempts: 2,
+        corrections: ['presence-as-quality: nothing measures documentation'],
+      }),
+    ]);
+
+    renderWithQuery(<ChatPage />);
+    await ask();
+
+    expect(await screen.findByText('rewritten once')).toBeInTheDocument();
+    expect(screen.queryByText(/well documented/)).not.toBeInTheDocument();
+    // The rewritten answer, which the fixture renders with a bold count. Several nodes carry the number —
+    // the prose and the grounding summary — so the assertion is that at least one does.
+    expect(screen.getAllByText(/228/).length).toBeGreaterThan(0);
+  });
+});
+
 describe('an ungrounded answer', () => {
   it('is shown, with the verdict and the fabrication named', async () => {
     // Withholding it would hide the evidence of the failure.
@@ -299,6 +334,14 @@ describe('an ungrounded answer', () => {
         text: 'It calls sym:invented.ts#Nope.',
         verdict: 'ungrounded',
         fabricatedIdentifiers: ['sym:invented.ts#Nope'],
+        diagnostics: [
+          {
+            kind: 'fabricated-identifier',
+            subject: 'sym:invented.ts#Nope',
+            detail: 'no fact carried this identifier; 12 were available',
+            nearest: [],
+          },
+        ],
         citations: [],
       }),
     ]);
@@ -307,8 +350,38 @@ describe('an ungrounded answer', () => {
     await ask();
 
     expect(await screen.findByText('ungrounded')).toBeInTheDocument();
-    expect(screen.getByText(/Named, but not present in the repository/)).toBeInTheDocument();
+    // The reason, not only the rejected string: a reader has to be able to tell an invention from a
+    // verifier that was too strict about how a real name was written.
+    expect(screen.getByText(/could not be checked against the facts/)).toBeInTheDocument();
     expect(screen.getByText('sym:invented.ts#Nope')).toBeInTheDocument();
+    expect(screen.getByText(/no fact carried this identifier/)).toBeInTheDocument();
+  });
+
+  it('names the closest fact when a rejection looks like a granularity mismatch', async () => {
+    stub([
+      frame('grounding', GROUNDING),
+      frame('delta', { text: 'The dialog is in ModalDialog.js.' }),
+      frame('complete', {
+        ...answer(),
+        text: 'The dialog is in ModalDialog.js.',
+        verdict: 'ungrounded',
+        unsupportedTerms: ['ModalDialog.js'],
+        diagnostics: [
+          {
+            kind: 'unsupported-term',
+            subject: 'ModalDialog.js',
+            detail: 'no fact named this package, framework, file or dependency; 88 names were available',
+            nearest: ['packages/react-devtools-shared/src/devtools/views/ModalDialog.js'],
+          },
+        ],
+        citations: [],
+      }),
+    ]);
+
+    renderWithQuery(<ChatPage />);
+    await ask();
+
+    expect(await screen.findByText(/Closest the facts did carry/)).toBeInTheDocument();
   });
 
   it('marks an uncited answer unverifiable rather than passing it off', async () => {

@@ -7,7 +7,14 @@ import { Badge } from '@/components/ui/badge';
 import { count } from '@/lib/format';
 import { linkForNode } from '@/lib/routes';
 import { cn } from '@/lib/utils';
-import type { ChatAnswer, ChatCitation, ChatGrounding, ChatOmission, ChatVerdict } from '@/types/api';
+import type {
+  ChatAnswer,
+  ChatCitation,
+  ChatDiagnostic,
+  ChatGrounding,
+  ChatOmission,
+  ChatVerdict,
+} from '@/types/api';
 
 /**
  * Whether an answer stayed inside the facts it was given.
@@ -66,8 +73,21 @@ export function ProjectionSummary({ grounding }: { readonly grounding: ChatGroun
           <span className="text-muted-foreground/70"> ({count(grounding.coreCount)} core)</span>
         ) : null}
       </span>
-      <span>
+      <span
+        title={
+          grounding.promptTokens === null
+            ? 'prompt tokens the facts cost'
+            : `whole prompt ${count(grounding.promptTokens.total)} tokens — instructions ${count(
+                grounding.promptTokens.system + grounding.promptTokens.reminder,
+              )}, repository core ${count(grounding.promptTokens.core)}, selected for this question ${count(
+                grounding.promptTokens.supplement,
+              )}, question ${count(grounding.promptTokens.question)}`
+        }
+      >
         <span className="tabular-nums">{count(grounding.tokens)}</span> tokens
+        {grounding.promptTokens === null ? null : (
+          <span className="text-muted-foreground/70"> of {count(grounding.promptTokens.total)} in the prompt</span>
+        )}
       </span>
       {/*
         What the question was taken to be about. Shown because it is the one place the system makes a
@@ -172,6 +192,47 @@ function Identifier({ value }: { readonly value: string }) {
 }
 
 /** Identifiers the answer invented. Named explicitly, because this is the failure that destroys trust. */
+/**
+ * Why an answer was not accepted, rather than only what was rejected.
+ *
+ * **Replaces two bare lists with the reasoning behind them.** The lists said `ModalDialog.js` was a
+ * name no fact carried; they could not say that the file's full path was in the facts and the model
+ * had used its basename — which was the actual truth, and a bug in the verifier rather than in the
+ * answer. A reader looking at a red badge needs to be able to tell those apart without re-deriving the
+ * projection by hand.
+ */
+export function Diagnostics({ diagnostics }: { readonly diagnostics: readonly ChatDiagnostic[] }) {
+  const reportable = diagnostics.filter((entry) => entry.kind !== 'no-citations');
+
+  if (reportable.length === 0) {
+    return null;
+  }
+
+  return (
+    <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-2">
+      <p className="flex items-center gap-1.5 text-[11px] font-medium text-destructive">
+        <AlertTriangle className="h-3 w-3" aria-hidden />
+        {reportable.length} claim{reportable.length === 1 ? '' : 's'} could not be checked against the facts
+      </p>
+      <ul className="mt-1 flex flex-col gap-1.5">
+        {reportable.map((entry) => (
+          <li key={`${entry.kind}:${entry.subject}`} className="text-[11px]">
+            <span className="font-mono text-foreground">{entry.subject}</span>
+            <span className="text-muted-foreground"> — {entry.detail}</span>
+            {entry.nearest.length === 0 ? null : (
+              <span className="text-muted-foreground">
+                {' '}
+                Closest the facts did carry:{' '}
+                <span className="font-mono">{entry.nearest.join(', ')}</span>
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function Fabrications({
   identifiers,
   heading = 'Named, but not present in the repository',

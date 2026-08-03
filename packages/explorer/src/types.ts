@@ -118,6 +118,31 @@ export interface RepositoryOverview {
    */
   readonly technologies: readonly TechnologySummary[];
   /**
+   * What non-code artefacts this repository holds, counted by family.
+   *
+   * **The shortest true answer to "what is this repository made of" for a repository whose files are
+   * mostly not source.** A tree of forty workflows and one Python script is not a Python project, and
+   * until this existed nothing above the graph could say so — the language distribution reported Python,
+   * the declaration count reported the script, and every surface agreed on a description the repository
+   * would not recognise.
+   *
+   * Sorted by file count descending, ties by family name, so two scans agree.
+   */
+  readonly artifacts: readonly ArtifactFamilySummary[];
+  /**
+   * The artefacts that describe the running system, each with what it declares.
+   *
+   * **Counts cannot answer an architecture question and this is what can.** "Three compose files" tells a
+   * reader nothing; "docker-compose.yml declares api, worker, postgres and redis, and api depends on
+   * postgres" is the architecture — and on a repository whose services are wired in YAML rather than in
+   * code, it is the *only* place that architecture is written down.
+   *
+   * Restricted to `SYSTEM_ARTIFACT_KINDS` and capped, because an `.editorconfig` describes nothing about
+   * the running system however carefully it was read. Ordered by family significance then by path, so two
+   * scans agree and no ordering here is a ranking of importance.
+   */
+  readonly keyArtifacts: Listing<ArtifactDigest>;
+  /**
    * What this repository's graph can answer, by technology region.
    *
    * Carried on the overview because every surface needs it and the overview is what every
@@ -139,6 +164,46 @@ export interface RepositoryOverview {
 // Files
 // ---------------------------------------------------------------------------------------------
 
+/** One artefact family the repository holds, with how much of it there is. */
+export interface ArtifactFamilySummary {
+  /** The family, from `ARTIFACT_KINDS`. */
+  readonly kind: string;
+  readonly files: number;
+  /** Structural pieces extracted across those files: jobs, steps, services, headings. */
+  readonly elements: number;
+  /** A few paths, identifier-ordered. Deliberately not a ranking. */
+  readonly examples: readonly string[];
+}
+
+/**
+ * One artefact, compressed to what a repository-wide answer can use.
+ *
+ * Deliberately much smaller than an `ArtifactView`: the names of the things it declares rather than every
+ * element, and the paths it reaches rather than every edge. A repository-wide projection has a token
+ * budget, and an answer needs to know that a compose file declares `api`, `postgres` and `redis` far more
+ * than it needs each service's volume list.
+ */
+export interface ArtifactDigest {
+  readonly path: string;
+  readonly kind: string;
+  /** What it declares, counted by element kind, largest first. */
+  readonly declares: readonly { readonly kind: string; readonly count: number }[];
+  /**
+   * The names of its most significant elements — services, jobs, stages, resources, entities.
+   *
+   * "Most significant" is decided by **element kind**, from a fixed vocabulary order, and never by size or
+   * connectedness. A compose file's services matter more than its volumes because of what a service is,
+   * not because there are more or fewer of them.
+   */
+  readonly names: readonly string[];
+  /** Prerequisites the artefact itself declares between its own elements, as `from → to`. */
+  readonly ordering: readonly string[];
+  /** Repository files it runs, references or documents. */
+  readonly reaches: readonly { readonly type: RelationshipType; readonly path: string }[];
+  /** Environment variable names it supplies or names. */
+  readonly variables: readonly string[];
+}
+
 export interface FileStatistics {
   readonly declarations: number;
   readonly imports: number;
@@ -150,10 +215,142 @@ export interface FileStatistics {
   readonly declarationsByKind: Readonly<Record<string, number>>;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Artefacts
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * What a non-code artefact declares, as the graph holds it.
+ *
+ * **This exists because the Explorer was a declaration explorer wearing a repository explorer's name.**
+ * Asked to show `.github/workflows/release.yml`, it showed six zeroes and the sentence "This file declares
+ * nothing" — which is true of declarations and false of the file, and a reader has no way to tell those
+ * apart from a count. What the file actually declares is four jobs, one of which needs another, eleven
+ * steps and the two scripts they run; all of that is now in the graph, and this is the shape that carries
+ * it to a reader.
+ *
+ * `null` on a `FileView` means artefact analysis did not classify the file — which is the case for every
+ * source file, whose structure the language analysers produce at far greater fidelity. It never means the
+ * file has no purpose.
+ */
+export interface ArtifactView {
+  /** The artefact family, from `ARTIFACT_KINDS`. */
+  readonly kind: string;
+  /** The language the reader read it as, or `null` where none is recognised. */
+  readonly format: string | null;
+  /** The scanner's role, kept beside the family so a reader can see the refinement. */
+  readonly role: string | null;
+  /** The deterministic summary. Graph-backed, never generated — see `ArtifactSummary`. */
+  readonly summary: ArtifactSummary;
+  /** The artefact's structure, grouped by the section path the reader recorded. */
+  readonly sections: readonly ArtifactSection[];
+  /** What this artefact names that the repository holds. */
+  readonly references: Listing<ArtifactLink>;
+  /** What names this artefact. */
+  readonly referencedBy: Listing<ArtifactLink>;
+  /**
+   * What this artefact names that resolved to nothing.
+   *
+   * **Shown, never hidden.** A workflow invoking a script that no longer exists is one of the more useful
+   * things an analysis can tell a reader, and dropping it would make the absence of a `RUNS` relationship
+   * indistinguishable from the absence of a command.
+   */
+  readonly unresolved: Listing<UnresolvedArtifactReference>;
+  /**
+   * What the reading did not cover, in the reader's own words.
+   *
+   * Carried verbatim from the file node's provenance. This is the field that makes an empty artefact
+   * honest: "read as indentation structure; templating was not expanded" is a completely different claim
+   * from silence.
+   */
+  readonly boundary: string;
+}
+
+export interface ArtifactSection {
+  /** The section path inside the artefact — `jobs.build`, `services.api` — or `''` for the top level. */
+  readonly title: string;
+  readonly elements: readonly ArtifactElementView[];
+}
+
+export interface ArtifactElementView {
+  readonly node: GraphNode;
+  /** The element kind, from `ARTIFACT_ELEMENT_KINDS`. */
+  readonly kind: string;
+  readonly name: string;
+  /** The element's own text, as the reader recorded it. */
+  readonly detail: string;
+  readonly line: number;
+  /**
+   * Sibling elements this one declares it needs, resolved.
+   *
+   * The only ordering the Explorer shows, and it is shown because the artefact states it. Nothing here is
+   * derived from the order elements appear in the file.
+   */
+  readonly requires: readonly GraphNode[];
+}
+
+/** One artefact relationship, with the node at the far end and the evidence for it. */
+export interface ArtifactLink {
+  readonly type: RelationshipType;
+  readonly node: GraphNode;
+  /** The element that carried it, where an element did rather than the file itself. */
+  readonly via: GraphNode | null;
+  readonly confidence: string;
+  readonly evidence: string;
+}
+
+export interface UnresolvedArtifactReference {
+  readonly type: RelationshipType;
+  readonly text: string;
+  readonly reason: string;
+  readonly evidence: string;
+}
+
+/**
+ * A compact, deterministic account of one artefact, derived from graph facts alone.
+ *
+ * **Six questions, answered only where the graph answers them.** What kind of artefact is this, what role
+ * has been established for it, what does it define, what references it, what does it reference, and where
+ * does it sit. Every field is a projection of nodes and edges; no model is involved, and a field the graph
+ * cannot fill is empty rather than filled in.
+ *
+ * `established` is the field that matters most. `false` means artefact analysis read the file and extracted
+ * no structure — which the boundary sentence explains — and it exists so a renderer can say *that* instead
+ * of showing a zero.
+ */
+export interface ArtifactSummary {
+  /** What kind of artefact, in the family's own words. */
+  readonly kind: string;
+  /** What role the repository's conventions establish for it. */
+  readonly role: string | null;
+  /** What it defines, as `4 jobs`, `11 steps`, `2 services` — counted by element kind, largest first. */
+  readonly defines: readonly { readonly kind: string; readonly count: number }[];
+  /** Technologies it configures, by name. */
+  readonly configures: readonly string[];
+  /** Files it documents, references or runs, and how many of each. */
+  readonly reaches: readonly { readonly type: RelationshipType; readonly count: number }[];
+  /** How many artefacts and files name this one. */
+  readonly referencedBy: number;
+  /** Environment variable names it supplies or names. */
+  readonly variables: readonly string[];
+  /** Where it sits: the derived package, and the directory depth. */
+  readonly position: string;
+  /** Whether any structure was extracted at all. `false` is explained by `ArtifactView.boundary`. */
+  readonly established: boolean;
+}
+
 export interface FileView {
   readonly file: GraphNode;
   /** The derived package this file belongs to. */
   readonly packageName: string;
+  /**
+   * What this file declares as a non-code artefact, or `null` where artefact analysis did not classify it.
+   *
+   * Present beside `declarations` rather than instead of it, because a file can genuinely be both — a
+   * `vitest.config.ts` is a tool configuration *and* a TypeScript module with an export — and a reader
+   * deserves whichever of the two they came for.
+   */
+  readonly artifact: ArtifactView | null;
   readonly declarations: Listing<GraphNode>;
   readonly imports: Listing<CalleeResult>;
   readonly exports: Listing<CalleeResult>;

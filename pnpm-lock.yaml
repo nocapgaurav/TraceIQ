@@ -304,6 +304,19 @@ importers:
         specifier: ^26.1.2
         version: 26.1.2
 
+  packages/artifact:
+    dependencies:
+      '@traceiq/scanner':
+        specifier: workspace:*
+        version: link:../scanner
+      '@traceiq/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@types/node':
+        specifier: ^26.1.2
+        version: 26.1.2
+
   packages/bench:
     dependencies:
       '@traceiq/graph-api':
@@ -772,6 +785,9 @@ importers:
       '@traceiq/analyzer':
         specifier: workspace:*
         version: link:../analyzer
+      '@traceiq/artifact':
+        specifier: workspace:*
+        version: link:../artifact
       '@traceiq/call-graph':
         specifier: workspace:*
         version: link:../call-graph

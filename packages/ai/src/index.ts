@@ -34,7 +34,12 @@ export {
   type Omission,
   type Predicate,
 } from './facts.js';
-export { checkGrounding, type GroundingReport, type GroundingVerdict } from './grounding.js';
+export {
+  checkGrounding,
+  type GroundingDiagnostic,
+  type GroundingReport,
+  type GroundingVerdict,
+} from './grounding.js';
 export {
   MODEL_CAPABILITIES,
   type GenerationRequest,
@@ -56,15 +61,140 @@ export {
   REMINDER,
   SYSTEM_PROMPT,
   assemble,
+  promptBreakdown,
   renderFacts,
   renderHistory,
+  reminderFor,
   stablePrefixOf,
   reservedTokens,
+  fixedReservedTokens,
+  systemMessage,
+  type PromptBreakdown,
   type PromptInput,
 } from './prompt.js';
-export { INTENTS, INTENT_PARTS, intentOf, type QuestionIntent } from './intent.js';
+export {
+  INTENTS,
+  INTENT_PARTS,
+  QUESTION_SCOPES,
+  focusOf,
+  intentOf,
+  scopeOf,
+  type QuestionIntent,
+  type QuestionScope,
+  type ScopeInput,
+} from './intent.js';
 export { project, subjectOf, type ProjectionOptions } from './projection.js';
-export { collect, collectText, type AnswerEvent, type GroundingSummary } from './stream.js';
+export {
+  COMPLEXITY_TRAITS,
+  DOMAINS,
+  NAMING_CAPACITY,
+  REPOSITORY_SCALES,
+  REPOSITORY_TYPES,
+  deriveProfile,
+  subsystemsOf,
+  type ComplexityTrait,
+  type Domain,
+  type DomainClaim,
+  type Evidenced,
+  type RepositoryProfile,
+  type RepositoryScale,
+  type RepositoryType,
+  type ScaleMeasure,
+  type TraitClaim,
+} from './profile.js';
+export {
+  deriveIdentity,
+  renderIdentity,
+  type DomainIdentity,
+  type RepositoryIdentity,
+} from './identity.js';
+export {
+  rankComponents,
+  starsOf,
+  topDeclarations,
+  topPackages,
+  type ComponentImportance,
+  type ImportanceSignal,
+} from './importance.js';
+export {
+  renderWorkflow,
+  renderWorkflowBrief,
+  workflowsOf,
+  type Workflow,
+  type WorkflowStep,
+} from './workflow.js';
+export {
+  ANSWER_LEADS,
+  AUDIENCES,
+  FACT_GROUPS,
+  PLAN_CONFIDENCES,
+  planFor,
+  type Audience,
+  type AnswerLead,
+  type AnswerPlan,
+  type FactAllocation,
+  type FactGroup,
+  type NavigationStep,
+  type PlanConfidence,
+  type PlanInput,
+  type PlanSection,
+  type PlanTask,
+  EVIDENCE_VERDICTS,
+  type EvidenceSufficiency,
+  type EvidenceVerdict,
+} from './plan.js';
+export {
+  EXPLANATION_DEPTHS,
+  questionGuidance,
+  repositoryGuidance,
+  strategyFor,
+  type ExplanationDepth,
+  type ExplanationStrategy,
+  type StrategyInput,
+} from './strategy.js';
+export {
+  CLAIM_KINDS,
+  CLAIM_STRENGTHS,
+  checkEntailment,
+  type ClaimFinding,
+  type ClaimKind,
+  type ClaimStrength,
+  type EntailmentReport,
+} from './entailment.js';
+export {
+  REGION_ROLES,
+  REPOSITORY_CATEGORIES,
+  deriveStructure,
+  isProductionPath,
+  ownRoutes,
+  roleOfPath,
+  scopedTechnologies,
+  type RegionRole,
+  type RegionScope,
+  type RepositoryArea,
+  type RepositoryCategory,
+  type RepositoryStructure,
+  type ScopedTechnologies,
+} from './structure.js';
+export {
+  CONVERSATION_CLOSE,
+  CONVERSATION_OPEN,
+  NO_STATE,
+  TOPIC_KINDS,
+  deriveState,
+  renderState,
+  type ConversationState,
+  type CoveredTopic,
+  type TopicKind,
+} from './memory.js';
+export {
+  collect,
+  collectText,
+  type AnswerEvent,
+  type AnswerShape,
+  type ConversationSummary,
+  type GroundingSummary,
+} from './stream.js';
 
 // The final consumer of the architecture, and a pure one. Repository data enters through exactly one
 // method — ContextSource.build — so there is no graph traversal, no SQLite, no Query Engine, no Explain,

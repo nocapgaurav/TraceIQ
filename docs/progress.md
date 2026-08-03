@@ -3,6 +3,1255 @@
 Milestones are referred to by name rather than number, since the engineering
 contract does not restate the roadmap.
 
+## Universal Repository Understanding — a file with no declarations is not a file with no purpose
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web` clean;
+**2,903 backend + 385 web** tests passing. Validated on **5 structurally different repositories**.
+
+### One sentence of cause
+
+Every relationship in the graph's vocabulary needed a declaration at one end, so a repository's Dockerfile,
+its workflows, its compose file and its README could each hold a node and never appear at either end of an
+edge — and every layer above the graph, having nothing else to read, described whichever code produced the
+richest AST.
+
+The symptom a user saw was one sentence. Opening `.github/workflows/release.yml` in the Explorer showed six
+zeroes and **"This file declares nothing"** — true of declarations, false of the file, and indistinguishable
+to a reader from "this file does nothing". The same blindness ran the whole depth of the product: a
+deployment question was answered from a technology list because no fact carried what a compose file
+declares; an onboarding question was answered from a fan-in ranking because no fact carried what a README
+says; and a repository of 505 files and 42 declarations was described by the 42.
+
+### The artefact model
+
+A new package, `@traceiq/artifact`, reads what the language analysers cannot. It is a pure function of a
+file inventory and a `readFile` callback — the same shape as the technology detector — so the whole layer is
+exercised against synthetic repositories in memory and its dependency list is two entries.
+
+Every reader produces the same four things, which is what makes the abstraction extensible: a family, a flat
+list of elements with a section path, a list of references with candidate paths, and **a sentence saying what
+was not read**. A new format is one function plus one row in `READERS`; nothing downstream changes, because
+nothing downstream knows which reader produced what it shows.
+
+**The boundary sentence is required, never optional, and it is the honesty mechanism.** No reader is a
+conforming parser for its format, so every reader has something it did not look at. An artefact with no
+elements *and a boundary sentence* is a completely different claim from an artefact with no elements and
+nothing said: the first means "this was read and declares nothing of these kinds", and the second would mean
+nobody looked.
+
+### Artefact families
+
+Eighteen families, in `@traceiq/types` so the graph, the Explorer, the AI layer and the web app share one
+vocabulary. Fifteen have a reader; three are recorded by presence.
+
+| family | what is read |
+|---|---|
+| `ci-workflow` | jobs, declared prerequisites, steps, commands, triggers, conditions, variable names |
+| `container-image` | stages, base images, commands, exposed ports, variable names, copied paths, cross-stage copies |
+| `container-compose` | services, images, build contexts, ports, volumes, networks, `depends_on`, commands |
+| `orchestration-resource` | each document's kind and name, container images, ports, variable names |
+| `infrastructure-as-code` | Terraform blocks — resources, data sources, modules, variables, outputs; module sources |
+| `package-manifest` | scripts, workspace members, declared entry points, metadata (TOML and XML by section) |
+| `schema` | tables, views, indexes, altered tables, Prisma/GraphQL model declarations |
+| `documentation` | headings in both Markdown syntaxes, and links that resolve to repository files |
+| `script` | functions, uppercase assignments, invoked paths, variable references |
+| `test` | suites, and a bounded sample of case names |
+| `environment-configuration` | **variable names only** — see below |
+| `tool-configuration`, `build-configuration`, `workspace-configuration`, `data` | sections, settings, referenced paths |
+| `lockfile`, `generated` | presence, with the reason they were not read |
+| `unknown-artifact` | presence, language, position, and a boundary saying no reader exists |
+
+**A `.env` file's values are never recorded.** It holds live credentials in a great many repositories, and a
+value recorded here would reach the graph, then a projection, then a prompt, then an answer. The reader
+enforces it and a test asserts it against a fixture containing a plausible secret.
+
+**A YAML file's family is decided by content, never by name.** `deploy.yml` is a workflow in one repository,
+a compose file in the next and a Kubernetes manifest in the third; what is knowable is what its top level
+declares. A test holds the same filename classifying two ways.
+
+### Graph and fact changes
+
+Schema version **4**. Six relationship types, one node kind, one column:
+
+| addition | what it means |
+|---|---|
+| `CONTAINS` | an artefact holds an element, or an element holds a nested one |
+| `REFERENCES` | an artefact names a path that resolves to a file |
+| `RUNS` | a command inside an artefact invokes a file |
+| `CONFIGURES` | a configuration file configures a detected technology |
+| `DOCUMENTS` | a documentation artefact links to a file |
+| `USES_ENV` | an artefact supplies or names an environment variable |
+| `ArtifactElement` | one structural piece of an artefact |
+| `nodes.artifact_kind` | the family for a `File`, the element kind for an `ArtifactElement` |
+
+`DEPENDS_ON` was widened to `ArtifactElement` on both sides, and that row is the substantive one: a
+workflow's `needs:` and a compose `depends_on:` are the repository **stating** an order, which is the only
+ordering evidence a configuration format ever gives.
+
+Three decisions worth stating:
+
+- **`art:` is its own identifier prefix.** A `sym:` names a declaration a compiler parsed; an `art:` names a
+  structure a line reader recognised. A consumer listing declarations filters on `sym:`, and sharing the
+  prefix would put workflow steps in that list with nothing able to tell them apart again.
+- **`CONTAINS` is excluded from `REFERENCE_TYPES`**, exactly as `DECLARES` is. Otherwise a repository whose
+  YAML is thorough reads as its most coupled region — the hotspot-as-importance failure through a new door.
+- **An unresolvable reference is recorded, not dropped.** A workflow invoking a script that no longer exists
+  is a real finding, and the absence of a `RUNS` edge must stay distinguishable from the absence of a
+  command.
+
+Seven new fact predicates: `artifact-inventory`, `declares`, `artifact-ordering`, `runs`, `documents`,
+`configures`, `onboarding`.
+
+### Explorer
+
+Same layout, same components, same tab strip. What changes is the information.
+
+A file carrying an artefact family leads with a **deterministic summary** assembled from graph facts — what
+kind of artefact, what role, what it declares, what it configures, what it reaches, what references it,
+where it sits — followed by its structure grouped by the section the reader recorded, in **file order**,
+because that is the only order that was observed. Sibling prerequisites are shown as `needs X — declared by
+this artefact`. Three further tabs carry what it reaches, what reaches it, and what it named that resolved
+to nothing, each with the evidence verbatim.
+
+The declaration tabs stay present rather than being hidden: a `vitest.config.ts` is genuinely both a tool
+configuration and a TypeScript module with an export. Their empty state now reads **"No source-code
+declarations were extracted from this file"**, and where the file is an artefact it adds that what it does
+declare is one tab away.
+
+`RepositoryOverview` gains an artefact roster by family and a capped digest of the artefacts that describe
+the repository — restricted to `SYSTEM_ARTIFACT_KINDS`, capped **per family** as well as overall so a
+repository with two hundred workflows cannot spend the whole digest on workflows and leave its README
+unmentioned.
+
+### Retrieval
+
+No second RAG path, no file contents in the prompt. Two extractors and one reordering:
+
+- `artifact-inventory` is **pinned into the stable prefix** beside the area map: what a repository is made
+  of does not change with the question.
+- `key-artifacts` sits in the steerable region and in the `architecture` fact group, because on a repository
+  whose services are wired in YAML the artefacts *are* the architecture.
+- `onboarding` leads the `locate` intent, ahead of `hotspots`. `key-artifacts` leads `deployment`.
+
+The `deployment` lead's fact allocation was rebalanced from `architecture: 0.15, supporting: 0.6` to
+`0.35 / 0.4`. The old shares carried a comment saying a deployment answer is mostly technologies and
+configuration — true while those were the only deployment evidence that existed. Measured before the change:
+**4 artefact facts of 85** on a repository whose deployment is entirely in YAML.
+
+`WORKFLOW_QUESTION` gained `walk me through`, whose absence meant the single most workflow-shaped question
+anyone asks matched `IMPORTANCE` on the word *important* and received a ranked component list.
+
+### Onboarding
+
+`identity.onboarding` admits four kinds of evidence and **no ranking**: documentation the repository ships
+(and the files it links to), an entry point a manifest declares, a route or an unimported unit, a separately
+packaged directory, and a traceable workflow. The route is built from that list and from nothing else — it
+used to fall through to `identity.critical`, which is the fan-in ranking, so "where should I start" answered
+with the most-referenced declaration: the worst possible first file, since it is referenced by everything
+precisely because it assumes everything.
+
+Two refinements the corpus forced:
+
+- **A route of four documents is not a route.** Each kind contributes at most twice, so a repository with
+  seven READMEs gets documentation, then an entry point, then a boundary.
+- **An entry point into a build output is not a place to start reading.** Every published package declares
+  `main: ./dist/index.js`, so a monorepo's manifests recommended a compiled bundle — twice.
+
+An orientation question with no onboarding evidence gets `absent` or `undetermined` and an empty route,
+which is the honest outcome rather than a substitution.
+
+### Claim strength
+
+Three rules, taking `entailment.ts` from five to eight. Rule **order** is now load-bearing and documented:
+a denial is adjudicated as a denial, and a quality verdict and a recommendation before the ordering rule.
+
+| transformation | licensed by |
+|---|---|
+| structural prominence → architectural centrality | a capability naming it, a request flow, a workflow, a route it serves, an entry point |
+| file presence → a quality verdict | nothing; no wording of this claim is supportable |
+| a ranking → "where to start" | onboarding evidence, a `documents` link, an entry point, a package boundary, a route |
+
+`execution-order` gained `artifact-ordering` as a licence, which is the one addition that *widens* what an
+answer may say: "the release job runs after the build job" is written in the repository's own YAML and used
+to be rejected. `configuration-as-runtime` gained a concept-gated licence — a `declares` fact licenses "runs
+on push" only when it names a trigger, because a `declares` fact exists for every artefact.
+
+Two defects were caught during the work. `exists-to` was initially a licence for a centrality claim, which
+meant any repository with a derivable purpose licensed a claim about any declaration in it; and the
+recommendation rule matched a bare "begin with", so *"the deployment appears to begin with `x.py`"* was
+adjudicated as a recommendation and the ordering rule never ran on it.
+
+The prompt gained two rules: no volunteered "next, look at X", and no quality judgements.
+
+### Corrective generation
+
+`retrieval → generation → verification → one bounded correction → verification → return`.
+
+The corrective prompt is the original prompt plus one instruction, so a provider reuses the whole evaluated
+prefix. It names the failed sentences and the reason each failed, and demands the same length and depth —
+because a rewrite has a trivially available way to make zero unsupported claims, which is to say almost
+nothing. A rewrite shorter than two fifths of the original is rejected on that ground alone.
+
+At most one correction, and the bound is structural rather than arithmetic: the correction is set in a
+branch guarded by the attempt count, so no state reaches a third generation. A supported first pass costs
+nothing; `unverifiable` is not corrected either, since it means nothing was cited. The safer of the two
+answers is returned, ties to the rewrite, with its verdict and diagnostics intact.
+
+`Answer.attempts` and `Answer.corrections` reach the CLI, the REST API and the web app. A `restart` stream
+event tells a consumer holding already-streamed prose to discard it; the web app clears the turn, and the
+terminal draws a rule and says the answer above was rejected.
+
+### Validation
+
+Five repositories, chosen for structural difference and none of them in the previous corpus.
+
+| repository | shape | files | declarations | artefacts (read) | elements | unresolved |
+|---|---|---|---|---|---|---|
+| `sindresorhus/execa` | library, documentation-heavy | 644 | 2,415 | 383 (376) | 1,274 | 0 |
+| `docker/awesome-compose` | container collection | 479 | 263 | 403 (253) | 1,525 | 56 |
+| `actions/starter-workflows` | CI/template repository | 505 | **42** | 502 (375) | 2,778 | 59 |
+| `pallets/flask` | framework | 236 | 1,839 | 202 (185) | 798 | 2 |
+| TraceIQ | monorepo | 665 | 7,247 | 287 (247) | 2,642 | 234 |
+
+Artefact edges produced:
+
+| repository | REFERENCES | RUNS | CONFIGURES | DOCUMENTS | USES_ENV |
+|---|---|---|---|---|---|
+| execa | 0 | 0 | 1 | **300** | 1 |
+| awesome-compose | 63 | 3 | **81** | 64 | **163** |
+| starter-workflows | 2 | 0 | 9 | 0 | **434** |
+| flask | 2 | 0 | 10 | 0 | 12 |
+| TraceIQ | 91 | 0 | 12 | 1 | 43 |
+
+What the semantics actually say, which is the test the milestone sets rather than whether an answer is
+labelled grounded:
+
+- **`starter-workflows`** — category `infrastructure`, 42 declarations, and every question now reaches
+  **21–23 artefact facts**. The repository is described by its 183 workflows rather than by its 42
+  declarations.
+- **TraceIQ's own compose file** yields `ollama → ollama-pull → api → seed` as a four-step declared order,
+  and references both Dockerfiles and the two scripts it mounts. No code in the repository establishes any of
+  it. "Walk me through one important workflow end to end" now leads with `workflow` rather than a component
+  ranking.
+- **`flask`** — onboarding is `CHANGES.rst`, `README.md`, then the declared order of
+  `.github/workflows/publish.yaml`. No step is a ranked declaration.
+- **`awesome-compose`** — 39 compose files and 35 Dockerfiles produce 81 `CONFIGURES` and 163 `USES_ENV`
+  edges on a repository with 263 declarations.
+- **Absence is still absence.** `How does caching work?` and `How does authentication work?` return `absent`
+  or `undetermined` on four of the five, with the section list and the component list suppressed.
+
+Three defects the corpus caught and the unit tests had not:
+
+1. **A sequence item nested inside the item above it.** An item frame sits at the same indentation as the
+   next item, so unwinding only deeper frames left the previous item open — every step of a CI job was
+   recorded as a child of the step above it.
+2. **431 phantom dead links on one repository.** A path with two readings was emitted as *two* references,
+   so the unchosen alternative was recorded as unresolved. References now carry ordered candidates and the
+   translator resolves against the scan's inventory. execa: 431 → 0. flask: 147 → 2.
+3. **`COPY --from=someorg/sometool` read as a stage prerequisite.** `--from` names either an earlier stage or
+   a registry image, and only the first is ordering. One dangling `DEPENDS_ON` per Dockerfile.
+
+A fourth was a deliberate prioritisation rather than a defect: test files contributed 3,084 of execa's 3,471
+elements. Suites are the semantic content and individual case names are bulk, so cases are capped at eight
+per file and the boundary says how many were omitted. execa's node count fell from 6,633 to 4,436.
+
+### Token and performance impact
+
+Prompt totals **4,261–4,619** across 55 question-repository pairs, of which artefact facts are
+**194–1,020 tokens** — 4% to 22%, highest on the CI repository where they are the only evidence there is.
+Measured with the same counter the budget charges against. The totals are bounded by the tier rather than by
+what is available, so what changed is the *composition* of the prompt rather than its size.
+
+Analysis cost is **0.5–0.6 s** for the artefact-heavy repositories (479–505 files) and 12.8 s for TraceIQ,
+whose cost is dominated by TypeScript compilation. Artefact reading is one pass of line reading over
+non-source files, sharing the file reader with technology detection so a file wanted by both is opened once.
+
+Graph growth, after the test cap: **+1,274 to +2,778 nodes**, all `ArtifactElement`. Bounded three ways —
+60 elements and 60 references per artefact, 8 test cases per file, and a 512 KB read limit — and each cap is
+reported rather than applied silently.
+
+### Limitations
+
+**Formats TraceIQ still does not semantically understand.** Ansible playbooks, Helm templates before
+rendering, Kustomize overlays, Bazel and Buck build files, CMake, Gradle Groovy/Kotlin DSL beyond section
+headers, systemd units, nginx and Apache configuration, OpenAPI and JSON Schema as *schemas*, protobuf,
+GraphQL SDL beyond type declarations, Jupyter notebooks, `.proto` service definitions, Puppet, Chef,
+CloudFormation beyond top-level blocks, and every binary or archive format. Each is recorded with its
+family, its position and a boundary saying no reader exists.
+
+**Within the formats that are read.** No reader is a conforming parser. YAML anchors and aliases are not
+expanded, flow sequences are kept whole rather than split, and a templated file is read as the template
+rather than as what it renders to. Docker build arguments are not substituted and no base image is
+inspected. Compose `extends`, profiles, `env_file` contents and override files are not resolved. A schema's
+columns, constraints and foreign keys are not read, so relationships *between* entities are not established.
+Markdown prose is not interpreted: the headings say what a document covers, not what it says. Shell control
+flow is not followed, so nothing establishes what runs or under what condition.
+
+**Resolution.** A reference resolves to a *file*, so a path naming a directory — a `tsconfig` project
+reference, a build context — stays unresolved. So does a path into a build output, correctly: the repository
+names `dist/index.js` and the graph holds no such file. TraceIQ's own 234 unresolved references are almost
+entirely those two cases.
+
+**`RUNS` is narrow by design.** A command yields a `RUNS` edge only where a recognised runner is followed by
+a path-shaped argument that resolves. `npm run build`, `pnpm --filter x test` and `pytest` name no file, so
+four of the five validated repositories produce zero — which is honest and is why the edge count is reported
+beside the others.
+
+**Inference.** Every family decision from a path is a convention: a directory named `migrations` is a schema
+family, a `k8s` directory is not what makes a file a Kubernetes resource (its `apiVersion` is). The
+repository *type* inference is unchanged by this milestone and still mis-describes a collection of sample
+applications as an application, because its routes are real and its samples sit in top-level directories.
+
+**Corrective generation.** One pass. Whether a model obeys the instruction to keep its length is not
+enforceable from here beyond the two-fifths floor, and a rewrite that fails again is returned with its
+warning rather than rewritten a third time.
+
+## Semantic Understanding — structural prominence is not semantic importance
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web` clean;
+**2,762 backend + 376 web** tests passing. Structural invariants on **15 repositories**, zero failures.
+
+### One sentence of cause
+
+A fan-in count measures how much of a repository points at a declaration. It says nothing about whether
+that declaration is what the repository is *for* — and the whole answering pipeline was reading the first
+number as the second.
+
+On an umbrella repository of git submodules whose only analysable code is four Python scripts under
+`.ci/scripts`, that produced every failure at once. `set_secret.py` genuinely has the highest fan-in, so it
+was the repository's most important component, the answer to "explain the architecture", the answer to
+"what tests should I read first", and — because its name contains `secret` — the basis of an invented
+authentication architecture.
+
+### Five root causes
+
+| # | cause | consequence |
+|---|---|---|
+| 1 | `.ci`, `.github` and their siblings were not in the region-role vocabulary at all | CI scripts were production code, so they ranked, and nothing else did |
+| 2 | Repository identity was derived **only from declarations** | a repository whose code is CI *is* a CI tool, as far as the identity could tell |
+| 3 | Importance was global | the same ranking answered every question, so every question got CI |
+| 4 | Nothing asked whether the requested concept existed | a caching question on a repository with no cache got 67 facts about something else, and the model explained those |
+| 5 | Grounding adjudicated **naming**, not entailment | "authentication works through `set_secret.py`" passes every naming check: the file is real, the citation resolves |
+
+### Repository identity, from the shape rather than from the code
+
+`structure.ts` now folds the packages listing into a **top-level area map** — each directory with its
+semantic role and size — and derives a `RepositoryCategory` from it: `codebase`, `monorepo`, `collection`,
+`infrastructure`, `umbrella` or `unknown`. This is deliberately separate from `profile.ts`'s
+`RepositoryType`, which reads routes, manifests and role annotations. They agree on ordinary repositories
+and disagree on exactly the ones that mislead: on the umbrella case the type is `unknown` and the category
+is `umbrella`, and the second is what a reader needs.
+
+The area map is emitted as `area` facts, pinned into the **stable prefix** — a directory map does not
+change with the question — so it is citeable and costs nothing to reuse across a session.
+
+**The one signal that made the umbrella case solvable was `.gitmodules`.** Submodule mount points contain
+zero files on any clone that did not initialise them, so the scanner correctly sees nothing and the
+listing correctly omits those directories. Without reading `.gitmodules` the honest conclusion from what
+remains is "94% CI and deployment" — true of what was scanned, wrong about the repository. The category
+carries that caveat in its own evidence line rather than hiding it.
+
+**README prose is deliberately not used.** The scanner records a file's path, language, role and size, and
+no content, so README text is not available to this layer at all. Adding it would mean a new extraction
+path through the scanner, graph and context packages, and every failure listed above turned out to be
+fixable from structure the graph already had. Recorded as a limitation rather than done badly.
+
+### Semantic roles, and why they are not importance
+
+The region-role taxonomy gained `ci`, `deployment`, `configuration`, `sample`, `script` and `migration`.
+Two rules keep it safe:
+
+- **A role word gets a leading dot and a compound tail** (`.ci`, `docs_src`, `test_utils`), because the
+  conventions are spelt both ways.
+- **`samples`, `starters` and `templates` are matched only in the first path segment.** Spring PetClinic
+  lives under `org/springframework/samples/`, so the word buried in a Java namespace is domain vocabulary;
+  the same word at the top of a tree is the repository telling you what it holds.
+
+`rankComponents` gained a `roles` option. The measurement is unchanged — it is still fan-in, route
+ownership, coupling and role — and what moves is the **eligible set**, normalised within itself so that
+"the most prominent CI script" means something rather than being the lowest entry in a list of
+controllers. `identity.byRole` carries a ranking per non-production role that has declarations.
+
+### Query-dependent retrieval
+
+`INTENT_ROLES` maps an intent to the semantic roles its evidence must come from, and `rolesForLocating`
+does the same for the several different requests `locate` covers. A question restricted to a role that has
+no components gets **an empty list, not a fallback** — falling back to the default ranking is what produced
+every observed failure, and an empty list is what lets the sufficiency check say the honest thing.
+
+### Evidence sufficiency
+
+`EvidenceSufficiency` is computed before generation with three verdicts, and the middle one is the point:
+
+- **`established`** — answer it.
+- **`absent`** — nothing found, and the analysis could have found it. The guidance asks for two or three
+  sentences saying so, and explicitly says *"the analysis did not identify it — not that the repository
+  does not have it"*.
+- **`undetermined`** — nothing found, and the analysis could not have found it here. Reached when no
+  region was analysed deeply enough, or when none of the repository's *own* code was analysed at all — an
+  umbrella's contents are in other repositories by construction.
+
+Where the verdict is not `established`, the section list and the ranked component list are **suppressed**,
+and the plan carries no components. That is the padding removed at the source. The one exception is a
+role-restricted question whose role did produce components: asked what handles deployment on a repository
+whose deployment *technology* no detector could name, the CI scripts are the relevant, correct answer.
+
+### Claim strength
+
+`entailment.ts` adds five rules, each written against a sentence a model actually produced, each asking
+one question: is there a fact of the *kind* that would license this?
+
+| transformation | licensed by |
+|---|---|
+| reference → execution order | a workflow, a route-to-handler edge or a recorded call |
+| secret management → authentication | access-control middleware or an authentication route |
+| declared technology → observed behaviour | a role annotation, a workflow, or a recorded responsibility |
+| no evidence → nonexistence | nothing; the supportable wording is "not identified" |
+| configuration file → confirmed run | a recorded workflow |
+
+Hedged sentences are accepted and reported as `inferred`; flat assertions are `unsupported` and make the
+answer ungrounded, on the same footing as an invented identifier — a sentence of real names saying an
+unsupported thing is *more* misleading than one naming a file that does not exist.
+
+Two defects in these rules were caught by their own battery: the licence check originally searched all
+facts, so a `characterised-as` claim *derived from* a secret-shaped variable licensed the very sentence it
+was too weak to support; and the absence rule sat after the secrets rule, so "there is no authentication"
+was reported as a secrets claim — the right verdict for the wrong reason.
+
+### microsoft/AI: before and after
+
+| question | before | after |
+|---|---|---|
+| Explain the architecture. | CI scripts as the top components | `umbrella`; area map; **no components** |
+| What tests should I read first? | CI Python scripts | `locate` lead, `roles: [test]`, **nothing substituted**, `undetermined` |
+| How does authentication work? | authentication inferred from `set_secret.py` | `undetermined`, no components |
+| How does caching work? | correct absence, padded with structure | `undetermined`, no components, two-to-three-sentence instruction |
+| What handles deployment? | (undifferentiated) | `roles: [deployment, ci, script]`, names `.ci/scripts` |
+| repository identity | `type: unknown`, nothing else | `umbrella` — declares git submodules; `.ci` (ci, 85 files), `AzureDeployment` (deployment) |
+
+No regressions elsewhere: LinkForge stays `application`/`monorepo` with its own components, PetClinic
+stays a `service`, React and stripe/ai keep the categories the previous milestone established.
+
+### Conversation memory
+
+Unchanged and re-verified. **37-turn** sessions on two repositories, zero budget failures against 34–35
+that would fail under transcript replay, conversation state 125–219 tokens, zero raw history tokens.
+
+The brief's transition sequence works in both directions: turn 5's "What tests cover that?" inherits the
+session focus *and* restricts to `roles: [test]`; turn 7's "How does authentication work?" — four turns
+after a deployment question — does **not** inherit deployment. Explicit current-turn intent outranks
+inherited focus.
+
+### Token impact
+
+Prompt totals **3,066–3,560** across 165 question-repository pairs, against 3,418–3,552 before: unchanged
+at the top, lower at the bottom. Facts 35–79. Guidance averages 738 tokens for an absence and 744 for an
+explanation — the absence instruction *replaces* the section list rather than adding to it, so the
+guidance says something different rather than something longer. One stable prefix per repository on all
+15. Planning stays under a millisecond per question.
+
+### Limitations
+
+**Graph.** README and documentation *content* is never read — only paths, roles and sizes. Submodule
+contents are not analysed, by construction. Environment variables and external packages still cannot be
+attributed to a file in a repository context.
+
+**Inference.** Test coverage remains a filename match. The role vocabulary is conventional, so a
+production directory named `scripts` is classified `script`; `starter`, `template`, `scaffold`, `site`,
+`perf` and `deps` were tried and removed because each becomes a plausible production package once a suffix
+is attached. `packages/integration` is still not treated as tests.
+
+**Entailment.** Five rules, not a prover. It catches the transformations that were observed and leaves
+prose it cannot classify alone, which is deliberate: a validator that fires on sentences it does not
+understand is one somebody turns off. It cannot detect a wrong claim about a real relationship — saying
+`f12` proves X when it proves Y still passes.
+
+**Model.** Whether the model obeys the two-to-three-sentence instruction for an absence is not enforceable
+from here.
+
+## Structural Scope — every fact true, the architecture fiction
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web`,
+`docker compose build api` clean; **2,722 backend + 376 web** tests passing. Structural invariants
+checked on **14 repositories**, zero failures.
+
+### The failure was composition, not detection
+
+Asked to explain `stripe/ai`, TraceIQ reported a persistence layer of **Mongoose, SQLite, Drizzle ORM
+and PostgreSQL**, a stack of **Next.js, React, Flask and Express**, six workflows named for checkout and
+payment, and a surface exposing `POST /create-checkout-session`, `POST /pay` and
+`GET /customer/:email/bookings`.
+
+Every one of those detections was correct. Mongoose is in `benchmarks/furever/environment`; PostgreSQL
+and Drizzle are under the two `benchmarks/saas-starter` fixtures; SQLite is under the two
+`benchmarks/galtee` ones; Flask is in `benchmarks/card-element-to-checkout/environment/server`. They are
+**six different sample applications**, written to be graded by a benchmark, and no two have ever run in
+the same process. The repository's own code is `llm/ai-sdk`, `llm/token-meter` and three packages under
+`tools/`, none of which serves an HTTP route.
+
+Nothing was wrong with any fact. What was missing was the question **"where was this found?"**, asked
+before the answer was composed — and the graph had always recorded the answer.
+
+### Five root causes, each in a different file
+
+| # | cause | why it survived |
+|---|---|---|
+| 1 | `summariseArchitecture` unioned technologies across the whole tree | every technology already carried its `regionPath`; nothing read it |
+| 2 | `ownRoutes` filtered on the route's registration file, and 11 of 16 route nodes carry `fileId: null` | the "absence of evidence is not evidence" rule kept every unattributed route |
+| 3 | route nodes are **merged by method and path** — `GET /` was one node "materialised from 4 framework registration(s)" | there is no single file to name, so no path evidence exists at all |
+| 4 | role layers were unscoped, so a fixture's `Salon` and `SalonSchema` were the whole `Model` layer | `capabilitiesOf` derives the repository's domains from layer member names |
+| 5 | external packages and environment variables cannot be attributed to a file in a repository context | `dependencies.view` is `null` there; env nodes are merged by name |
+
+Cause 3 needed a different kind of fact: **a route needs a framework to register it.** Where no
+production region declares a backend framework, nothing in the repository's own code could have
+registered the route, so the merged registrations must all be the demonstrations'. Cause 5 is contained
+rather than solved — an unplaceable name cannot establish a domain in a repository where most of the
+analysed source is not the repository's own.
+
+### One vocabulary, in one place, applied everywhere
+
+`structure.ts` is as much a consolidation as an addition. The knowledge that `examples` and `benchmarks`
+demonstrate a repository rather than constitute it already existed three times over — `DEMONSTRATION_PATH`
+in `profile.ts` decided repository *type*, `GENERATED_PATH` in `importance.ts` decided *ranking*, and
+neither reached the technologies, the entry points or the workflows. Now one table classifies every region
+as production, example, test, benchmark, generated, vendored or documentation, and eight consumers read it.
+
+The vocabulary is **conventional, never repository-specific**: `stripe/ai` calls its fixture directories
+`environment` and `solution`, and neither word appears — they are caught by sitting under `benchmarks/`.
+
+### stripe/ai, before and after
+
+| | before | after |
+|---|---|---|
+| type | `application` | `monorepo`, several units, production share 0.28 |
+| persistence | Mongoose, SQLite, Drizzle ORM, PostgreSQL | none — correct, no production package declares one |
+| stack | Next.js, React, Flask, Express | Docker, GitHub Actions (root), Jest, pytest |
+| workflows | 6, named for checkout and payment | none |
+| entry points | `POST /create-checkout-session`, `POST /pay`, … | `tools/python`, `llm/ai-sdk`, `tools/typescript`, `llm/token-meter`, `tools/modelcontextprotocol` |
+| security | 9 secret-shaped variables | none — no surface to guard |
+| domains | rendering, routing, persistence, networking, authentication, configuration | testing, build, deployment, persistence |
+| top components | `Salon`, `SalonSchema`, `SettingsProvider` | `tools/python`, `llm/ai-sdk`, `meteredModel` |
+
+42 technologies are still recorded — as `benchmark` and `example`, with their regions, so an answer can
+say what is true about them.
+
+### Locating questions get places, not descriptions
+
+"What tests should I read first?" received an architecture overview, and the cause was that **the only
+test evidence a prompt ever carried was the count `N declarations carry the Test role`.** A count cannot
+be opened. So the projection had nothing for the question, the importance ranking answered instead, and
+the reader was handed the most-referenced declarations.
+
+A `locate` intent, a `locate` lead with its own three sections, and a `tested-by` fact part now carry test
+names with their paths. Coverage is mapped by stripping the ecosystem's test affix and matching against
+annotated declarations — PetClinic maps 12 of 17 (`OwnerControllerTests.java` → `OwnerController, Owner`)
+and every line says the mapping is a naming convention rather than an observed relationship. Where nothing
+matches, the fact says the analysis cannot say.
+
+Question breadth now also reaches the depth rule: a locating answer is `focused` whatever the repository's
+size, because a four-filename answer given the "explain the major modules" instruction is padding.
+
+### Grounding: two false positives fixed, strictness proved intact
+
+`grounding-battery.test.ts` adjudicates 16 claim shapes a correct answer makes and 12 fabrications of the
+**same shapes** against a real projection. Two categories were genuinely wrong:
+
+- **`CI/CD` was reported as a package no fact carried.** It is slash-shaped, so it was adjudicated. The
+  standing instruction already forbids generalising GitHub Actions into "CI/CD" — that is a prose rule a
+  reader judges, not a naming claim a verifier can decide. `isProseAcronym` exempts short all-letter and
+  all-caps slashed segments; `aws-sdk/client-s3`, `next.js/router`, `@prisma/client` and `React/DOM` are
+  all still adjudicated and held as negative controls.
+- **`env:REDIS_URL` was called an invention** while the facts said `reads-env REDIS_URL`. The model was
+  using the identifier prefix the system prompt taught it. The extractors now declare the `env:` identity.
+
+Route paths turned out to work already; the first version of the battery declared its permitted set by
+hand and was testing the fixture rather than the guard.
+
+### Regressions the existing suite and the corpus caught
+
+| caught by | regression |
+|---|---|
+| `profile.test.ts` | scoping `routeCount` made the framework proportion test compare a number with itself — Flask and Gin became web services again. Both counts are now carried. |
+| `boundary.test.ts` | a doc comment named a model vendor, which the package forbids anywhere in source |
+| `projection.test.ts` | `which` in the `locate` vocabulary made "Which modules are most referenced?" a locating question |
+| `grounding.test.ts` | an existing test asserted `CI/CD` *should* fail — reversed with the reasoning stated |
+| React corpus run | consolidating three patterns dropped `fixtures?`, and React immediately re-acquired a workflow through `fixtures/flight/server` |
+| FastAPI corpus run | `docs_src` does not match `docs`; role words now accept a `[_-]…` compound tail |
+| LinkForge corpus run | the eight tests inside the cap were all unmapped page tests; tests with resolved coverage now sort first |
+
+### Cross-repository invariants — 14 repositories, 0 failures
+
+Checked as properties, never as prose: an incidental technology never reaches the stack; no ranked
+component or unit comes from a non-production path; a repository serving no route has no routed workflow
+and no route groups; a library or framework never acquires one; a security surface needs a route or a
+middleware; caching is never claimed without a detected cache; one stable prefix and one system message
+per battery; more than one answer shape per repository.
+
+| repository | type | composition | own/declared routes | routed workflows | set aside |
+|---|---|---|---|---|---|
+| stripe/ai | monorepo | several (0.28) | 0/14 | 0 | 40 benchmark, 4 example |
+| React | framework | several (0.82) | 0/11 | 0 | 51 test, 1 benchmark, 1 example |
+| LinkForge | application | several | 16/16 | 4 (+2 inferred) | — |
+| Spring PetClinic | service | single | 16/16 | 6 | — |
+| Flask | library | single (0.52) | 0/134 | 0 | 3 example |
+| Gin | library | single | 4/112 | 0 | — |
+| FastAPI | library | single | 0/598 | 0 | — |
+| zod | monorepo | several (0.83) | 0/0 | 0 | 1 benchmark, 1 documentation |
+| axios, commons-lang, express, dash, client-go, zustand | library / framework | — | 0 | 0 | — |
+
+### Measurements
+
+Prompt totals 3,435–3,552 tokens across the battery, of which facts are ~1,900–1,990 and guidance
+~1,450–1,550; fact counts 41–76. Prefix reuse: one stable prefix and one system message per repository on
+all 14. Planning 172–892 µs per question. Thirty-turn sessions still complete on all six repositories
+tried with **zero** budget failures against 27–28 that would have failed under turn replay, conversation
+state 153–225 tokens.
+
+### A mechanism built and then removed
+
+A `confine` option was added so a focused question's supplement could stop at the planned parts instead of
+filling the tier. Measured on LinkForge, PetClinic and React it was **inert** — for every question the
+product would have confined, the output was byte-identical, because the planned parts already exhaust the
+budget before an unplanned extractor runs. Relevance was already coming from the reordering and the
+allocation. It was removed rather than shipped with a justification it had not earned.
+
+### Live validation — the milestone battery through a real model
+
+Ten questions through `RepositoryAnswerer` against `qwen2.5:7b-instruct` on `stripe/ai`, as one growing
+session. **Zero occurrences of Mongoose, SQLite, Drizzle, PostgreSQL, Next.js, Flask, Express,
+`/create-checkout-session` or `/pay` in any of the ten answers.** Seven verdicts `grounded`, three
+`ungrounded` — and all three rejections are the guard catching the model inventing paths (`@/app`,
+`@/components`, `@/lib`; `llm/ai-sdk/token-meter.ts#trackUsage`; `benchmarks/furever/package.json`), which
+is the negative control working in production rather than a regression.
+
+Three answers are worth quoting because they show the mechanisms reaching prose:
+
+- *Architecture*: "This repository is a monorepo organised around persistence, testing, build, and
+  deployment… ★★★☆☆ tools/python, ★★★☆☆ llm/ai-sdk, ★★☆☆☆ tools/typescript, ★★☆☆☆ llm/token-meter…"
+- *Tests*: names two real test paths, then "The mapping is based on the naming convention rather than a
+  recorded relationship in the graph" — the `CERTAIN`/`INFERRED` distinction survived into the sentence.
+- *Caching*: "The analysis could not establish specific details about caching mechanisms" — evidence
+  absence produced explicit uncertainty instead of a plausible cache.
+
+Answers ran 113–326 words in 86–517 s; prompts 3,325–3,400 tokens with conversation state 0–201.
+
+**The live run also found the last leak.** The architecture answer said "953 files across five main
+regions: benchmarks/furever, tools/python, llm/ai-sdk, benchmarks/card-element-to-checkout,
+benchmarks/saas-starter-partial-payments" — naming three benchmark fixtures among the repository's main
+regions. Every other consumer of structural scope had been fixed; the `regions` fact still presented all
+fifty regions as equals, largest first, which on a repository that is 72% demonstrations means the
+demonstrations lead. Region facts now carry their role and sort production first.
+
+### Known limitations
+
+**Graph limitations.** Route nodes and environment-variable nodes are merged by name, so a route
+registered in four fixtures has no file and a variable read in four places has no place; a repository
+context's `dependencies.view` is `null`, so an external package cannot be attributed to a file. All three
+are contained by the production-share rule rather than solved. LinkForge's backend tests are not annotated
+with the Test role at all, so its test question is answered from frontend tests.
+
+**Inference limitations.** Test coverage is a filename match and says so. `meteredModel` in `llm/ai-sdk`
+is annotated `Model`, so `stripe/ai` claims a `persistence` domain from an LLM-model wrapper — an honest
+derivation from a naming collision the graph cannot resolve. `packages/integration` is not in the
+conventional vocabulary, so zod still reports Drizzle ORM from an integration-test package. `integration`
+was left out deliberately: a directory of that name is at least as likely to be a repository's own
+integration layer.
+
+**Model limitations.** The answer's structure, depth and evidence are decided by the planner; whether the
+model follows the section order is not enforceable, and the grounding guard checks naming claims rather
+than whether a cited fact supports the sentence it is attached to.
+
+## Conversational Memory — long sessions, without shortening a single answer
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web`
+clean; **2,643 backend + 376 web** tests passing. Validated with **thirty-turn sessions on five
+repositories**.
+
+### The failure was arithmetic, and it had nothing to do with the repository
+
+Every prior turn was replayed into the prompt in full, so the reservation grew by the length of every
+answer. Three detailed answers at 800–900 tokens is 2,500 tokens against a `standard` tier that holds
+3,400, and the fourth question failed with `budget-not-satisfiable`. The graph still held every fact the
+question needed. What had run out was room to restate prose the model had already written.
+
+Measured on the battery: replaying a thirty-turn session reserves **29,500 tokens** by the last turn and
+first crosses the tier at **turn three**.
+
+### Answers are the product, so the conversation is what gives way
+
+`memory.ts` derives a `ConversationState` — covered topics by kind, the current focus, what the session
+has not reached, the reader's level, questions the guard rejected, and a four-question window — and that
+is what the model is shown. The turns go no further than the derivation. Every cap in the file is a
+**constant**, so the rendered block settles at 171–222 tokens and stays there whether the session is four
+turns long or forty.
+
+Three properties make it safe to keep across a session whose facts are rebuilt every turn:
+
+- **Derived, never accumulated.** A pure function of the transcript and the identity, recomputed each
+  turn. A forty-turn session replays to the same forty prompts, which is the reproducibility the whole
+  pipeline below `generate` depends on.
+- **It can only name what the identity carries.** A topic is matched against a closed vocabulary of
+  domains, workflows, components and technologies the repository demonstrably has, so the state can say
+  a session covered `urlService` and can never say what `urlService` is. Facts come from the graph.
+- **It subtracts and it steers; it never adds.** `covered` removes explanations already given; `focus`
+  supplies a subject to a question that named none. Neither can put a topic in an answer the current
+  question did not ask for.
+
+### Follow-ups, and answers that still stand alone
+
+A question that points back — a pronoun, an anaphoric opener, or a three-word fragment — inherits the
+session's focus, and the scope is recomputed from it so the depth rule, the section template and the
+exclusions all agree it is a question about one part of the repository. "Where is this implemented?" is
+now answered about the thing the session was discussing instead of restarting on the architecture.
+
+Not re-explaining and standing alone are rendered as **one instruction**, because separating them
+produces the two opposite failures: told only the first, a model writes "as explained above" and the
+answer is unreadable on its own; told only the second, it re-explains everything and the session goes in
+circles.
+
+### Validation: thirty turns, five repositories
+
+| repository | failures | would have failed | first replay failure | reserved, turn 1 → 30 | replay at turn 30 | session block | follow-ups resolved |
+|---|---|---|---|---|---|---|---|
+| LinkForge | **0** | 28 of 30 | turn 3 | 1,479 → 1,832 | 29,744 | 180–214 | 5 |
+| React | **0** | 28 of 30 | turn 3 | 1,450 → 1,808 | 29,793 | 183–202 | 5 |
+| Spring PetClinic | **0** | 28 of 30 | turn 3 | 1,434 → 1,718 | 29,696 | 176–205 | 4 |
+| Flask | **0** | 28 of 30 | turn 3 | 1,357 → 1,756 | 29,500 | 181–222 | 5 |
+| Gin | **0** | 27 of 30 | turn 4 | 1,336 → 1,716 | 29,434 | 171–216 | 5 |
+
+One stable fact prefix and one system message per session on all five, so prompt-prefix reuse survived.
+`history` tokens are zero on every turn of every session. Deriving the state costs 482–757 µs per turn.
+
+### Four defects the sessions found
+
+| where | wrong behaviour | why | fix |
+|---|---|---|---|
+| LinkForge, turn 30 | "what should I look at next?" narrowed to Next.js | `next` is a subsystem the repository genuinely contains, and `focusOf` matched it | sequence adverbs joined the question vocabulary — they are how a question is positioned, never what it is about |
+| React, turn 5 | "Why is Redis used?" inherited the previous turn's authentication focus | the follow-up test anchored on the opening word, and `why` opens both a continuation and a new question | a pronoun, an anaphoric opener, or a three-word fragment — not a leading `why` |
+| all five | "what should I look at next?" planned as a workflow answer with no suggestions | the orientation patterns covered "where do I start" but not the way a session ends | "look at next", "what next", "where next" |
+| all five | the block reached 326 tokens and cost 14 facts of 46 | a six-question window, a three-line guard, and a kind tag per topic | four questions, two lines, topics grouped by kind — 171–222 tokens |
+
+### Files
+
+| File | Change |
+|---|---|
+| `packages/ai/src/memory.ts` | New. `ConversationState`, `deriveState`, `renderState`; topic vocabulary, focus carrying, level, goal, remaining, open questions, window and compression |
+| `packages/ai/src/plan.ts` | `PlanInput.state` replaces `history`; focus inheritance with the re-widening guard; `continues`; `suggested`; the session as an audience floor |
+| `packages/ai/src/prompt.ts` | The fenced session block between the facts and the question; the state replaces the replay in `assemble`, `promptBreakdown` and `reservedTokens` |
+| `packages/ai/src/strategy.ts` | Continuation, answer-independence and next-topic guidance |
+| `packages/ai/src/answer.ts` | Derives the state once per answer, threads it everywhere, reports it; `stateFor` for inspection |
+| `packages/ai/src/stream.ts` | `GroundingSummary.conversation` |
+| `packages/ai/src/intent.ts` | Sequence adverbs in the question vocabulary |
+| `apps/cli/src/chat.ts` | Records the guard's real verdict, so open questions are real |
+| `apps/api/src/chat.ts`, `apps/web/src/types/api.ts` | The `conversation` prompt section on the wire |
+| `packages/ai/src/memory.test.ts` | New. 19 tests: what a session establishes, that it stops growing the prompt, what reaches the model |
+
+### Known limitations
+
+- **A session is not free.** The block is real tokens, and those tokens are facts the projection cannot
+  buy: on LinkForge the fact count falls from 46 to about 36 over a session. The price is paid **once** —
+  turn 12, turn 30 and turn 40 project identically — where the old behaviour charged it every turn and
+  then ended the session. Raising the tier is the lever for a caller who wants both.
+- **Topics are matched, not understood.** An answer that discussed the cache without writing "Redis" did
+  not, as far as the state is concerned, cover it. The alternative is extracting topics from prose, which
+  would let conversation memory assert something the repository does not contain.
+- **The API cannot report open questions**, because the wire's history carries no verdict. The CLI now
+  does. A turn nobody labelled arrives as `unverifiable`, which means "not told" rather than "failed".
+- **Compressed turns lose their questions, not their topics.** Beyond the four-question window the path
+  is a count; what those turns explained survives in `covered`.
+
+## Question Execution Planner — the planning layer decides, not the model
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web`
+clean; **2,612 backend + 376 web** tests passing. Validated over the same **13 repositories**, ten
+questions each.
+
+### The previous milestone knew what the repository was. It still let the model decide what to say
+
+`identity.ts` established what a repository is *for*, and `plan.ts` selected the workflows and
+components a question needed. Everything after that selection was still the model's: what the answer's
+sections were, in what order, what to leave out, what to admit it could not settle, and how much of the
+fact budget each part of the answer deserved. So a caching question and an architecture question about
+one repository received the same answer *shape* — one shaped by the standing instruction and by
+whichever facts happened to fit.
+
+The planner now decides all of it before a fact is chosen. What reaches the model is a plan; what the
+model contributes is prose.
+
+### Structure: nine templates, not one with parameters
+
+`LEAD_SECTIONS` and `INTENT_SECTIONS` are twelve ordered section lists — a workflow answer, an
+orientation route, a caching answer, a compilation pipeline — each naming what its sections must
+establish. An orientation answer is not a shorter architecture answer; it is a route, and its second
+section is a place to start rather than a layer diagram. Every list opens with a section that stands
+alone in one paragraph, which is the progressive disclosure: a reader who stops after the first has an
+answer rather than an introduction.
+
+### Evidence planning: no section is generated without evidence
+
+Each section names the identity fields it cannot be written without, and a section whose fields the
+identity does not carry is **dropped and recorded in `unknowns`** — phrased as a statement about the
+analysis ("no cache technology was detected"), never about the repository. Asked "explain caching",
+twelve of the thirteen validation repositories have no cache, and all twelve now plan an answer that
+says so instead of one that fills the gap.
+
+### Allocation: reordering was not enough
+
+`parts` put the plan's parts at the front of the supplement, and the front of the supplement is where
+the budget goes — so a workflow question got its request flow *and* whatever large listing sorted next,
+and the ranked components the plan had also asked for were priced out. `FactAllocation` gives each of
+four groups a share, applied to the supplement only so the cacheable core stays question-independent,
+followed by an unallocated sweep so a group that declines its share leaves the room to someone else.
+Measured across 130 question-repository pairs, the allocated projection spends the same budget to
+within one fact every time, and buys visibly different facts with it: React asked how authentication
+works went from 32 supplement facts to 47.
+
+### Everything else the plan now carries
+
+Audience (steers assumption, never depth), exclusions (concepts the repository demonstrably has that
+this answer must leave alone — never invented, never a filter on the facts), a navigation route for
+orientation questions, question decomposition, repository memory over the conversation history, and a
+reported confidence. All deterministic, all free, and cached against the identity so the four consumers
+in one request derive it once.
+
+### Five defects the corpus found
+
+| repository | wrong plan | why | fix |
+|---|---|---|---|
+| LinkForge | "where do I add a new route?" got a five-step reading list | `ORIENTATION` matches "where do I", which is also how a contributor asks where a change goes | a contribution question is never an orientation question |
+| LinkForge | "where should I start?" forbade authentication, caching, persistence, deployment and testing | orientation and importance counted as narrow questions, so the exclusion list fired on questions whose whole purpose is breadth | exclusions only where the question actually narrowed |
+| client-go | a route beginning "then read" | no routes and no workflow, so the first two steps were absent and the path began in its own middle | stages assigned by position: the first step that exists is where to start |
+| axios, dash, react, zustand | a caching answer opening on "how it is configured" | the section that introduces the cache was dropped for want of one, and the survivors kept their order | a template that loses its opening gets the honest floor back |
+| React | "where should I start?" traded eight package facts for eight route facts | the orientation allocation reserved 20% for workflow facts, and a route's last step is one workflow | one share, sized to one step |
+
+### Files
+
+| File | Change |
+|---|---|
+| `packages/ai/src/plan.ts` | The planner. Sections, evidence checks, exclusions, unknowns, navigation, decomposition, allocation, audience, confidence, memory, cache |
+| `packages/ai/src/projection.ts` | `ProjectionOptions.allocation`, the part-to-group map, group ceilings on the supplement and the unallocated sweep |
+| `packages/ai/src/strategy.ts` | `questionGuidance` renders the plan: sections in place of the coverage list, plus audience, route, exclusions, unknowns and memory |
+| `packages/ai/src/answer.ts` | History reaches the planner; the allocation reaches the projection; the shape reports the new decisions |
+| `packages/ai/src/stream.ts` | `AnswerShape` carries audience, confidence, sections, exclusions, unknowns, covered and allocation |
+| `packages/ai/src/plan.test.ts` | 51 tests over structure, evidence, exclusions, audience, navigation, decomposition, allocation, memory, confidence, caching and rendering |
+| `packages/ai/src/index.ts` | The new public surface |
+
+### Invariants that held on all thirteen
+
+One stable fact prefix and one system message per repository across the whole ten-question battery —
+the property prompt-prefix reuse depends on, and the one an allocation derived from the question would
+have broken had it reached the core. Four to five distinct answer leads and five to seven distinct
+section orders per repository, so the planner is visibly deciding something. Question guidance 408–490
+tokens at its per-repository maximum, against 205–457 before the planner grew a structure. Planning
+costs 172–892 µs per question.
+
+### Known limitations
+
+- **A `technology` answer has no tradeoffs section**, though the shape a reader expects has one. The
+  graph records that Redis is present; it records nothing about what choosing it cost, and a section
+  asking for tradeoffs is a section a model can only fill from outside the facts.
+- **Exclusions do not filter facts**, only instruct. The projection is a reordering everywhere,
+  deliberately, because a classifier that was wrong about the question would otherwise cause a missing
+  repository rather than a differently-ordered one — and the planner is a classifier.
+- **Decomposition is merged, never answered separately.** Two generations concatenated would produce
+  two answers with two openings, which is worse than the failure it fixes.
+- `intentOf` does not know the word "shipped", so "how is this shipped?" reads as `overview`. The
+  keyword table is closed by design; this is a missing row, not a missing mechanism.
+
+## Repository Identity — what the repository is *for*, not what it contains
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web`
+clean; **2,561 backend + 376 web** tests passing. Validated over the same **13 repositories**.
+
+### The previous milestone made the answer fit the repository. It still described an inventory
+
+Adaptive reasoning gave React a different instruction from LinkForge, and both instructions were about
+*shape*: a type, a scale, a set of traits. Neither said what the repository was **trying to
+accomplish**. The guidance opened "It is a service" — a category — where a senior engineer would open
+"it shortens URLs, and a redirect arrives at `GET /:shortCode`".
+
+Three new derivations close that gap, and each rests only on numbers the graph already computed.
+
+### Importance: everything used to weigh the same
+
+A projection listed `PrismaUrlRepository` and `formatDate` as two facts of equal rank, so a model spent
+the same sentence on each. `importance.ts` scores every declaration and package from signals a
+capability already measured — route ownership, fan-in, coupling, role, package dependents — and carries
+**the raw numbers with every score**, so "the most important declaration here" is checkable rather than
+asserted. The weighting is a declared table; the measurements are the graph's.
+
+### Workflows: the one thing an inventory can never say
+
+`RouteResult.handlers` is an ordered list of edges from a route to the declarations registered against
+it — the only measured chain in the whole graph. `workflow.ts` turns it into what happens when the
+repository does its job, and keeps the two confidences apart: the route-to-handler steps are `CERTAIN`
+because edges back them, and the continuation into a service and a repository is `INFERRED` because
+role annotation and name agreement are not an observed call. The rendered line says so.
+
+### Identity and planning
+
+`identity.ts` composes a purpose **assembled from evidenced clauses, never written**, and twenty
+further fields that are `Evidenced<T> | null` — a repository with no detected cache has `caching:
+null`, not `'none detected'`. `plan.ts` then asks what *this question* needs before any fact is
+selected, which is the reordering the whole milestone turns on.
+
+### Six defects the corpus found
+
+| repository | wrong answer | why | fix |
+|---|---|---|---|
+| LinkForge | `analyticsController` at ★★★★★ on nothing but its name | scores divided by the signals a component *had*, so one weak signal scored a perfect 1.0 | divide by what the kind could achieve |
+| LinkForge | `XOR`, `SelectSubset` ranked above every controller | Prisma type helpers in `src/generated`, honestly referenced 66 and 57 times | exclude generated and vendored paths |
+| LinkForge | the four most important declarations were its rate limiters | the extractor linked only `createLimit`; a middleware was the last linked handler | a Middleware cannot own a route |
+| LinkForge | workflows named "limit requests" | named after whichever handler linked | name from the route prefix, or a domain two layers agreed on |
+| PetClinic | three workflows all called "owners requests" | all mounted under `/owners` | disambiguate with the trigger |
+| React | `flow-typed/environments` its most important unit | type stubs, imported by 46 packages | type-stub directories are not components |
+
+### The regression this very nearly shipped
+
+The core's ceiling is a share of `TIER − reserved`, and `reserved` includes the guidance the question
+steers. Harmless while question guidance was forty tokens; once the planner emitted workflows and a
+ranked component list it ranged from **205 to 457 tokens** across one battery, the ceiling moved by
+hundreds, a different number of facts fitted under it, and the prompt prefix a provider caches differed
+between two questions about the same repository — **identical on 3 of 13 repositories, different on the
+other 10**. Budgeting the core against a question-independent reservation restores it: **13 of 13**.
+
+Nothing caught this but the corpus. Every unit test passed throughout.
+
+### The same question, thirteen repositories
+
+| question | LinkForge | PetClinic | React | client-go | the libraries |
+|---|---|---|---|---|---|
+| Explain the architecture | **workflow** | **workflow** | **extension-points** | **extension-points** | **api** |
+| Where should I start? | orientation | orientation | orientation | orientation | orientation |
+| What are the most important parts? | components | components | components | components | components |
+| How does authentication work? | subsystem | workflow | subsystem | subsystem | api / subsystem |
+
+PetClinic derives `owner ★★★★★`, `pet ★★★★★`, `vet ★★★★` — **business domains, not packages** — and is
+told to narrate `GET /owners/find → initFindForm`. React is told not to describe a request flow, and to
+start from `packages/react` and `compiler/packages`.
+
+### What it costs
+
+| | before | after |
+|---|---|---|
+| guidance share of prompt | 7.1 %–10.1 % | 14.7 %–20.4 % |
+| **total prompt** | 3,000–3,500 | **3,048–3,476** |
+| stable prefix per repository | 1 | **1** |
+
+The total is unchanged because the guidance is reserved *before* facts are admitted: it displaces
+evidence rather than adding to the prompt. Two renderings keep that affordable — the `workflow` fact
+carries what each step does, and the instruction carries only the chain.
+
+### Files
+
+| File | Change |
+|---|---|
+| `packages/ai/src/importance.ts` | **new** — signals, weights, kind-relative normalisation |
+| `packages/ai/src/workflow.ts` | **new** — measured route chains, conventional continuation |
+| `packages/ai/src/identity.ts` | **new** — purpose, domains, 20 evidenced fields, per-context cache |
+| `packages/ai/src/plan.ts` | **new** — what the reader needs, before what facts fit |
+| `packages/ai/src/identity.test.ts` | **new** — 33 tests, six of them corpus regressions |
+| `packages/ai/src/projection.ts` | the `purpose` extractor, `coreReserved`, plan-led part ordering |
+| `packages/ai/src/prompt.ts` | `fixedReservedTokens`, plan threaded through |
+| `packages/ai/src/strategy.ts` | identity-led guidance, ranked domains, compact instructions |
+| `packages/ai/src/facts.ts` | `exists-to`, `workflow`, `ranks`; identity on the projection |
+| `packages/ai/src/answer.ts`, `stream.ts` | plan replaces strategy; lead and need reported |
+
+### Known Issues
+
+- **Flask, Gin, FastAPI and express derive weak domains** — `routing`, `networking` at ★. Domain
+  weighting needs two role layers to agree on a noun, and framework repositories do not annotate that
+  way. PetClinic and LinkForge, which do, produce real business domains.
+- **`cn` is LinkForge's top-ranked declaration** at 70 references. Fan-in is a real measurement and it
+  systematically favours utilities. Raising `role` to 0.22 mitigated it; it did not remove it.
+- **A workflow's continuation is never observed.** It rests on role annotation plus name agreement, and
+  is emitted `INFERRED`. A real call-chain traversal would need per-symbol contexts and would cost
+  latency this milestone was told not to spend.
+- **The identity cache is per-context, not per-graph.** One request derives once; two requests derive
+  twice. Caching against the graph would mean holding a derived object across a database this package
+  cannot see.
+- **Still not visible on the HTTP/web surface.** `apps/api/src/chat.ts` uses explicit field mappers that
+  forward neither `shape` nor the guidance token fields.
+
+### Next Milestone
+
+Answer evaluation, unchanged from the last milestone and now more pressing. Everything measured here is
+the prompt. Whether a narrative built from a ranked identity produces a *better answer* than a correct
+inventory needs labelled data over the corpus that is now scanned.
+
+## Repository-Adaptive Reasoning — the answer changes with the repository
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web`
+clean; **2,528 backend + 376 web** tests passing. Validated over **13 repositories** in five languages
+through the real pipeline.
+
+### The problem was not grounding, and that is what made it hard to see
+
+Every answer was already grounded, cited and correct. Every answer was also the *same shape*. The
+standing instruction told the model to explain "where a request enters, what it passes through, where
+state is kept" — an excellent sentence for a web service, and the only sentence any repository ever
+received. React has no request to trace. A Terraform module has no layers. Asked to explain the
+architecture, the model's options were to obey that instruction wrongly or to quietly ignore the thing
+it was told most emphatically.
+
+So the fixed prompt now states only what is true of every repository — cite, do not exceed the facts,
+invent nothing — and *how* to explain one is composed per repository from a profile.
+
+### A profile is a restatement, or it is a fabrication upstream of every sentence
+
+`profile.ts` derives what the repository **is** from the graph alone, under the same discipline
+`architecture.ts` already observed: every field restates counts, names and detections the graph holds;
+a dimension that cannot be proven is absent; nothing is a judgement about quality. `type` has an
+`unknown` member and it is used — a repository whose evidence supports no rule gets `unknown`, and the
+strategy falls back to scale and domains, which are always measurable.
+
+The type rules are a **ranked list, first match wins**, ordered from the most structurally distinctive
+to the least: infrastructure → compiler → framework → application/service → cli → tooling → monorepo →
+library → unknown. Each carries the evidence that fired it, so a reader checks the characterisation
+rather than trusting it.
+
+**Scale is measured against what a projection can actually name**, not against a file count somebody
+chose. A repository is `small` when every package, role-bearing declaration and route group fits in the
+facts a model is given, and `huge` when not even the package list fits. `NAMING_CAPACITY` is the sum of
+the standard-tier caps in `projection.ts`, and a test asserts the two agree — a cap that changed in one
+place and not the other would silently redefine what "small" means.
+
+### Five defects the corpus found that no unit test would have
+
+Validation over thirteen real repositories was not a confirmation step. It found five rules that were
+wrong, each of which looked reasonable when written:
+
+| repository | wrong answer | why | fix |
+|---|---|---|---|
+| Flask | `cli` | depends on `click`, because it ships `flask run` | a parser **and** a top-level command directory |
+| Apache Commons Lang | `tooling` | uses JUnit — as does nearly every library alive | requires a command directory too |
+| Plotly Dash | `compiler` | two test fixtures both named `…generator…` | two **distinct** stages, not two packages |
+| LinkForge | `plugin-oriented` | matched `tests/integration` and a file in `docs/` | narrower stems, and packages must carry declarations |
+| LinkForge, client-go, Dash | "Explain the architecture" → **focused** | `docs/architecture` is a derived package | source-bearing units, plus a question-vocabulary guard |
+
+The last is the sharpest. The most repository-wide question anyone asks was narrowing itself to a
+documentation folder, on three of twelve repositories, because a path-derived package happened to be
+called `architecture`.
+
+### Frameworks are not services, and 134 real routes said otherwise
+
+Flask's repository yields **134 routes**, Gin's **112**, FastAPI's **598** — every one real, extracted
+from real decorators. Every one inside a test or an example. Counting them made the best-known
+micro-frameworks in Python and Go into web services, and the service instruction told the model to
+trace a request to persistence and not to describe a user interface. Both statements are wrong about a
+framework, and confidently wrong.
+
+Three corrections, in the order they were needed:
+
+1. **Path filtering.** A route declared in `tests/` or `examples/` is one the repository *shows how to
+   write*. 134 → 13, 112 → 6, 598 → 17.
+2. **Filename conventions**, because Go puts `router_test.go` beside `router.go` and so no directory is
+   named for tests. Java, Python and JavaScript each spell the same convention differently.
+3. **A proportion.** All three were *still* services on what remained — Gin's `routergroup.go`, where
+   the `GET` method that registers a route is defined. A framework providing routing always leaks a few
+   routes into an extractor looking for routing. Below a quarter of the total, the residue is machinery
+   rather than a surface. This is the one threshold in the file that is a judgement, and it says so.
+
+Two path words had to be removed by measurement. `samples` discounted every one of Spring PetClinic's
+owner routes, because it lives at `org/springframework/samples/petclinic/` — a word that is ordinary
+vocabulary inside a namespace cannot disqualify what lives under it.
+
+**React needed a structural fix rather than a filter.** It carries five routes, from the little Express
+servers under `fixtures/flight/server` that exercise Flight and SSR, and was profiled as an *Express
+application*. A repository built for other people's code to plug into is a framework whatever else it
+also contains, so the framework rule now asks before the route rule.
+
+### The guidance is split in two, and the split is a cache decision
+
+A provider reuses the longest prompt prefix it has already evaluated, and the system message is the
+front of it. So the half of the guidance that depends only on the repository renders into the system
+message, where it is byte-identical for every question; the half the question steers renders after the
+question, where varying it costs nothing. Putting question-derived text in the system message would
+re-evaluate thousands of tokens on every turn.
+
+Measured across all thirteen repositories: **one stable fact prefix and one system message per
+repository across four different questions.** The property the previous milestone built is intact.
+
+### What it costs
+
+| | tokens |
+|---|---|
+| repository guidance | 269–389 |
+| question guidance | 44–72 |
+| **share of the whole prompt** | **7.1%–10.1%** |
+
+Under a tenth of the prompt, and it displaces facts rather than adding to the total — the projection's
+budget is reserved for it before a fact is admitted.
+
+### The same question, thirteen repositories
+
+Asked *"Explain the architecture."*:
+
+| repository | type | scale | depth | opens with |
+|---|---|---|---|---|
+| Spring PetClinic | service | small | **complete** | what the service is responsible for and who calls it |
+| LinkForge | application | medium | **modules** | what the application does for its users |
+| React | framework | large | **boundaries** | what someone building on it writes against |
+| client-go | framework | large | **boundaries** | the public surface a consumer imports |
+| FastAPI | library | large | **boundaries** | what the library does and what a caller gets |
+| Flask, Gin, express, axios, zod, zustand, Dash, commons-lang | library | medium | **modules** | the public API and what it is for |
+
+PetClinic is told to walk every subsystem and trace the flow end to end. React is told the repository
+is too large to explain at once, to start from the subsystem boundaries, **not** to describe a request
+flow, and to close by naming what is worth asking about next.
+
+Asked *"Explain caching."* the same repositories diverge again: LinkForge, PetClinic, Flask and express
+narrow to `focused` on the cache subsystem; the rest stay repository-wide, because narrowing at a
+subsystem the facts cannot support would aim the whole answer at nothing.
+
+### Files
+
+| File | Change |
+|---|---|
+| `packages/ai/src/profile.ts` | **new** — type, scale, traits, stack, domains, units; every field evidenced |
+| `packages/ai/src/strategy.ts` | **new** — profile + scope → depth, opening, coverage, drill-down; both renderings |
+| `packages/ai/src/profile.test.ts` | **new** — 42 tests, one per rule, five of them corpus regressions |
+| `packages/ai/src/strategy.test.ts` | **new** — the same question on a service and a framework |
+| `packages/ai/src/intent.ts` | `scopeOf`, `focusOf`, the question-vocabulary guard |
+| `packages/ai/src/projection.ts` | the `profile` extractor, `TYPE_PARTS`, `PINNED`, profile on the projection |
+| `packages/ai/src/prompt.ts` | `systemMessage`, `reminderFor`, guidance in the breakdown and the reservation |
+| `packages/ai/src/answer.ts` | derives the strategy, threads it through, reports the shape |
+| `packages/ai/src/facts.ts` | the `characterised-as` predicate; `profile` on `ContextProjection` |
+| `packages/ai/src/stream.ts` | `AnswerShape` on the grounding summary |
+
+### Known Issues
+
+- **Flask, Gin, FastAPI and express profile as `library` rather than `framework`.** All four are
+  frameworks. The framework rule needs extension-point packages, and none of them name their packages
+  that way. This is a deliberate under-claim: the library instruction — explain the public surface and
+  how the implementation is organised behind it — is close to right for a framework, while the service
+  instruction it replaced was actively wrong.
+- **`sdk` is in the vocabulary and no rule claims it.** No graph evidence distinguishes an SDK from a
+  library.
+- **The 25% route share is a judgement.** It excludes 10%, 5% and 3%, and admits a service with three
+  test routes for every real one. A service with a heavier ratio than that would be read as a library.
+- **FastAPI's projection reaches zero graph identifiers.** `architecture-summary` is `ALL`-capped and
+  pinned first, and on a repository with 372 packages it consumes the standard budget before any
+  identifier-bearing part runs. Pre-existing, exposed rather than caused by this milestone; answers
+  remain groundable through `terms` (221 for FastAPI).
+- **`monorepo` is reachable but rarely reached**, because a more specific type usually fires first. It
+  is also a packaging fact rather than a kind of software, which is why `multi-package` exists as a
+  trait alongside it.
+
+### Next Milestone
+
+Answer evaluation. Every measurement in this milestone is of the **prompt** — the profile, the
+guidance, the facts, the token cost — because that is what a test can assert. Whether the adapted
+instruction produces a *better answer* is model evaluation, needs labelled data over the corpus that is
+now scanned, and is the one thing this milestone could not measure about itself.
+
+## AI Experience — grounding, explanation and prompt size
+
+**Status:** complete. `pnpm build`, `pnpm typecheck:tests`, `pnpm typecheck:web`, `pnpm build:web`
+clean; **2,439 backend + 376 web** tests passing. Measured on `facebook/react` (7,280 files).
+
+### Instrumentation first, because "reduce the prompt" cannot be acted on without it
+
+Every previous attempt at trimming was guided by reading a rendered prompt and forming an impression
+of what looked long. `promptBreakdown` reports tokens by section and by fact predicate, using the same
+counter the budget charges against. The first run of it answered the question immediately:
+
+| predicate | tokens | facts |
+|---|---|---|
+| **limitation** | **1,081** | 17 |
+| has-role | 899 | 7 |
+| has-package | 858 | 26 |
+| built-with | 777 | 10 |
+| depends-on | 534 | 25 |
+| region-depth | 511 | 4 |
+
+The largest single cost in every prompt, on every question, was seventeen fixed sentences about the
+analysis's own caveats — **a fifth of the whole prompt**. Nobody had guessed that.
+
+They were also damaging answers. Asked what to understand first about React, the model had ended with
+*"The repository overview is computed independently for health reports [f38]"* — a caveat about
+TraceIQ's internals restated as a fact about React. Verbose boilerplate does not sit inertly in a
+prompt; a model reaching for something to say will say it. The codes are kept, because they are what
+qualifies an answer; the prose is not. 1,081 tokens → **160**.
+
+Two smaller cuts followed the same evidence: a technology's evidence sentence keeps the clause naming
+the file a reader can check and drops the explanation of what a lockfile is, and a region group stops
+repeating a fixed sentence describing the depth it has already stated.
+
+### Compression alone changes nothing, and that is worth stating
+
+A projection always spends its budget, so denser facts bought more facts rather than a smaller prompt.
+Lowering `standard` from 6,000 to 3,400 is what converts the compression into a faster answer. The
+number is chosen against the clock: prompt evaluation runs near 50 tokens per second, so every 1,000
+tokens is about 20 seconds before the first word appears.
+
+| question | before | after |
+|---|---|---|
+| main packages | 5,458 | **3,267** |
+| architecture | 5,460 | **3,335** |
+| technologies | 5,927 | **3,336** |
+| most referenced | 4,520 | **3,069** |
+| authentication | 5,922 | **3,354** |
+
+Every common question now lands inside the 3,000–3,500 target, a **41% reduction**, with limitations,
+technologies and regions carrying the same information in fewer tokens.
+
+### Two intent bugs the measurement exposed
+
+**"Explain the architecture and how modules communicate" was classified `packages`.** The word
+`modules` sat in the package keyword list and that list was checked first, so the single most
+obviously architectural question received a package listing. An explicit architecture word now wins
+over an ambiguous one.
+
+**There was no authentication intent at all.** "How does authentication work?" fell through to
+`overview` and was answered from package counts. A `security` intent now leads the supplement with
+routes, environment variables and middleware — where a login endpoint, a token secret and an auth
+guard actually live. Measured after: that question's supplement carries 15 `reads-env` and 11
+`handles-route` facts where it previously carried none.
+
+### The verifier was wrong about a right answer
+
+Asked to explain React's architecture, the model produced a well-cited answer naming `ModalDialog.js`,
+`ProfilerContext.js` and `InspectedElementContext.js`, and the guard marked all three as names no fact
+carried — for three files whose **full paths were in the identifiers it had just been given**. Nobody
+writing about a file calls it `packages/react-devtools-shared/src/devtools/views/ModalDialog.js` in a
+sentence. A file's basename is now a permitted name.
+
+That failure also showed the report was not a diagnosis. A bare list of rejected strings cannot
+distinguish an invention from a verifier being too strict about how a real name is written, and
+finding out meant re-deriving the projection by hand. Every rejection now says what it was checked
+against, how many names were available, and the closest thing the facts did carry — matched by
+substring rather than edit distance, because these failures are granularity mismatches rather than
+typos.
+
+### Answers explain instead of listing
+
+The standing instruction now opens with what a good answer does — explain what the parts are for and
+how they fit together, use numbers as evidence for a claim rather than as the claim — and forbids
+restating an analysis caveat as though it described the repository. Same question, same repository:
+
+> **Before.** "The repository contains several main packages including compiler,
+> flow-typed/environments, packages/react-devtools-shared, packages/react-dom-bindings, and
+> packages/react-dom [f22]. These are among the larger package directories in terms of files and
+> declarations."
+
+> **After.** "…`packages/react` contains 374 declarations and imports 7 other packages, indicating its
+> central role [f40]. Similarly, `packages/react-dom` has 1199 declarations and imports 8 packages,
+> suggesting it is also a key component [f30]…"
+
+One citation became three, and the counts became the evidence for a claim about role rather than the
+claim itself.
+
+### Not done
+
+The rewritten instruction costs 217 more tokens than the one it replaced (339 → 556), which is a real
+charge against the budget it is spent inside. It was accepted because answer quality is the higher
+priority, but it is the reason the target is 3,300 rather than 3,000.
+
+A model still occasionally ends on an uncited summarising sentence — "these are likely core components
+of the frontend" — which rule 2 forbids. The verifier does not catch it, because there is nothing
+fabricated in it to catch.
+
 ## Analysis Out of Process — the API stops stopping
 
 **Status:** the execution change is complete and measured; the large-repository and multi-repository

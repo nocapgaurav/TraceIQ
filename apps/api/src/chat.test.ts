@@ -147,6 +147,21 @@ describe('POST /chat', () => {
     });
   });
 
+  it('reports how many generations produced the answer, and why a rewrite ran', async () => {
+    const result = await post(server, '/chat', { question: 'What is this?', subject: { kind: 'symbol', id: FIND } });
+    const answer = result.body.data as Record<string, unknown>;
+
+    /*
+     * On the wire because it is the only way a client can tell a slow model from a rejected answer, and
+     * because it is the field that makes the "at most one correction" bound observable from outside.
+     *
+     * This answer verifies, so it must be worth exactly one generation: the fix for wrong answers must not
+     * have made every right answer twice as slow.
+     */
+    expect(answer.attempts).toBe(1);
+    expect(answer.corrections).toEqual([]);
+  });
+
   it('flattens a citation to the fact fields, so a client can display the evidence', async () => {
     const result = await post(server, '/chat', { question: 'q', subject: { kind: 'symbol', id: FIND } });
     const citations = (result.body.data as { citations: Record<string, unknown>[] }).citations;
@@ -177,7 +192,7 @@ describe('POST /chat', () => {
     expect((result.body.data as { grounding: { kind: string } }).grounding.kind).toBe('repository');
   });
 
-  it('accepts prior turns as history', async () => {
+  it('carries prior turns as a session rather than as replayed prose', async () => {
     const result = await post(server, '/chat', {
       question: 'and what else?',
       subject: { kind: 'symbol', id: FIND },
@@ -185,8 +200,17 @@ describe('POST /chat', () => {
     });
 
     expect(result.status).toBe(201);
+    // The path the reader took is what a follow-up needs, and it is cheap.
     expect(model.lastPrompt()).toContain('what is it?');
-    expect(model.lastPrompt()).toContain('a method');
+    /*
+     * The prior answer's words are not.
+     *
+     * **This assertion is the long-session milestone.** Replaying answers is what made a fourth
+     * question unaffordable: the reservation grew by the length of every one of them until no facts
+     * fitted. What the next turn actually needs from an earlier answer is which topics it covered, and
+     * that is in the session block at a fixed cost.
+     */
+    expect(model.lastPrompt()).not.toContain('a method');
   });
 });
 

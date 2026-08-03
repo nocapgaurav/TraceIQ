@@ -15,19 +15,37 @@
  * There is no migration path and none is needed — a graph is rebuilt from source on every scan,
  * and the store refuses a database written by a different version rather than reading it wrongly.
  */
-export const SCHEMA_VERSION = 3;
+/**
+ * Bumped to 4 for `nodes.artifact_kind` and six artefact relationship types.
+ *
+ * Version 4 is the first version in which a repository with no analysable source can hold edges. Until
+ * it, every relationship in the vocabulary needed a declaration at one end, so a Dockerfile, a workflow
+ * and a README could each hold a node and never appear at either end of an edge.
+ *
+ * The relationship check grew, which is exactly what the version 3 note said the frozen vocabulary
+ * existed to avoid — and the note also said why it is safe: a graph is rebuilt from source on every
+ * scan, and the store refuses a database written by a different version rather than reading it wrongly.
+ * So the cost of growing it is one rescan, which is the cost of any analysis change.
+ */
+export const SCHEMA_VERSION = 4;
 
 const CONFIDENCE_CHECK = `CHECK (confidence IN ('CERTAIN','RESOLVED','INFERRED','AMBIGUOUS'))`;
 
 /**
- * The frozen relationship vocabulary. Constrained because it cannot grow, so the
- * check can never force a migration and it catches a typo at insert. `nodes.kind` is
- * deliberately *not* constrained — node types are an open vocabulary, and `Route`,
- * `EnvironmentVariable` and `DatabaseTable` are still to come.
+ * The relationship vocabulary, constrained so the check catches a typo at insert.
+ *
+ * It was described as frozen while every type in it needed a declaration at one end. Artefact analysis
+ * broke that premise rather than the discipline: the six types on the second line are each produced by a
+ * deterministic read of one artefact's own text, and each is defined in `@traceiq/types` beside the
+ * reason it is not one of the others. Growing the list costs a schema version and a rescan, which is
+ * what any change to what analysis produces costs.
+ *
+ * `nodes.kind` remains deliberately *unconstrained* — node types are an open vocabulary.
  */
 const RELATIONSHIP_CHECK = `CHECK (type IN (
     'DECLARES','IMPORTS','EXPORTS','CALLS','IMPLEMENTS','EXTENDS','REFERENCES_TYPE',
-    'HANDLED_BY','READS','WRITES','DEPENDS_ON','CONTINUES_TO','TESTS'
+    'HANDLED_BY','READS','WRITES','DEPENDS_ON','CONTINUES_TO','TESTS',
+    'CONTAINS','REFERENCES','RUNS','CONFIGURES','DOCUMENTS','USES_ENV'
   ))`;
 
 export const SCHEMA_STATEMENTS: readonly string[] = [
@@ -65,6 +83,10 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
     language                TEXT,
     file_role               TEXT,
     category                TEXT,
+    -- Which artefact term applies: the family for a File, the element kind for an ArtifactElement.
+    -- Unconstrained, like kind, because both vocabularies are open: a new artefact reader arrives with
+    -- new terms, and a check here would make adding one a schema migration.
+    artifact_kind           TEXT,
     confidence              TEXT NOT NULL ${CONFIDENCE_CHECK},
     provenance_producer     TEXT NOT NULL,
     provenance_file_id      TEXT REFERENCES nodes(id),
@@ -169,6 +191,9 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
 
   `CREATE INDEX nodes_by_file ON nodes(file_id)`,
   `CREATE INDEX nodes_by_kind ON nodes(kind)`,
+  // Artefact rosters are read by family across the whole repository — "which files are workflows" — and
+  // that is a table scan without this. Partial, so it costs nothing for the source files that dominate.
+  `CREATE INDEX nodes_by_artifact_kind ON nodes(artifact_kind) WHERE artifact_kind IS NOT NULL`,
   `CREATE INDEX edges_by_source ON edges(source_id, type)`,
   `CREATE INDEX edges_by_target ON edges(target_id, type)`,
   `CREATE INDEX edges_by_group ON edges(candidate_group)`,

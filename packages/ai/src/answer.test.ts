@@ -154,7 +154,12 @@ describe('the prompt the model is shown', () => {
       }),
     );
 
-    expect(model.requests[0]?.messages[0]).toEqual({ role: 'system', content: SYSTEM_PROMPT });
+    const system = model.requests[0]?.messages[0];
+
+    // The standing instruction is still the whole of the fixed part, and it still leads — what follows
+    // it is the guidance composed for this repository, which is asserted separately.
+    expect(system?.role).toBe('system');
+    expect(system?.content.startsWith(SYSTEM_PROMPT)).toBe(true);
   });
 
   it('folds the standing instruction into the user message where it does not', async () => {
@@ -453,7 +458,9 @@ describe('token usage', () => {
   it('reports null where the provider said nothing', async () => {
     const silent = {
       describe: () => ({ id: 'm', contextWindow: 32_768, maxOutputTokens: null, capabilities: new Set(['system-prompt'] as const) }),
-      tokens: { count: (text: string) => text.length },
+      // One token per four characters, the same ratio `estimatingCounter` uses. A one-token-per-character
+      // counter was reserving four times what any real tokeniser would and left no room for facts.
+      tokens: { count: (text: string) => Math.ceil(text.length / 4) },
       // eslint-disable-next-line @typescript-eslint/require-await
       async *generate() {
         yield { type: 'start', model: 'm' } as const;

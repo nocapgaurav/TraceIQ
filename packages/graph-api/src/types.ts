@@ -118,6 +118,27 @@ export const NODE_KINDS = [
    * whose identity is a name rather than a source position.
    */
   'Technology',
+  /**
+   * One structural piece of a non-code artefact: a CI job, a compose service, a Dockerfile stage, a
+   * Markdown heading, a schema entity.
+   *
+   * **A node rather than a row, because the alternative made these unreachable.** A table hanging off a
+   * file could be read back by path and nothing else — no search, no traversal, no `getIncoming`. But a
+   * workflow step that runs `scripts/deploy.sh` is a fact *about the repository* of the same kind as a
+   * declaration calling a function, and it has to be able to sit at the end of an edge for that to be
+   * expressible at all. Regions stay out of the graph for the opposite reason: they describe how deeply
+   * TraceIQ read a directory, which belongs beside the code rather than in it.
+   *
+   * `artifactKind` carries what the element *is* (`job`, `step`, `service`, `heading`, …),
+   * `containerChain` the section path inside the artefact it was found under, `fileId` the artefact, and
+   * the provenance evidence the element's own text — so every one of these is checkable by opening the
+   * file at the recorded line.
+   *
+   * Element counts are capped per artefact by the analyser rather than here. A thousand-heading
+   * generated reference document must not be able to outweigh a repository's source in the graph, and
+   * the cap is stated in `@traceiq/artifact` beside the reading that produces it.
+   */
+  'ArtifactElement',
 ] as const;
 
 export type NodeKind = (typeof NODE_KINDS)[number];
@@ -207,6 +228,20 @@ export interface GraphNode {
    * that `'frontend'` can appear there too.
    */
   readonly category: string | null;
+  /**
+   * Which artefact term applies to this node, or `null` where none does.
+   *
+   * For a `File`, the artefact **family** — `ci-workflow`, `container-image`, `documentation`,
+   * `unknown-artifact`. For an `ArtifactElement`, the **element kind** — `job`, `step`, `service`,
+   * `heading`. Both are drawn from `@traceiq/types`, whose two lists are disjoint by contract, so the
+   * node's own `kind` says which list to read the value against and no value is ambiguous.
+   *
+   * Its own column rather than a reuse of `fileRole`, which the scanner owns and which every consumer
+   * already reads: a family is a *refinement* of a role decided by reading the file, and overwriting the
+   * role would change the meaning of a field under existing readers. `null` on a `File` means artefact
+   * analysis did not run for it — never that the file has no purpose.
+   */
+  readonly artifactKind: string | null;
   readonly confidence: ConfidenceLevel;
   readonly provenance: GraphProvenance;
   /** Empty for `File` and `External`. Spec §3. */

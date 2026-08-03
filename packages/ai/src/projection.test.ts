@@ -171,11 +171,15 @@ describe('caps and omissions', () => {
   });
 
   it('subtracts what the prompt scaffolding already reserved', () => {
+    // Relative to the tier rather than a fixed 5,000, which was sized for a 6,000-token `standard` and
+    // went negative the moment the tier came down to 3,400. A test that encodes a constant it does not
+    // own fails for a reason that has nothing to do with what it is checking.
+    const reserved = Math.floor(TIER_TOKENS.standard / 2);
     const withoutReserve = project(wideSymbolContext(5000), { tier: 'standard' });
-    const withReserve = project(wideSymbolContext(5000), { tier: 'standard', reserved: 5000 });
+    const withReserve = project(wideSymbolContext(5000), { tier: 'standard', reserved });
 
     expect(withReserve.tokens).toBeLessThan(withoutReserve.tokens);
-    expect(withReserve.tokens).toBeLessThanOrEqual(TIER_TOKENS.standard - 5000);
+    expect(withReserve.tokens).toBeLessThanOrEqual(TIER_TOKENS.standard - reserved);
   });
 
   it('a larger tier buys more facts', () => {
@@ -489,7 +493,21 @@ describe('the prefix is stable across questions, and the tail is not', () => {
     const projection = project(repositoryContext(), { tier: 'standard', intent: 'technology' });
 
     expect(projection.intent).toBe('technology');
-    expect(projection.coreCount).toBe(projection.facts.length);
+    // Nothing was left out: every part contributed everything it had, across both passes.
+    expect(projection.omissions).toEqual([]);
+    /*
+     * Most of it is core, and some of it is not — which is the correct behaviour rather than a weakening
+     * of this test.
+     *
+     * The claim in the name is about the *budget*: a repository small enough to fit must not have facts
+     * withheld, and `omissions` above asserts exactly that. The core/supplement split is a separate,
+     * deliberate shaping decision — a part's `coreCaps` are set to about a third of its full cap so the
+     * supplement has room to deepen whichever part the question is about. Artefact evidence is the first
+     * part whose content on a *small* repository exceeds its core share, and it should be: a deployment
+     * question needs the compose file's services in its supplement, and pinning all of them into the
+     * prefix would leave the intent nothing to steer.
+     */
+    expect(projection.coreCount).toBeGreaterThan(projection.facts.length * 0.9);
   });
 
   it('leads the supplement with the part the question is about, once there is a supplement', () => {
@@ -534,7 +552,9 @@ describe('compression buys facts rather than tokens', () => {
     );
 
     expect(regions.length).toBeGreaterThan(0);
-    expect(regions.map((fact) => fact.object).join(' ')).toMatch(/regions? \(/);
+    // The role is part of the line now: a region fact that did not say whether it was production code let
+    // three benchmark fixtures be named among a repository's main regions in a live answer.
+    expect(regions.map((fact) => fact.object).join(' ')).toMatch(/regions? of \w+ code \(/);
   });
 
   it('names role members on one line per role rather than one per declaration', () => {
@@ -554,6 +574,16 @@ describe('intentOf', () => {
     expect(intentOf('What are the main packages?')).toBe('packages');
     expect(intentOf('Explain the architecture.')).toBe('architecture');
     expect(intentOf('Tell me something.')).toBe('overview');
+  });
+
+  it('routes a responsibility question to the responsibility, not to the whole stack', () => {
+    // "Explain caching" is not a technology question that happens to mention a technology; the answer
+    // wanted is the cache, its configuration and the hot path it protects.
+    expect(intentOf('Explain caching.')).toBe('caching');
+    expect(intentOf('Why is Redis used?')).toBe('caching');
+    expect(intentOf('Explain deployment.')).toBe('deployment');
+    expect(intentOf('Explain Docker.')).toBe('deployment');
+    expect(intentOf('Explain CI/CD.')).toBe('deployment');
   });
 
   it('matches whole words, so a substring cannot classify a question', () => {

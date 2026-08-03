@@ -54,6 +54,7 @@ interface NodeRow {
   readonly language: string | null;
   readonly file_role: string | null;
   readonly category: string | null;
+  readonly artifact_kind: string | null;
   readonly external_name: string | null;
   readonly confidence: string;
   readonly provenance_producer: string;
@@ -113,7 +114,7 @@ interface EdgeRow {
 const NODE_COLUMNS = `id, kind, name, file_id, container_chain, visibility,
   is_exported, is_static, is_abstract, is_readonly, is_optional, is_async,
   is_declaration_file, has_symbol, is_exported_from_module,
-  external_kind, external_name, language, file_role, category, confidence,
+  external_kind, external_name, language, file_role, category, artifact_kind, confidence,
   provenance_producer, provenance_file_id, provenance_evidence`;
 
 const EDGE_COLUMNS = `id, type, source_id, target_id, name, confidence, candidate_group,
@@ -366,6 +367,7 @@ function toNode(row: NodeRow, locations: readonly SourceRange[]): GraphNode {
     language: row.language,
     fileRole: row.file_role,
     category: row.category,
+    artifactKind: row.artifact_kind,
     externalName: row.external_name,
     confidence: row.confidence as ConfidenceLevel,
     provenance: {

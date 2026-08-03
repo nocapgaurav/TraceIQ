@@ -445,8 +445,8 @@ describe('metrics', () => {
 
 describe('one pass over the graph', () => {
   it('reads each node kind once and each relationship type once', () => {
-    expect(graph.calls.getNodes).toBe(19);
-    expect(graph.calls.getEdges).toBe(13);
+    expect(graph.calls.getNodes).toBe(20);
+    expect(graph.calls.getEdges).toBe(19);
   });
 
   it('reads unresolved references once', () => {

@@ -97,6 +97,130 @@ One deliberate ugliness, stated rather than hidden: `ContextNotFoundError` is re
 `error.name`, not `instanceof`, because an `instanceof` check would need a runtime import of
 `@traceiq/context` and would cost the property that makes the boundary provable.
 
+## Structural scope
+
+**Where a fact was found decides what it may be used to say.** `structure.ts` classifies every region the
+scanner reported as `production`, `example`, `test`, `benchmark`, `generated`, `vendored` or
+`documentation`, from a conventional directory vocabulary and the manifests the graph already holds. Eight
+consumers read it: the technologies, the routes, the role layers, the configuration, the workflows, the
+importance ranking, the repository type and the domain claims.
+
+This exists because every fact can be true and the architecture still be fiction. A monorepo holding six
+benchmark fixtures was reported as one application with a persistence layer of Mongoose, SQLite, Drizzle
+ORM and PostgreSQL, and a surface exposing three sample applications' routes. Every detection was correct;
+none of those things has ever run in the same process. Scoping the technologies to production regions
+dissolves that composition, and the set-aside ones are still carried — as `incidental`, with the region and
+the role, so an answer can say a benchmark uses Mongoose without saying the repository does.
+
+The vocabulary is conventional, never repository-specific, which is the same trade `CACHING_TECHNOLOGIES`
+makes. `sample`, `samples`, `starter`, `template`, `scaffold`, `site` and `deps` were all tried and
+removed: each is either ordinary vocabulary inside a namespace (Spring PetClinic lives under
+`org/springframework/samples/`) or a plausible production package name once a suffix is attached. Erasing a
+repository's own code from its answer is the worse of the two errors.
+
+Three facts the graph cannot place are contained rather than solved. Route nodes and environment-variable
+nodes are merged by name, so a route registered in four fixtures has no file; a repository context's
+`dependencies.view` is `null`, so an external package cannot be attributed to one. An unattributed route is
+kept only where a production region declares a backend framework — nothing else could have registered it —
+and an unplaceable dependency or variable cannot establish a domain where most of the analysed source is
+not the repository's own.
+
+## Semantic role and repository identity
+
+**Structural prominence is not semantic importance.** A fan-in count measures how much of a repository
+points at a declaration; it says nothing about whether that declaration is what the repository is *for*.
+On a repository whose only analysable code is four CI scripts, the most-referenced declaration is a CI
+script — accurately measured, and the wrong answer to every question about the architecture.
+
+Two mechanisms keep the two apart:
+
+- **A top-level area map and a repository category.** `structure.ts` folds the packages listing into the
+  repository's top-level directories, each with a semantic role, and derives a category — `codebase`,
+  `monorepo`, `collection`, `infrastructure`, `umbrella` or `unknown` — from the *shape of the tree*
+  rather than from what its declarations rank. Emitted as `area` facts in the stable prefix, so it is
+  citeable and free to reuse. Distinct from `profile.ts`'s `RepositoryType`, which reads routes and
+  manifests: they agree on ordinary repositories and disagree on the ones that mislead.
+- **Role-scoped ranking.** `rankComponents` takes the roles eligible for this question and normalises
+  within them, so the measurement is unchanged and the *candidate set* moves. An architecture question
+  ranks the repository's own code; a deployment question ranks deployment and CI code against its own
+  peers. `identity.byRole` carries one ranking per non-production role that has declarations.
+
+A question restricted to a role with no components gets an empty list rather than a fallback, because
+falling back to the default ranking is what let hotspots answer questions about tests.
+
+## Artefact evidence
+
+**Every predicate this layer had needed a declaration somewhere in its derivation.** `has-package` counts
+declarations, `hotspot` measures edges between them, `layered` reads role annotations on them — so a
+repository whose deployment is four compose files and whose build is eleven workflows reached a model as a
+file count and a language distribution, and the answer described whichever code produced the richest AST.
+
+Six predicates fix that, all of them restatements of stored edges:
+
+- `artifact-inventory` — what the repository is made of, by artefact family. Pinned into the stable prefix
+  beside the area map, for the same reason: it does not change with the question.
+- `declares` — one artefact and what it declares. "Three compose files" answers no architecture question;
+  "`api`, `worker`, `postgres` and `redis`" is the architecture.
+- `artifact-ordering` — a prerequisite an artefact **states** between two of its own parts. The only
+  ordering predicate, and the one that licenses an execution-order claim in `entailment.ts`.
+- `runs`, `documents`, `configures` — a file a command invokes, a file a document links to, a technology a
+  configuration file configures.
+- `onboarding` — what a reader can start from, with the *kind* of evidence behind it: documentation the
+  repository ships, a manifest entry point, a route, a declared package boundary, a traceable workflow. No
+  ranking is an admissible kind, which is what stops "where should I start" being answered by fan-in.
+
+`identity.onboarding` and `identity.documentation` carry the same evidence for the planner, and
+`workflowsOf` gains a third derivation: a workflow the repository *declares* rather than one measured from
+handler edges or inferred from role layers.
+
+## Evidence sufficiency
+
+Before generation, `EvidenceSufficiency` decides whether the repository holds what a strongly typed
+question asked about: `established`, `absent`, or `undetermined`. The middle distinction is the point —
+"there is no cache" is a claim about the repository and "no cache was detected" is a claim about the
+analysis, and only the second is ever supportable by an absence. `undetermined` is reached when no region
+was read deeply enough, or when none of the repository's own code was analysed at all.
+
+Where the verdict is not `established`, the section list and the component list are suppressed and the
+guidance asks for two or three sentences. Answer depth follows evidence depth.
+
+An orientation question is adjudicated the same way, against `identity.onboarding`: a repository with no
+documentation, no manifest entry point, no route and nothing packaged has not told anybody where to start,
+and the verdict says so rather than substituting the highest-ranked declaration.
+
+## Corrective generation
+
+`retrieval → generation → verification → (one bounded correction) → verification → return`.
+
+An answer whose claims the facts do not license used to be shown to the reader with a red badge beside it —
+the guard right, the sentence displayed anyway. It is now rewritten **once**, from the same projection, with
+the failed sentences named and the reason each failed. The instruction demands the same length and depth,
+because a rewrite has a trivially available way to make zero unsupported claims: say almost nothing.
+
+Three bounds, each asserted by a test:
+
+- **A supported first pass costs nothing.** `unverifiable` is not worth a rewrite either — it means nothing
+  was cited, which the reminder already asks for.
+- **At most one correction, ever.** The loop sets its correction in a branch guarded by the attempt count;
+  there is no state in which a third generation is reachable.
+- **A failed correction stays visibly uncertain.** `Answer.attempts` and `Answer.corrections` report what
+  happened, and the safer of the two answers is returned with its verdict intact.
+
+The stream gains a `restart` event so a consumer holding already-streamed prose is told to discard it.
+
+## Claim strength
+
+The grounding guard adjudicates *naming*: an identifier or package an answer mentions must be one the
+projection carried. `entailment.ts` adds the check naming cannot make — whether the facts license the
+**verb**. `set_secret.py manages secrets` becoming "authentication works through set_secret.py" passes
+every naming check and is the failure that matters.
+
+Five rules, each written against a sentence a model produced, each asking whether a fact of the licensing
+*kind* exists: reference → execution order, secrets → authentication, presence → behaviour, absence →
+nonexistence, configuration → confirmed run. Hedged sentences are accepted and reported as inferred; flat
+assertions are unsupported and make the answer ungrounded. It is not a theorem prover and leaves prose it
+cannot classify alone.
+
 ## The projection
 
 Four rules, each inherited from the discipline of the packages below.
@@ -185,10 +309,28 @@ asked for.
 The shape is this layer's own, never a provider's message format, which is what makes history
 provider-independent. Two properties matter:
 
-- **History is conversation, not evidence.** Only questions and answers are replayed; the facts that
-  grounded a prior turn never are. A fact from turn one could otherwise still be grounding turn eight after
-  a rescan.
+- **History is conversation, not evidence.** The facts that grounded a prior turn are never replayed. A
+  fact from turn one could otherwise still be grounding turn eight after a rescan.
 - **`model` is metadata, not structure.** A history recorded against one model replays against another.
+
+### Conversation memory
+
+**Prior turns do not reach the prompt.** `memory.ts` derives a `ConversationState` from the transcript
+and the repository identity — what the session covered, what it is currently about, what it has not
+reached, what is still owed — and that state is what the model is shown. The answers themselves go no
+further than the derivation.
+
+This is a bound rather than an optimisation. Replaying turns grew the reservation by the length of every
+answer, so three detailed answers left no room for facts and the fourth question failed with
+`budget-not-satisfiable` on a repository whose graph held everything it needed. Every cap in `memory.ts`
+is a constant, so the rendered block settles at 171–222 tokens and stays there: measured over thirty-turn
+sessions on five repositories, none failed, where replaying the same sessions would have failed from turn
+three or four onwards and reached roughly 29,500 tokens of reservation by turn thirty.
+
+The state is **derived, never accumulated** — a pure function of the transcript, recomputed each turn —
+so a long session stays as reproducible as a single question. It can only ever name topics the identity
+already carries, so it says what a session covered and never what the repository is; the facts come from
+the graph, for every turn.
 
 ## Errors
 

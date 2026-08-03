@@ -1,8 +1,9 @@
 import { NODE_KINDS, type GraphEdge, type GraphNode } from '@traceiq/graph-api';
 import { metricOf, stronglyConnectedComponents, type RepositoryHealthReport } from '@traceiq/health';
-import { ROLES } from '@traceiq/types';
+import { ROLES, SYSTEM_ARTIFACT_KINDS } from '@traceiq/types';
 import type { NodeId, RelationshipType, Role } from '@traceiq/types';
 
+import { artifactDigestsOf, artifactSummariesOf, artifactViewOf } from './artifacts.js';
 import type { ExplorerContext } from './explorer-context.js';
 import { packageOfNode } from './explorer-context.js';
 import { LIMITATION_DETAIL } from './limitations.js';
@@ -51,6 +52,8 @@ export function overviewOf(context: ExplorerContext): RepositoryOverview {
   return {
     repository: health.summary,
     technologies: technologySummariesOf(context),
+    artifacts: artifactSummariesOf(context),
+    keyArtifacts: listing(artifactDigestsOf(context, SYSTEM_ARTIFACT_KINDS)),
     capabilities: context.graph.getCapabilities(),
     architecture: architectureSummaryOf(health),
     packages: listing(packageSummariesOf(context)),
@@ -234,6 +237,9 @@ export function fileViewOf(context: ExplorerContext, id: NodeId): FileView | nul
   return {
     file,
     packageName: packageOfNode(file) ?? '',
+    // Assembled before the declaration listing is rendered, so a file with no declarations still arrives
+    // at a consumer with something to show. `null` for source, whose structure the analysers own.
+    artifact: artifactViewOf(context, file),
     declarations: listing(declarations),
     imports: listing(importEdges.map((edge) => hydrateTarget(context, edge))),
     exports: listing(exportEdges.map((edge) => hydrateTarget(context, edge))),

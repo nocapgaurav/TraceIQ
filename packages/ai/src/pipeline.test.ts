@@ -144,13 +144,23 @@ describe('projecting a real context', () => {
     expect(projection.facts.some((fact) => fact.predicate === 'in-cycle')).toBe(true);
   });
 
-  it('carries every limitation the capabilities reported', () => {
+  it('names every limitation code the capabilities reported, in one fact', () => {
+    /*
+     * The invariant is that no caveat is silently dropped — not that each gets a line of its own.
+     *
+     * Seventeen limitation facts cost 1,081 tokens on React, a fifth of the whole prompt, and the
+     * prose in them was being restated back as though it described the repository. The codes are kept
+     * because they are what qualifies an answer; the fixed sentences around them are not.
+     */
     const context = builder.build({ kind: 'symbol', id: FIND });
     const projection = project(context, { tier: 'full' });
+    const limitations = projection.facts.filter((fact) => fact.predicate === 'limitation');
 
-    expect(projection.facts.filter((fact) => fact.predicate === 'limitation')).toHaveLength(
-      context.limitations.length,
-    );
+    expect(limitations).toHaveLength(1);
+
+    for (const code of new Set(context.limitations.map((limitation) => limitation.code))) {
+      expect(limitations[0]?.object, code).toContain(code);
+    }
   });
 
   it('projects every context kind the builder supports', () => {
